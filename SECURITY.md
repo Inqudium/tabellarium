@@ -50,6 +50,13 @@ Measures already in place, so you know what is expected behaviour:
 - **The code itself is statically analysed.** A CodeQL workflow analyses
   the library sources and the CI workflow definitions on every change
   and weekly; results appear under Security → Code scanning.
+- **The repository's supply-chain posture is scored publicly.** The
+  OpenSSF Scorecard badge in the README links to the current per-check
+  breakdown. Read it as a posture indicator, not as a grade: several
+  checks assume a multi-maintainer, pull-request-based project and score
+  low by construction for a single-maintainer one. Where a deduction is
+  a deliberate trade-off, the reason sits next to the decision — see the
+  `repo_token` note in `.github/workflows/scorecard.yml`.
 
 Things outside this library's control, which the consuming application
 owns: what it puts into MDC and log messages, its TLS configuration, and
