@@ -25,9 +25,8 @@ import java.util.Properties
  * Callers attach the enrichment result to a Kafka `ProducerRecord`: the
  * partitioning key becomes the record key (UTF-8 encoded by the sender, since
  * it varies per event), the headers become record headers passed by reference
- * to Kafka's `Headers.add(String, byte[])`. Kafka does not defensive-copy the
- * header value arrays, so the byte arrays in [EnrichedRecord.headers] MUST
- * be treated as read-only by all consumers.
+ * - read-only by convention; the full contract lives on
+ * [EnrichedRecord.headers].
  *
  * ## Input validation
  *
@@ -66,13 +65,9 @@ class MessageEnricher(
      * by header name. Encoded once at construction time and shared
      * across all [enrich] calls so the hot path produces zero
      * allocations for the header set (one allocation for the
-     * partitioning key remains, since that varies per event).
-     *
-     * The byte arrays are passed by reference to Kafka's
-     * `ProducerRecord.headers()`, which does not defensive-copy them.
-     * Callers must NOT mutate the arrays they receive in
-     * [EnrichedRecord.headers]; doing so would corrupt subsequent
-     * events.
+     * partitioning key remains, since that varies per event). The
+     * arrays are shared and read-only by convention - see
+     * [EnrichedRecord.headers].
      */
     private val staticHeaders: Map<String, ByteArray>
 
@@ -83,9 +78,9 @@ class MessageEnricher(
 
         // UTF-8 encode each header value ONCE here, not per event in the
         // hot path. Map.copyOf returns a guaranteed-immutable map: attempts
-        // to modify it throw UnsupportedOperationException. The byte arrays
-        // themselves remain mutable (Kotlin/Java has no built-in immutable
-        // byte array), so callers must treat them as read-only by convention.
+        // to modify it throw UnsupportedOperationException. (The arrays
+        // inside stay mutable - see EnrichedRecord.headers for the
+        // read-only convention.)
         staticHeaders =
             java.util.Map.copyOf(
                 mapOf(
@@ -221,6 +216,10 @@ class MessageEnricher(
  * downstream sender.
  *
  * ## Header byte arrays
+ *
+ * This section is the canonical statement of the shared-array
+ * read-only contract; the enricher's and sender's comments refer
+ * here instead of repeating it.
  *
  * [headers] holds pre-UTF-8-encoded byte arrays, ready to pass directly
  * to Kafka's [org.apache.kafka.common.header.Headers.add]. The encoding

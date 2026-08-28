@@ -60,6 +60,11 @@ comment: fix it, or dismiss it in the UI with a written reason.
 - KDoc on public classes explains *why* the component exists and which
   constraints it upholds, not just what each method does. Match the
   existing density and tone.
+- Comments that state a rationale, an invariant, a workaround, or a
+  compatibility constraint use the documented prefix vocabulary — see
+  [ADR-0001](docs/adr/ADR-0001-comment-prefix-vocabulary.md). Prefixes
+  make the stock greppable (`Workaround:` is a work list on every
+  dependency upgrade; `Invariant:` yields a module's invariant catalog).
 - The appender hot path (`KafkaAppender.append` and everything it calls)
   must stay lock-free: no `synchronized`, no blocking waits. Atomics and
   volatiles only.
@@ -68,7 +73,7 @@ comment: fix it, or dismiss it in the UI with a written reason.
 
 - Every Joran-visible setter and every behavioral guarantee has a test.
   New configuration surface without a test will not be merged.
-- Test comments follow the existing four-question pattern (what is
+- Test comments follow the existing three-question pattern (what is
   tested, how success is determined, why it matters).
 - Unit tests use `MockProducer` from `kafka-clients`; no test in the
   **default run** may require a running Kafka broker or Docker.

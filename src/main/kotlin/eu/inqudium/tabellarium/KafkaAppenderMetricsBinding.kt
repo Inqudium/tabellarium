@@ -64,10 +64,11 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Walks every logger in the [LoggerContext], collects all attached
  * appenders, and recurses into nested appenders (the common case is
- * a `KafkaAppender` wrapped in an `AsyncAppender` - see
- * [the AsyncAppender discussion in the README](#) for why this is
- * generally not recommended). Each [KafkaAppender] is bound exactly
- * once, even if attached to multiple loggers.
+ * a `KafkaAppender` wrapped in an `AsyncAppender` - generally not
+ * recommended; see the README section "Should I wrap this in a
+ * Logback AsyncAppender?" for the loss-semantics rationale). Each
+ * [KafkaAppender] is bound exactly once, even if attached to multiple
+ * loggers.
  *
  * ## Idempotency
  *

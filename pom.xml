@@ -437,6 +437,12 @@
                 <configuration>
                     <moduleName>tabellarium</moduleName>
                     <outputDir>${project.build.directory}/dokka</outputDir>
+                    <!-- Fail on unresolved [Symbol] references (and other Dokka
+                         warnings): KDoc links are only trustworthy carriers when
+                         a red build guards them. reportUndocumented stays off, so
+                         only genuine reference/markup problems gate. Introduced
+                         per the 2026-08-29 comment audit (pass 0). -->
+                    <failOnWarning>true</failOnWarning>
                     <!-- Rendered on the module index page of the API reference. -->
                     <includes>
                         <include>${project.basedir}/docs/api-module.md</include>

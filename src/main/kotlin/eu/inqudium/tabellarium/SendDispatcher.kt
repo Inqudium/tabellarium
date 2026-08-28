@@ -88,18 +88,16 @@ import java.util.concurrent.atomic.AtomicReference
  *                      bursts, small enough to bound memory.
  * @param drainTimeoutMs Time allowed in [close] for the worker to
  *                       drain the queue by actually sending.
- * @param onWorkerDeath Invoked when the worker thread dies from a
- *                      [Throwable] the delivery loop does not handle
- *                      (an [Error] such as OOM - [Exception]s are
- *                      handled in place). Before the hook runs, the
- *                      death handler takes the dispatcher out of the
- *                      accepting state and diverts the in-flight item
- *                      plus everything queued (reason `send.error`), so
- *                      no work strands in a queue nothing drains; later
- *                      [dispatch] calls divert on the caller. The
- *                      appender reports the death to the status
- *                      manager so it does not masquerade as a slow
- *                      broker.
+ * @param onWorkerDeath Invoked when the worker thread dies - same
+ *                      trigger and death-handler protocol as the
+ *                      [FallbackDispatcher] hook (the canonical
+ *                      description lives there), except that the
+ *                      affected work is diverted to the fallback with
+ *                      reason `send.error` instead of drop-counted,
+ *                      and later [dispatch] calls divert on the
+ *                      caller. The appender reports the death to the
+ *                      status manager so it does not masquerade as a
+ *                      slow broker.
  */
 internal class SendDispatcher(
     private val topicClass: TopicClass,
@@ -168,11 +166,10 @@ internal class SendDispatcher(
     private val worker: Thread =
         Thread(::runWorker, "kafka-appender-send-dispatcher-${topicClass.tag}").apply {
             isDaemon = true
-            // An Error escaping the delivery loop kills the worker.
-            // Leave the accepting state FIRST - with the worker gone,
-            // anything accepted would strand in a queue nothing ever
-            // drains - then account for the in-flight item and divert
-            // everything already queued, and surface the death - see
+            // Death-handler protocol as in FallbackDispatcher (the
+            // canonical rationale lives there): leave the accepting
+            // state FIRST, then divert the in-flight item and the
+            // queue (reason send.error), then surface the death via
             // onWorkerDeath.
             setUncaughtExceptionHandler { _, throwable ->
                 workerDied = true
@@ -249,8 +246,10 @@ internal class SendDispatcher(
         // SENDING - the producers are still open at this point) gets
         // the full budget; only then is the worker interrupted, with a
         // short bounded wait for the interrupt to take effect. The
-        // interrupt handling mirrors the M-6 fix: an interrupted closer
-        // still runs the forced cleanup and restores its flag.
+        // interrupt handling mirrors [FallbackDispatcher.close]: an
+        // interrupted closer still runs the forced cleanup and restores
+        // its flag (finding M-6 in
+        // docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md).
         var interrupted = false
         try {
             worker.join(drainTimeoutMs)

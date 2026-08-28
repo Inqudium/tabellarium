@@ -38,10 +38,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   <environment>${STAGE}</environment>
  *   <component>${ARTIFACT_ID}</component>
  *   <cmdbId>MyApplication</cmdbId>
- *   <debug>false</debug>
- *   <appender-ref ref="FALLBACK_FILE"/>  <!-- new, optional -->
+ *   <debug>false</debug>                     <!-- optional -->
+ *   <sendQueueCapacity>1024</sendQueueCapacity>       <!-- optional -->
+ *   <includeCallerData>false</includeCallerData>      <!-- optional -->
+ *   <appender-ref ref="FALLBACK_FILE"/>      <!-- optional -->
  * </appender>
  * ```
+ *
+ * The Joran round-trip test (`JoranXmlConfigurationTest`) binds every
+ * element of this example; a new setter belongs in both.
  *
  * [debug] affects **startup diagnostics only** - it has no per-event
  * effect. A note to that effect is emitted to the status manager when

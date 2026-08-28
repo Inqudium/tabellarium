@@ -194,7 +194,7 @@ class ProducerRegistry private constructor(
         /**
          * Creates a registry that holds one producer per
          * [activeTopicClasses]. Properties for each producer are derived
-         * by [propertiesBuilder.buildFor].
+         * by [ProducerPropertiesBuilder.buildFor].
          *
          * If [producerFactory] throws while creating any producer, all
          * already-created producers are closed (with a short rollback

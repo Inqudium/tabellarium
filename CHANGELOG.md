@@ -54,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record end-to-end against an Apache Kafka container — real
   serializers, LZ4 compression, headers, partitioning key, and the
   AUDIT acks/idempotence handshake. The default test run stays offline.
+- ADR series under `docs/adr/`; ADR-0001 codifies the comment prefix
+  vocabulary (`Rationale:`, `Invariant:`, `Workaround:`, `Safety:`,
+  `Compatibility:`, `CAUTION:`), referenced from CONTRIBUTING.
+- Dokka runs with `failOnWarning`: an unresolved `[Symbol]` reference in
+  KDoc now fails the documentation build (and thereby the Docs
+  workflow), so symbolic references cannot drift silently.
+- `<includeCallerData>` is documented in the configuration guide and the
+  README element table; the Joran round-trip test now binds
+  `<sendQueueCapacity>` and `<includeCallerData>` alongside the rest of
+  the XML surface.
 
 ### Fixed
 
@@ -74,6 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kafka.appender.events.fallback` is documented as "diverted from
   Kafka" (counted also when no fallback is configured and the event is
   dropped).
+- Documentation drift found by the 2026-08-29 comment audit: the
+  `MicrometerKafkaAppenderMetrics` KDoc inventory now lists all nine
+  metrics and the correct cardinality (6 `reason` values, ~51 series
+  per instance); the README states the actual breaker defaults (10
+  half-open probes) and the correct fleet-level series estimate; the
+  `registerFallbackQueueGauges` contract describes the real bind-time,
+  repeatable call pattern; dangling KDoc references repaired.
 
 ### Security
 

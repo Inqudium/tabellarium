@@ -74,7 +74,9 @@ class SendDispatcherTest {
         @Test
         fun `should not block the calling thread while the send action is parked`() {
             // What is to be tested? The defining property of SendDispatcher
-            //   and the heart of finding H-1: dispatch() must return
+            //   and the heart of finding H-1 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md:
+            //   dispatch() must return
             //   immediately even while the send action is blocked (the
             //   real producer.send may park for up to max.block.ms when
             //   metadata or buffer space is missing).
@@ -84,7 +86,8 @@ class SendDispatcherTest {
             //   the send action deterministically; 200 ms is a generous
             //   bound for an O(1) queue offer.
             // Why is it important to test this test case? This is the
-            //   latency assertion the analysis (H-3) found missing: a
+            //   latency assertion the defect analysis found missing
+            //   (finding H-3, same report): a
             //   regression that runs the send action on the caller again
             //   would make every logging thread stall for max.block.ms
             //   per event during a broker outage.
@@ -155,7 +158,9 @@ class SendDispatcherTest {
             // Why is it important to test this test case? Without the
             //   marking, Kafka-DEBUG self-logging would re-enter the
             //   pipeline from the worker thread - no longer as unbounded
-            //   recursion (H-2 fixed that), but as a feedback loop that
+            //   recursion (fixed as finding H-2 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md),
+            //   but as a feedback loop that
             //   amplifies during broker trouble.
 
             // Given
@@ -193,7 +198,10 @@ class SendDispatcherTest {
             //   metric carries QUEUE_FULL. The latch anchors the worker
             //   so the queue state is deterministic.
             // Why is it important to test this test case? Blocking here
-            //   would resurrect H-1 through the back door; silent dropping
+            //   would resurrect the caller-blocking send through the back
+            //   door (finding H-1 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md);
+            //   silent dropping
             //   would lose events without the operator's escape hatch.
 
             // Given: worker pinned, capacity 1
@@ -278,7 +286,9 @@ class SendDispatcherTest {
         @Test
         fun `should divert the in-flight and queued events to the fallback when the drain times out`() {
             // What is to be tested? The forced-shutdown accounting, the
-            //   send-path analogue of finding M-3: the event the worker is
+            //   send-path analogue of finding M-3 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md:
+            //   the event the worker is
             //   stuck sending plus everything still queued must divert to
             //   the fallback exactly once, tagged SHUTDOWN.
             // How will the test case be deemed successful and why? Successful

@@ -165,6 +165,8 @@ Reference for every supported element:
 | `<component>`                | Yes      | string  | Service component identifier (typically `${spring.application.name}`).             |
 | `<cmdbId>`                   | Yes      | string  | CMDB identifier of the deploying instance.                                         |
 | `<debug>`                    | No       | boolean | Startup diagnostics only: logs active topic classes, fallback configuration, and the generated producer settings (derived `client.id`, applied class overrides) to Logback's status manager. No per-event effect. |
+| `<sendQueueCapacity>`        | No       | int     | Capacity of each per-topic-class send queue (default 1024). Overflow diverts to the fallback (reason `queue.full`) instead of blocking. |
+| `<includeCallerData>`        | No       | boolean | Captures caller data on the logging thread before the asynchronous hand-off (default false); only relevant when a fallback layout uses `%caller`. |
 | `<appender-ref ref="..."/>`  | No       | ref     | Single fallback appender — see [Resilience](#resilience).                          |
 
 Missing or blank values for the five required elements cause the
@@ -262,9 +264,11 @@ Three resilience mechanisms run independently per topic class:
 1. **Per-class circuit breaker.** A Resilience4j `CircuitBreaker` is
    instantiated per active topic class. A stuck audit-topic broker does
    not throttle technical-log delivery, and vice versa. Default
-   thresholds (tuned for logging volume): 50% failure rate over a
-   sliding window of 20 calls, 30 second cooldown in open state, 3
-   probe calls in half-open. Operators can override per class by
+   thresholds (tuned for logging volume, canonical in the
+   [configuration guide](docs/config/kafka-appender-config-guide.md)):
+   50% failure rate over a sliding window of 20 calls, 30 second
+   cooldown in open state, 10 probe calls in half-open, probes spread
+   5 ms apart. Operators can override per class by
    pre-registering a `CircuitBreakerConfig` under the name
    `kafka-appender-audit` / `-functional` / `-technical` / `-performance`
    on the registry.
@@ -565,7 +569,7 @@ Micrometer on the classpath and emits no metrics until
 `performance`.
 
 Cardinality budget per appender instance: ~51 time series.
-At 100 microservices in a shared Prometheus this is ~3 500 series —
+At 100 microservices in a shared Prometheus this is ~5 100 series —
 well within the default cardinality budget.
 
 ### Additional bindings

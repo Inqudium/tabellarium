@@ -1471,8 +1471,10 @@ class KafkaAppenderTest {
 
         @Test
         fun `should return from doAppend while producer send is blocked`() {
-            // What is to be tested? The end-to-end H-1 guarantee: with the
-            //   production (asynchronous) dispatch, doAppend returns
+            // What is to be tested? The end-to-end never-block guarantee
+            //   (finding H-1 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md):
+            //   with the asynchronous dispatch, doAppend returns
             //   immediately even while producer.send is parked - the
             //   situation a broker outage creates for up to max.block.ms
             //   per send.
@@ -1482,7 +1484,8 @@ class KafkaAppenderTest {
             //   than the block duration. The latch anchors the worker, so
             //   the assertion is deterministic, not timing-lucky.
             // Why is it important to test this test case? This is the
-            //   missing latency assertion from finding H-3: every prior
+            //   missing latency assertion from finding H-3 (same report):
+            //   every prior
             //   test used an auto-completing MockProducer that never
             //   blocks, so a synchronous send path stayed green.
 
@@ -1939,7 +1942,9 @@ class KafkaAppenderTest {
             //   metrics are the operator's primary broker-outage signal;
             //   this pins both their presence (now independent of the
             //   optional resilience4j-micrometer bridge) and the tag that
-            //   finding M-5 identified as missing.
+            //   finding M-5 in
+            //   docs/assessment/CODE_ANALYSIS-2026-08-28T22-20-43.md
+            //   identified as missing.
 
             // Given
             val registry = SimpleMeterRegistry()
@@ -2010,7 +2015,8 @@ class KafkaAppenderTest {
         @Test
         fun `should keep two appenders' circuit-breaker meters apart on a shared registry`() {
             // What is to be tested? The multi-instance scenario of finding
-            //   M-5: two KafkaAppenders bound to the same MeterRegistry
+            //   M-5 (same report as above): two KafkaAppenders bound to
+            //   the same MeterRegistry
             //   must produce distinguishable breaker meters, and stopping
             //   one must not tear down the observability of the other.
             // How will the test case be deemed successful and why? Successful

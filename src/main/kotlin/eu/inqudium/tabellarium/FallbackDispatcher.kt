@@ -63,9 +63,16 @@ import java.util.concurrent.atomic.AtomicReference
  * @param onWorkerDeath Invoked when the worker thread dies from a
  *                      [Throwable] the delivery loop does not handle
  *                      (an [Error] such as OOM - [Exception]s are
- *                      handled in place). The appender reports this to
- *                      the status manager so a dead worker does not
- *                      masquerade as a merely slow fallback appender.
+ *                      handled in place). This is the canonical
+ *                      description of the death-handler protocol:
+ *                      leave the accepting state FIRST (with the
+ *                      worker gone, anything accepted would strand in
+ *                      a queue nothing ever drains), then account for
+ *                      the in-flight event plus everything queued,
+ *                      then invoke this hook. The appender reports the
+ *                      death to the status manager so a dead worker
+ *                      does not masquerade as a merely slow fallback
+ *                      appender.
  */
 internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
@@ -128,11 +135,10 @@ internal class FallbackDispatcher(
         Thread(::runWorker, "kafka-appender-fallback-dispatcher").apply {
             isDaemon = true
             // An Error escaping the delivery loop kills the worker.
-            // Leave the accepting state FIRST - with the worker gone,
-            // anything accepted would strand in a queue nothing ever
-            // drains - then count the event it was carrying plus
-            // everything queued as dropped, and surface the death -
-            // see onWorkerDeath. Later enqueue calls see
+            // Death-handler protocol (rationale in the onWorkerDeath
+            // param KDoc): leave the accepting state FIRST, then count
+            // the in-flight event plus everything queued as dropped,
+            // then surface the death. Later enqueue calls see
             // running=false and count on the caller.
             setUncaughtExceptionHandler { _, throwable ->
                 running = false

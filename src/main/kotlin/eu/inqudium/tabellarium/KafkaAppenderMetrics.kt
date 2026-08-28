@@ -89,14 +89,14 @@ interface KafkaAppenderMetrics {
     fun fallbackDispatcherDropped()
 
     /**
-     * Called once at [KafkaAppender.start] to register gauges that
-     * report the dispatcher's current queue depth and capacity. The
-     * [queueSize] supplier is read on each metric scrape; it must be
-     * cheap and non-blocking. The [capacity] is the fixed maximum.
-     *
-     * Implementations that bind to Micrometer typically register
-     * `Gauge.builder("kafka.appender.fallback.queue.size", queueSize)`
-     * once and reuse the registration. The [NO_OP] silently ignores.
+     * Called when the [FallbackDispatcher] is wired to this metrics
+     * instance - at [KafkaAppender.bindMeterRegistry] time, and again
+     * on every re-bind - to register gauges that report the
+     * dispatcher's current queue depth and capacity. Implementations
+     * must therefore tolerate repeated calls (replace, do not
+     * duplicate). The [queueSize] supplier is read on each metric
+     * scrape; it must be cheap and non-blocking. The [capacity] is
+     * the fixed maximum. The [NO_OP] silently ignores.
      */
     fun registerFallbackQueueGauges(
         queueSize: () -> Int,

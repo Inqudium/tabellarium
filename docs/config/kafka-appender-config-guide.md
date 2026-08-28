@@ -67,6 +67,7 @@ Joran binds each to a setter of the matching name on the appender.
 | `<cmdbId>`                  |   yes    | `String` (trimmed, non-blank)          | CMDB identifier of the deploying instance. Emitted as the `meta.cmdbId` header. |
 | `<debug>`                   |    no    | `Boolean` (default `false`)            | Startup diagnostics only — **no per-event effect**. See below. |
 | `<sendQueueCapacity>`       |    no    | `Int` (default `1024`, must be > 0)    | Capacity of each per-topic-class send queue — the bounded hand-off between logging threads and the worker that performs `producer.send`. Overflow diverts to the fallback (reason `queue.full`) instead of blocking. |
+| `<includeCallerData>`       |    no    | `Boolean` (default `false`)            | Captures caller data (class/method/line of the logging site) on the caller's thread before the event crosses to the asynchronous workers — the same opt-in contract as Logback's `AsyncAppender`. Only relevant when a fallback appender's layout consumes `%caller`; the stack walk is expensive, so it stays off by default. |
 | `<appender-ref ref="…"/>`   |    no    | fallback `Appender<ILoggingEvent>`     | Single fallback slot; first registration wins. See [§7](#7-resilience-circuit-breaker-throttle-fallback). |
 
 ¹ `<kafkaProducerProperties>` may technically be omitted, but a producer
@@ -754,6 +755,7 @@ bound.
 | Circuit breaker: half-open permitted calls   | `10`                             | code |
 | Half-open probe gap                          | `5 ms`                           | code |
 | Send dispatcher queue capacity (per class)   | `1024`                           | XML (`<sendQueueCapacity>`) |
+| Caller-data capture before async hand-off    | `false`                          | XML (`<includeCallerData>`) |
 | Send dispatcher drain on stop (parallel)     | `1 s` drain + margin, shared     | code |
 | Fallback dispatcher queue capacity           | `1024`                           | code |
 | Fallback dispatcher shutdown timeout         | `5 s`                            | code |

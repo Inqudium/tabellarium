@@ -40,9 +40,8 @@ class HalfOpenThrottleTest {
      * counters.
      */
     private fun newBreaker(name: String = "test"): CircuitBreaker {
-        // Manual transitions only work when the breaker has at least
-        // one call recorded; a fresh breaker starts in CLOSED and
-        // accepts transitionToOpenState directly.
+        // A fresh breaker starts in CLOSED and accepts
+        // transitionToOpenState directly - no recorded calls needed.
         return CircuitBreaker.of(
             name,
             CircuitBreakerConfig
@@ -234,9 +233,9 @@ class HalfOpenThrottleTest {
             //   one probe per gap window" - concurrent callers must not
             //   sneak through.
             // Why is it important to test this test case? The throttle
-            //   sits in the hot path of every log event in the bank's
-            //   microservices. A race that admits 2 or 3 probes per
-            //   gap would mean the throttle silently loses its
+            //   sits in the hot path of every log event of a
+            //   high-volume service. A race that admits 2 or 3 probes
+            //   per gap would mean the throttle silently loses its
             //   guarantee under load - the precise condition (high
             //   load) where it matters most.
 

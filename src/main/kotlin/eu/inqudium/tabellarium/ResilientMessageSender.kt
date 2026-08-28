@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit
  *
  * 1. Asks its circuit breaker for permission via
  *    [CircuitBreaker.tryAcquirePermission]. Denied → routes the original
- *    [ILoggingEvent] to [fallbackAppender]; never invokes the producer.
+ *    [ILoggingEvent] to the [fallbackDispatcher]; never invokes the producer.
  * 2. Builds the [ProducerRecord] (topic + key + value + headers) and
  *    invokes `producer.send` with a callback.
  *      - Callback success → [CircuitBreaker.onSuccess].
@@ -266,10 +266,8 @@ internal class ResilientMessageSender(
     ): ProducerRecord<ByteArray, ByteArray> {
         val key = enrichment.partitioningKey?.toByteArray(Charsets.UTF_8)
         val record = ProducerRecord<ByteArray, ByteArray>(topicName, null, null, key, payload)
-        // Header values are already UTF-8-encoded by the MessageEnricher
-        // at construction time. We pass the arrays by reference - Kafka
-        // does not defensive-copy them, so the enricher and downstream
-        // code treat them as read-only by convention.
+        // The pre-encoded header arrays are passed by reference and are
+        // read-only by convention - see [EnrichedRecord.headers].
         enrichment.headers.forEach { (name, valueBytes) ->
             record.headers().add(name, valueBytes)
         }

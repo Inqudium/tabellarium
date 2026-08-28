@@ -30,19 +30,27 @@ import java.util.concurrent.atomic.AtomicReference
  * | `kafka.appender.fallback.dropped`   | Counter | (only the common `appender` tag)  |
  * | `kafka.appender.fallback.queue.size`     | Gauge   | (only the common `appender` tag)  |
  * | `kafka.appender.fallback.queue.capacity` | Gauge   | (only the common `appender` tag)  |
+ * | `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     |
+ * | `kafka.appender.send.queue.capacity`     | Gauge   | `topic.class`                     |
  *
- * Cardinality budget: with `topic.class` having 4 values (AUDIT,
- * FUNCTIONAL, TECHNICAL, PERFORMANCE), `reason` having 4 values, and
- * `appender` typically a single value per application, the worst-case
- * series count per appender instance is:
+ * The canonical, operator-facing inventory (including the tag value
+ * sets) is the metrics overview under `docs/metrics/`; this table
+ * mirrors it for implementation readers and must be updated together
+ * with it.
+ *
+ * Cardinality budget, derived from the enum sizes ([TopicClass]: 4
+ * values, [KafkaAppenderMetrics.FallbackReason]: 6,
+ * [KafkaAppenderMetrics.SendOutcome]: 2), with `appender` typically a
+ * single value per application:
  *
  * - `events.accepted`/`events.dispatched`: 4 each → 8 series
- * - `events.fallback`: 4 × 4 = 16 series
+ * - `events.fallback`: 4 × 6 = 24 series
  * - `send.duration`: 4 × 2 = 8 series
  * - `fallback.*`: 3 series
+ * - `send.queue.*`: 4 × 2 = 8 series
  *
- * Total: 35 series per appender instance. At ~100 microservices in a
- * Prometheus this is 3 500 series - well within Prometheus' default
+ * Total: 51 series per appender instance. At ~100 microservices in a
+ * Prometheus this is ~5 100 series - well within Prometheus' default
  * cardinality budget.
  *
  * ## Pre-resolution
