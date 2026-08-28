@@ -43,6 +43,10 @@ Measures already in place, so you know what is expected behaviour:
 - **Log forging resistance is an encoder property.** The appender ships
   the encoder's bytes verbatim; a JSON encoder is recommended for that
   reason, not only for parseability.
+- **Dependencies are scanned continuously.** CI builds a CycloneDX SBOM
+  of the resolved graph and fails on any advisory known to OSV — on
+  every change and weekly, so newly published advisories surface without
+  a commit. Dependabot proposes the version bumps.
 
 Things outside this library's control, which the consuming application
 owns: what it puts into MDC and log messages, its TLS configuration, and

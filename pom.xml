@@ -70,6 +70,8 @@
         <!-- Third Party Dependencies (not managed by the Boot BOM) -->
         <resilience4j.version>2.4.0</resilience4j.version>
         <logstash-encoder.version>9.0</logstash-encoder.version>
+        <!-- Security pin; see the dependencyManagement entry for the rationale. -->
+        <lz4-java.version>1.11.2</lz4-java.version>
 
         <!--
             JUnit tags excluded from the default test run. The external-contract
@@ -84,6 +86,7 @@
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
         <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
+        <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -96,6 +99,30 @@
                 <version>${resilience4j.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <!--
+                Security pin, raised above the version kafka-clients resolves on its own.
+
+                lz4-java <= 1.11.0 crashes the JVM when its JNI XXHash methods are called
+                with an invalid array reference or an invalid off/len range
+                (CVE-2026-59949 / GHSA-xx22-p4ch-683r, fixed in 1.11.1). Our own exposure
+                is nil - the advisory explicitly excludes the case where only the array
+                CONTENTS are attacker-controlled, which is exactly how Kafka's LZ4 codec
+                uses it - but the library ships this transitively to every consumer, whose
+                other code shares the classpath and whose scanners would flag it. Fixing it
+                here removes both.
+
+                Relevant because lz4 is this appender's default compression.type for every
+                topic class (see TopicClass). Caveat: the offline test suite never performs
+                real LZ4 compression, so this pin is verified to resolve and build, not to
+                round-trip. Dependabot keeps it current; drop the pin once kafka-clients
+                resolves 1.11.1 or newer by itself.
+            -->
+            <dependency>
+                <groupId>at.yawk.lz4</groupId>
+                <artifactId>lz4-java</artifactId>
+                <version>${lz4-java.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -350,6 +377,30 @@
                         <sourceRoot>${project.basedir}/src/main/kotlin</sourceRoot>
                         <sourceRoot>${project.basedir}/src/test/kotlin</sourceRoot>
                     </sourceRoots>
+                </configuration>
+            </plugin>
+
+            <!--
+                CycloneDX SBOM of the RESOLVED dependency graph, generated on demand with
+                `mvn cyclonedx:makeBom` (deliberately not bound to a lifecycle phase, so
+                `mvn verify` stays fast). The CI dependency scan consumes target/bom.json.
+
+                Why an SBOM rather than scanning pom.xml directly: most versions here are
+                managed by the Spring Boot BOM and therefore do not appear in pom.xml at
+                all. Only the resolved graph states what actually ships - which is exactly
+                what a vulnerability scan has to look at.
+
+                Test-scoped dependencies are excluded (the plugin's default): they never
+                reach a consumer, and an advisory in a test-only library should not gate
+                the build.
+            -->
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx-maven-plugin.version}</version>
+                <configuration>
+                    <outputFormat>json</outputFormat>
+                    <schemaVersion>1.6</schemaVersion>
                 </configuration>
             </plugin>
 

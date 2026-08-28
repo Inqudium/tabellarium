@@ -17,6 +17,32 @@ mvn -Dtest='*MessageEnricher*' test             # pattern-match
 `mvn verify` must pass before a pull request is opened — it runs the full
 test suite and the [ktlint](https://pinterest.github.io/ktlint/) check.
 
+### Dependency vulnerability scan
+
+CI additionally scans the **resolved** dependency graph against the
+[OSV](https://osv.dev/) database and fails on any known advisory. It runs
+on every push and pull request, and weekly — a newly published advisory
+has to surface even when nothing was committed. To reproduce it locally
+(requires a container runtime):
+
+```bash
+mvn cyclonedx:makeBom                 # SBOM of the resolved graph → target/bom.json
+docker run --rm -v "$PWD:/repo" \
+  ghcr.io/google/osv-scanner-action:v2.5.1 --lockfile=/repo/target/bom.json
+```
+
+The scan uses an SBOM rather than `pom.xml` because most versions come
+from the Spring Boot BOM and never appear in `pom.xml`; test-scoped
+dependencies are excluded, since they reach no consumer.
+
+When an advisory appears, prefer fixing it — usually a version pin in
+`<dependencyManagement>` even when the affected artifact is transitive
+(see the `lz4-java` entry in `pom.xml` for the shape, including the
+rationale comment such a pin is expected to carry). Only if an advisory
+is genuinely unfixable *and* provably not exploitable here, record it in
+an `osv-scanner.toml` with the reason and the date it was assessed — do
+not remove the gate.
+
 ## Code style
 
 - Kotlin sources follow the default ktlint rule set; the build fails on

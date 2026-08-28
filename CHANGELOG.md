@@ -90,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI hardening: explicit least-privilege `permissions` on the CI
   workflow, and all GitHub Actions pinned to commit SHAs instead of
   mutable tags.
+- CI now scans the resolved dependency graph against the OSV database
+  (CycloneDX SBOM via `cyclonedx-maven-plugin` + OSV-Scanner) on every
+  push and pull request and weekly, failing the build on any known
+  advisory; the SBOM is retained as a build artifact.
+- `lz4-java` pinned to 1.11.2, above the version `kafka-clients`
+  resolves: versions up to 1.11.0 can crash the JVM through their JNI
+  XXHash range handling (CVE-2026-59949). Not exploitable through this
+  appender — the advisory excludes the attacker-controls-contents-only
+  case, which is how Kafka's LZ4 codec uses it — but it shipped
+  transitively to every consumer.
 
 ### Changed
 
