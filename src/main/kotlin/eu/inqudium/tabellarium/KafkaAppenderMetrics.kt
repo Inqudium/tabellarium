@@ -36,7 +36,13 @@ import java.time.Duration
 interface KafkaAppenderMetrics {
     /**
      * Recorded once per event that enters [KafkaAppender.append].
-     * Counted regardless of what happens downstream.
+     * Counted regardless of what happens downstream, so
+     * accepted = dispatched + fallback holds. When a hot-path failure
+     * occurs before routing resolved the topic class, the event is
+     * counted under [TopicClass.TECHNICAL] - the same default the
+     * failure metric uses. Events dropped by the appender's reentry
+     * and self-logging guards never enter the pipeline and are not
+     * counted.
      */
     fun eventAccepted(topicClass: TopicClass)
 
@@ -75,9 +81,10 @@ interface KafkaAppenderMetrics {
 
     /**
      * Recorded by the [FallbackDispatcher] every time an event is
-     * dropped because either the dispatcher's queue was full at
-     * [FallbackDispatcher.enqueue] time, or the worker did not finish
-     * draining within the shutdown timeout.
+     * dropped because the dispatcher's queue was full at
+     * [FallbackDispatcher.enqueue] time, the worker died with events
+     * queued or in flight, or the worker did not finish draining
+     * within the shutdown timeout.
      */
     fun fallbackDispatcherDropped()
 
@@ -123,7 +130,11 @@ interface KafkaAppenderMetrics {
         /** Half-open throttle gate; probe gap not yet elapsed. */
         THROTTLE("throttle"),
 
-        /** producer.send() either threw synchronously or its callback reported an error. */
+        /**
+         * producer.send() either threw synchronously, its callback
+         * reported an error, or the [SendDispatcher]'s worker died -
+         * delivery capability was lost to an error either way.
+         */
         SEND_ERROR("send.error"),
 
         /** Hot-path exception before send was even attempted (encoder, routing, OOM). */

@@ -396,6 +396,69 @@ class SendDispatcherTest {
                 dispatcher.close()
             }
         }
+
+        @Test
+        fun `should divert queued and later work instead of stranding it after a worker death`() {
+            // What is to be tested? Whether a worker death transitions the
+            //   dispatcher out of the accepting state: events already
+            //   queued behind the dying item must be diverted by the
+            //   death handler, and a dispatch after the death must divert
+            //   on the caller instead of filling a queue no worker will
+            //   ever drain.
+            // How will the test case be deemed successful and why? Successful
+            //   if the in-flight, the queued, and the post-death event all
+            //   reach the fallback, every one counted with reason
+            //   send.error. The latch pins the queued event behind the
+            //   in-flight one deterministically.
+            // Why is it important to test this test case? Before the fix,
+            //   running stayed true after a worker death - up to the full
+            //   queue capacity could strand silently until shutdown, and
+            //   the loss surfaced only once the queue filled as
+            //   misleading queue.full diversions.
+
+            // Given: a send action that parks, then dies with an Error
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val death = AtomicReference<Throwable?>()
+            val recorder = RecordingAppender()
+            val metrics = RecordingMetrics()
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = {
+                        entered.countDown()
+                        release.await()
+                        throw AssertionError("simulated worker death")
+                    },
+                    fallbackDispatcher = newFallback(recorder),
+                    onWorkerDeath = { death.set(it) },
+                )
+            dispatcher.setMetrics(metrics)
+            try {
+                // When: one item in flight, one queued behind it
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("in-flight"))
+                assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("queued"))
+                release.countDown()
+                pollUntil { death.get() != null }
+
+                // Then: the death handler diverted both the in-flight and
+                // the queued item
+                assertThat(recorder.events.map { it.formattedMessage })
+                    .containsExactlyInAnyOrder("in-flight", "queued")
+
+                // And: a dispatch after the death diverts immediately on
+                // the caller (synchronous fallback needs no polling)
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("after-death"))
+                assertThat(recorder.events.map { it.formattedMessage })
+                    .containsExactlyInAnyOrder("in-flight", "queued", "after-death")
+                assertThat(metrics.fallbackReasons)
+                    .hasSize(3)
+                    .containsOnly(KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+            } finally {
+                dispatcher.close()
+            }
+        }
     }
 
     @Nested

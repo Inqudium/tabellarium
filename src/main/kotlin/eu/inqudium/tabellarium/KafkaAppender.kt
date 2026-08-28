@@ -66,9 +66,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   are logged **once** (via [AtomicBoolean]-guarded `addError`) and
  *   route to [fallbackAppender] if configured; subsequent errors are
  *   suppressed to prevent log storms.
- * - **[stop]** first closes the [SendDispatcher]s (their drain still
- *   sends through the open producers; the remainder diverts to the
- *   fallback), then the [ProducerRegistry] with its configured
+ * - **[stop]** first closes Logback's ingress gate (`isStarted`) so no
+ *   new event enters the teardown, then closes the [SendDispatcher]s
+ *   (their drain still sends through the open producers; the remainder
+ *   diverts to the fallback), then the [ProducerRegistry] with its configured
  *   timeout, then the fallback dispatcher, stops the encoder, and
  *   completes via `super.stop()`. Per-resource close failures are
  *   recorded as warnings but do not prevent the rest of the shutdown
@@ -125,6 +126,18 @@ class KafkaAppender :
      * their configuration.
      */
     var debug: Boolean = false
+
+    /**
+     * When `true`, the caller data (class, method, line of the logging
+     * site) is captured on the caller's thread before the event crosses
+     * to the asynchronous send/fallback workers - the same opt-in
+     * contract as Logback's own `AsyncAppender`. Off by default because
+     * the stack walk is expensive relative to the rest of the hot path.
+     * Only relevant when a fallback appender's layout consumes
+     * `%caller`; without the flag, caller data computed on a worker
+     * thread would point at the worker, not the logging site.
+     */
+    var includeCallerData: Boolean = false
 
     /**
      * Optional Logback appender invoked when the circuit is open or a
@@ -283,9 +296,25 @@ class KafkaAppender :
         }
         stopExecuted.set(false)
 
+        // Start the encoder BEFORE the pipeline exists: encoders are
+        // self-contained, so a failing encoder.start() aborts the
+        // startup while there is nothing to roll back yet. Logback
+        // start() methods are idempotent, so starting an already-started
+        // encoder is safe - we start it ourselves to handle the case
+        // where Logback's outer initialization order hasn't done so.
+        try {
+            checkNotNull(encoder) { "encoder was validated non-null in validateConfiguration" }.start()
+        } catch (e: Exception) {
+            addError("Failed to start encoder (${e.javaClass.name}): ${e.message}", e)
+            return
+        }
+
         try {
             buildPipeline()
         } catch (e: Exception) {
+            // buildPipeline rolled its own resources back; the encoder
+            // started above is the only thing left to release.
+            runCatching { encoder?.stop() }
             // The exception text originates in the Kafka client and is
             // built from credential-bearing configuration. Kafka masks
             // Password-typed values in its own output, but that text is
@@ -315,11 +344,6 @@ class KafkaAppender :
         if (debug) {
             emitDebugDiagnostics()
         }
-
-        // Logback start() methods are idempotent, so starting an already-
-        // started encoder is safe - we start it ourselves to handle the
-        // case where Logback's outer initialization order hasn't done so.
-        checkNotNull(encoder) { "encoder was validated non-null in validateConfiguration" }.start()
 
         super.start()
     }
@@ -359,7 +383,7 @@ class KafkaAppender :
                 cmdbId = cmdbId,
                 environment = environment,
             )
-        producerRegistry =
+        val registry =
             ProducerRegistry.create(
                 propertiesBuilder =
                     ProducerPropertiesBuilder(
@@ -369,67 +393,85 @@ class KafkaAppender :
                 activeTopicClasses = topicTable.activeTopicClasses,
                 producerFactory = producerFactory,
             )
-        producerClientIds = producerRegistry.clientIds
-        // Wrap the fallback appender in a dispatcher so the Kafka I/O
-        // thread is never blocked on the fallback's downstream I/O.
-        // See FallbackDispatcher KDoc for the rationale.
-        fallbackDispatcher =
-            fallbackAppender?.let {
-                FallbackDispatcher(
-                    it,
-                    onWorkerDeath = { t ->
-                        addWarn(
-                            "Fallback dispatcher worker died from ${t.javaClass.name}; " +
-                                "queued fallback events will be dropped and counted.",
-                            t,
-                        )
-                    },
-                    synchronous = useSynchronousFallbackForTests,
+        // From here on real resources exist (producers, worker threads).
+        // Any later construction failure rolls them back in reverse
+        // ownership order - mirroring stop() - so a failed or reloaded
+        // configuration never leaks producers or daemon workers that
+        // only an external stop() call could reach. The fields are
+        // published only on full success.
+        var newFallbackDispatcher: FallbackDispatcher? = null
+        val newSendDispatchers = LinkedHashMap<TopicClass, SendDispatcher>()
+        try {
+            // Wrap the fallback appender in a dispatcher so the Kafka I/O
+            // thread is never blocked on the fallback's downstream I/O.
+            // See FallbackDispatcher KDoc for the rationale.
+            newFallbackDispatcher =
+                fallbackAppender?.let {
+                    FallbackDispatcher(
+                        it,
+                        onWorkerDeath = { t ->
+                            addWarn(
+                                "Fallback dispatcher worker died from ${t.javaClass.name}; " +
+                                    "queued fallback events will be dropped and counted.",
+                                t,
+                            )
+                        },
+                        synchronous = useSynchronousFallbackForTests,
+                    )
+                }
+            val sender =
+                ResilientMessageSender(
+                    producerRegistry = registry,
+                    circuitBreakerRegistry = circuitBreakerRegistry,
+                    fallbackDispatcher = newFallbackDispatcher,
                 )
+            // One send dispatcher per active class: producer.send runs on
+            // the dispatcher's worker, never on the logging caller. The
+            // per-class split mirrors the producer/breaker isolation - a
+            // stalled AUDIT send cannot delay TECHNICAL delivery.
+            registry.activeTopicClasses.forEach { topicClass ->
+                newSendDispatchers[topicClass] =
+                    SendDispatcher(
+                        topicClass = topicClass,
+                        sendAction = { pending ->
+                            // claimDiversion shares the per-item exactly-once
+                            // guard with the dispatcher, so a forced-shutdown
+                            // divert and the sender's own error routing can
+                            // never both deliver the same event.
+                            sender.send(
+                                topicClass,
+                                pending.topicName,
+                                pending.payload,
+                                pending.enrichment,
+                                pending.originalEvent,
+                                claimDiversion = pending::tryClaimDiversion,
+                            )
+                        },
+                        fallbackDispatcher = newFallbackDispatcher,
+                        reentryGuard = inAppend,
+                        queueCapacity = sendQueueCapacity,
+                        onWorkerDeath = { t ->
+                            addWarn(
+                                "Send dispatcher worker for $topicClass died from ${t.javaClass.name}; " +
+                                    "queued and further $topicClass events divert to the fallback " +
+                                    "(reason send.error).",
+                                t,
+                            )
+                        },
+                        synchronous = useSynchronousSendForTests,
+                    )
             }
-        messageSender =
-            ResilientMessageSender(
-                producerRegistry = producerRegistry,
-                circuitBreakerRegistry = circuitBreakerRegistry,
-                fallbackDispatcher = fallbackDispatcher,
-            )
-        // One send dispatcher per active class: producer.send runs on
-        // the dispatcher's worker, never on the logging caller. The
-        // per-class split mirrors the producer/breaker isolation - a
-        // stalled AUDIT send cannot delay TECHNICAL delivery.
-        val sender = messageSender
-        sendDispatchers =
-            producerRegistry.activeTopicClasses.associateWith { topicClass ->
-                SendDispatcher(
-                    topicClass = topicClass,
-                    sendAction = { pending ->
-                        // claimDiversion shares the per-item exactly-once
-                        // guard with the dispatcher, so a forced-shutdown
-                        // divert and the sender's own error routing can
-                        // never both deliver the same event.
-                        sender.send(
-                            topicClass,
-                            pending.topicName,
-                            pending.payload,
-                            pending.enrichment,
-                            pending.originalEvent,
-                            claimDiversion = pending::tryClaimDiversion,
-                        )
-                    },
-                    fallbackDispatcher = fallbackDispatcher,
-                    reentryGuard = inAppend,
-                    queueCapacity = sendQueueCapacity,
-                    onWorkerDeath = { t ->
-                        addWarn(
-                            "Send dispatcher worker for $topicClass died from ${t.javaClass.name}; " +
-                                "further $topicClass events will divert to the fallback once the " +
-                                "queue fills (reason queue.full).",
-                            t,
-                        )
-                    },
-                    synchronous = useSynchronousSendForTests,
-                )
-            }
+            producerRegistry = registry
+            producerClientIds = registry.clientIds
+            fallbackDispatcher = newFallbackDispatcher
+            messageSender = sender
+            sendDispatchers = newSendDispatchers
+        } catch (e: Exception) {
+            newSendDispatchers.values.forEach { dispatcher -> runCatching { dispatcher.close() } }
+            runCatching { registry.close() }
+            newFallbackDispatcher?.let { dispatcher -> runCatching { dispatcher.close() } }
+            throw e
+        }
     }
 
     /**
@@ -552,6 +594,25 @@ class KafkaAppender :
         var topicClassForFailure: TopicClass? = null
         inAppend.set(true)
         try {
+            // Freeze the event's lazy state (formatted message, thread
+            // name, MDC snapshot) on the caller's thread: the event
+            // crosses to the send worker and potentially to the fallback
+            // worker, and Logback's deferred-processing contract requires
+            // materializing those fields before any asynchronous hand-off
+            // - otherwise a fallback layout could observe late-mutated
+            // arguments or another thread's context. Caller data is
+            // deliberately opt-in (see includeCallerData).
+            try {
+                event.prepareForDeferredProcessing()
+            } catch (_: RuntimeException) {
+                // A LoggerContext without a bound MDC adapter (possible
+                // in embedded setups) throws from the MDC
+                // materialization; deliver the event as-is rather than
+                // failing the hot path.
+            }
+            if (includeCallerData) {
+                event.callerData
+            }
             // Non-null by the start() gate: append only runs on a started
             // appender, and start() refuses without an encoder.
             val payload = checkNotNull(encoder).encode(event)
@@ -585,6 +646,15 @@ class KafkaAppender :
             // dimensionality stable instead of introducing a null/unknown
             // category that would split series.)
             val cls = topicClassForFailure ?: TopicClass.TECHNICAL
+            if (topicClassForFailure == null) {
+                // The failure hit before routing resolved a class, so
+                // eventAccepted was not recorded yet. Record it here (with
+                // the same TECHNICAL default as the failure metric) so the
+                // accepted counter keeps its "every event entering append"
+                // contract and accepted = dispatched + fallback stays
+                // conserved on this path too.
+                m.eventAccepted(cls)
+            }
             m.eventFallback(cls, KafkaAppenderMetrics.FallbackReason.ENCODER_ERROR)
             // Async via dispatcher: even from the hot path, we avoid
             // blocking the caller thread (typically a Logback AsyncAppender
@@ -603,6 +673,16 @@ class KafkaAppender :
             super.stop()
             return
         }
+        // Close Logback's ingress gate FIRST: super.stop() flips the
+        // volatile isStarted that doAppend checks, so no new event can
+        // enter append() while the teardown below closes dispatchers,
+        // producers, fallback, and encoder. The teardown is bounded but
+        // can take seconds; with the gate still open, concurrent logging
+        // would target progressively closed resources. (An append that
+        // already passed the gate can still overlap the teardown for
+        // microseconds; the dispatchers' own post-close accounting
+        // covers that residual window.)
+        super.stop()
         metricsBindings.unbind()
         metrics = KafkaAppenderMetrics.NO_OP
         // Close the send dispatchers BEFORE the producer registry: their
@@ -652,7 +732,6 @@ class KafkaAppender :
         } catch (e: Exception) {
             addWarn("Error stopping encoder: ${e.message}", e)
         }
-        super.stop()
     }
 
     /**

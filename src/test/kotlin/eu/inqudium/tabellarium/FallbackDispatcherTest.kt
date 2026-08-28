@@ -7,6 +7,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -398,6 +399,65 @@ class FallbackDispatcherTest {
                 pollUntil { death.get() != null }
                 assertThat(death.get()).hasMessage("simulated fallback death")
                 assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+
+                // And: the dispatcher left the accepting state - a later
+                // enqueue is rejected and counted instead of stranding in
+                // a queue no worker will ever drain
+                assertThat(dispatcher.enqueue(newTestLoggingEvent(message = "after-death"))).isFalse()
+                assertThat(dispatcher.droppedEventCount).isEqualTo(2L)
+            } finally {
+                dispatcher.close()
+            }
+        }
+
+        @Test
+        fun `should count queued events as dropped when the worker dies`() {
+            // What is to be tested? The queue accounting of a worker
+            //   death: events queued behind the dying delivery must be
+            //   counted as dropped by the death handler itself, not first
+            //   at some later close().
+            // How will the test case be deemed successful and why? Successful
+            //   if after the death both the in-flight and the queued event
+            //   are in droppedEventCount. The latch pins the queued event
+            //   behind the in-flight one deterministically.
+            // Why is it important to test this test case? Before the fix,
+            //   queued events stayed uncounted (and new ones kept being
+            //   accepted) until shutdown - in a long-lived process the
+            //   loss stayed invisible to operators indefinitely.
+
+            // Given: an appender that parks, then dies with an Error
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val death = AtomicReference<Throwable?>()
+            val dyingAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = testContext
+                        start()
+                    }
+
+                    override fun append(event: ILoggingEvent) {
+                        entered.countDown()
+                        release.await()
+                        throw AssertionError("simulated fallback death")
+                    }
+                }
+            val dispatcher =
+                FallbackDispatcher(
+                    fallbackAppender = dyingAppender,
+                    onWorkerDeath = { death.set(it) },
+                )
+            try {
+                // When: one event in flight, one queued behind it
+                dispatcher.enqueue(newTestLoggingEvent(message = "in-flight"))
+                assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+                dispatcher.enqueue(newTestLoggingEvent(message = "queued"))
+                release.countDown()
+                pollUntil { death.get() != null }
+
+                // Then: the death handler counted the in-flight and the
+                // queued event
+                assertThat(dispatcher.droppedEventCount).isEqualTo(2L)
             } finally {
                 dispatcher.close()
             }

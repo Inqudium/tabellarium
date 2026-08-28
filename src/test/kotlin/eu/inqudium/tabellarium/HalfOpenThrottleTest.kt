@@ -250,24 +250,24 @@ class HalfOpenThrottleTest {
             val threadCount = 16
             val admitted = AtomicInteger(0)
             val startLatch = CountDownLatch(1)
-            val doneLatch = CountDownLatch(threadCount)
             val executor = Executors.newFixedThreadPool(threadCount)
             try {
-                repeat(threadCount) {
-                    executor.submit {
-                        try {
+                val futures =
+                    (1..threadCount).map {
+                        executor.submit {
                             startLatch.await()
                             if (throttle.mayAttemptProbe()) {
                                 admitted.incrementAndGet()
                             }
-                        } finally {
-                            doneLatch.countDown()
                         }
                     }
-                }
                 // Release all threads at once
                 startLatch.countDown()
-                assertThat(doneLatch.await(5, TimeUnit.SECONDS)).isTrue()
+                // Resolving every Future is both the bounded completion
+                // wait and the failure propagation: an exception or
+                // assertion error in any worker rethrows here instead of
+                // vanishing inside the executor.
+                futures.forEach { it.get(5, TimeUnit.SECONDS) }
             } finally {
                 executor.shutdownNow()
             }

@@ -1,5 +1,6 @@
 package eu.inqudium.tabellarium
 
+import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
@@ -7,6 +8,8 @@ import ch.qos.logback.core.Appender
 import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.producer.Callback
@@ -1053,6 +1056,131 @@ class KafkaAppenderTest {
             // When / Then: must not throw out of append
             appender.doAppend(newTestLoggingEvent())
         }
+
+        @Test
+        fun `should keep accepted and fallback counters conserved when the encoder throws`() {
+            // What is to be tested? The eventAccepted contract on the
+            //   failure path: an event that enters append but fails
+            //   before routing resolves a class must still count as
+            //   accepted (under the TECHNICAL default), so that
+            //   accepted = dispatched + fallback holds.
+            // How will the test case be deemed successful and why? Successful
+            //   if one encoder-failing append increments both the
+            //   accepted counter and the fallback counter (reason
+            //   encoder.error) exactly once, both tagged technical.
+            // Why is it important to test this test case? Before the fix,
+            //   encoder failures produced fallbacks without accepted
+            //   events - operational ratios showed more diversions than
+            //   ingress, breaking conservation checks exactly when
+            //   diagnosis mattered.
+
+            // Given
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = ThrowingEncoder(),
+                    fallback = fallback,
+                )
+            appender.start()
+            appender.bindMeterRegistry(registry)
+
+            // When
+            appender.doAppend(newTestLoggingEvent(message = "encoder will throw"))
+
+            // Then: the event reached the fallback and both counters moved
+            assertThat(fallback.events).hasSize(1)
+            val accepted =
+                registry
+                    .find("kafka.appender.events.accepted")
+                    .tag("topic.class", TopicClass.TECHNICAL.tag)
+                    .counter()
+            assertThat(accepted).isNotNull
+            assertThat(accepted!!.count()).isEqualTo(1.0)
+            val diverted =
+                registry
+                    .find("kafka.appender.events.fallback")
+                    .tag("topic.class", TopicClass.TECHNICAL.tag)
+                    .tag("reason", "encoder.error")
+                    .counter()
+            assertThat(diverted).isNotNull
+            assertThat(diverted!!.count()).isEqualTo(1.0)
+            appender.stop()
+        }
+    }
+
+    @Nested
+    inner class `Startup failure rollback` {
+        @Test
+        fun `should not build the pipeline when the encoder fails to start`() {
+            // What is to be tested? Whether encoder.start() runs before
+            //   any pipeline resource is allocated, so a failing encoder
+            //   aborts the startup with nothing to leak.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender refuses to start, no producer was ever
+            //   created, and the status manager names the encoder failure.
+            // Why is it important to test this test case? Before the fix,
+            //   encoder.start() ran last - a throwing custom encoder left
+            //   producers, breakers, and daemon workers behind that only
+            //   an external stop() could ever reach.
+
+            // Given: an encoder whose start() throws
+            val factory = TestProducerFactory()
+            val throwingStartEncoder =
+                object : EncoderBase<ILoggingEvent>() {
+                    override fun start(): Unit = throw IllegalStateException("simulated encoder start failure")
+
+                    override fun encode(event: ILoggingEvent): ByteArray = ByteArray(0)
+
+                    override fun headerBytes(): ByteArray = ByteArray(0)
+
+                    override fun footerBytes(): ByteArray = ByteArray(0)
+                }
+            val appender = newAppender(encoder = throwingStartEncoder, producerFactory = factory)
+
+            // When
+            appender.start()
+
+            // Then: refused to start, nothing allocated
+            assertThat(appender.isStarted).isFalse()
+            assertThat(factory.createdProducers).isEmpty()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Failed to start encoder") }
+        }
+
+        @Test
+        fun `should close already-created producers when pipeline construction fails after them`() {
+            // What is to be tested? The transactional startup: a failure
+            //   AFTER producer creation (here: circuit-breaker wiring)
+            //   must roll the created producers back instead of leaving
+            //   them - network threads, buffers, MBeans - orphaned behind
+            //   a never-started appender.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender refuses to start and every producer the
+            //   factory created has been closed again.
+            // Why is it important to test this test case? Before the fix,
+            //   the catch path only reported the failure; partially built
+            //   resources survived until some external caller happened to
+            //   invoke stop() - which for a failed configuration nobody
+            //   does.
+
+            // Given: breaker wiring that fails after the registry exists
+            val factory = TestProducerFactory()
+            val failingBreakerRegistry =
+                object : CircuitBreakerRegistry by ResilientMessageSender.defaultCircuitBreakerRegistry() {
+                    override fun circuitBreaker(name: String): CircuitBreaker = throw IllegalStateException("simulated breaker wiring failure")
+                }
+            val appender = newAppender(producerFactory = factory)
+            appender.circuitBreakerRegistry = failingBreakerRegistry
+
+            // When
+            appender.start()
+
+            // Then: refused to start, created producers rolled back
+            assertThat(appender.isStarted).isFalse()
+            assertThat(factory.createdProducers).isNotEmpty
+            assertThat(factory.createdProducers).allMatch { it.closed() }
+        }
     }
 
     @Nested
@@ -1746,6 +1874,57 @@ class KafkaAppenderTest {
             appender.stop()
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("dropped") }
+        }
+
+        @Test
+        fun `should freeze the event state before it crosses to the fallback worker`() {
+            // What is to be tested? The deferred-processing contract at
+            //   the asynchronous hand-off: append() must materialize the
+            //   event's lazy state (here: the formatted message computed
+            //   from a mutable argument) on the caller's thread, so the
+            //   fallback worker can never observe a value the caller
+            //   mutated after append() returned.
+            // How will the test case be deemed successful and why? Successful
+            //   if the event delivered by the real fallback worker carries
+            //   the argument's value from append time, although the
+            //   argument was mutated right after doAppend returned.
+            //   Without the freeze this assertion races - the worker
+            //   formats the message later and can see the mutation.
+            // Why is it important to test this test case? The fallback is
+            //   the last-resort audit record, delivered exactly when Kafka
+            //   is unavailable; late-mutated content there misleads
+            //   incident diagnosis at the worst possible moment.
+
+            // Given: async fallback (the production path) behind an
+            // encoder that fails without touching the lazy state itself
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = ThrowingEncoder(),
+                    fallback = fallback,
+                )
+            appender.useSynchronousFallbackForTests = false
+            appender.start()
+            val mutable = StringBuilder("original")
+            val event =
+                LoggingEvent(
+                    "fqcn.dummy",
+                    LoggerContext().getLogger("deferred.test"),
+                    Level.INFO,
+                    "value: {}",
+                    null,
+                    arrayOf<Any>(mutable),
+                ).apply { mdcPropertyMap = emptyMap() }
+
+            // When: the argument mutates right after append returns
+            appender.doAppend(event)
+            mutable.setLength(0)
+            mutable.append("mutated")
+
+            // Then: the worker-delivered event carries the frozen value
+            pollUntil { fallback.events.size == 1 }
+            assertThat(fallback.events[0].formattedMessage).isEqualTo("value: original")
+            appender.stop()
         }
     }
 

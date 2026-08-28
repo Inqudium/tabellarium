@@ -3,8 +3,6 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.joran.JoranConfigurator
-import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.core.read.ListAppender
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
@@ -54,7 +52,7 @@ class JoranXmlConfigurationTest {
     private fun fullConfigXml(maxBlockMs: Int = 100): String =
         """
         <configuration>
-            <appender name="FALLBACK" class="ch.qos.logback.core.read.ListAppender"/>
+            <appender name="FALLBACK" class="eu.inqudium.tabellarium.ThreadSafeListAppender"/>
             <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
                 <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
                     <pattern>%msg</pattern>
@@ -120,7 +118,7 @@ class JoranXmlConfigurationTest {
             assertThat(appender.environment).isEqualTo("test")
             assertThat(appender.kafkaProducerProperties).contains("bootstrap.servers=localhost:1")
             assertThat(appender.fallbackAppender)
-                .isInstanceOf(ListAppender::class.java)
+                .isInstanceOf(ThreadSafeListAppender::class.java)
             assertThat(appender.fallbackAppender?.name).isEqualTo("FALLBACK")
         }
 
@@ -174,20 +172,19 @@ class JoranXmlConfigurationTest {
 
             // Given
             configure(fullConfigXml(maxBlockMs = 100))
-            val fallback = kafkaAppender().fallbackAppender
-
-            @Suppress("UNCHECKED_CAST")
-            val list = fallback as ListAppender<ILoggingEvent>
+            val fallback = kafkaAppender().fallbackAppender as ThreadSafeListAppender
 
             // When: log through the XML-configured root logger
             context
                 .getLogger("joran.e2e")
                 .info(MarkerFactory.getDetachedMarker("SECURITY"), "undeliverable event")
 
-            // Then: the event surfaces in the fallback via the async dispatcher
-            pollUntil(timeoutMs = 5000) { synchronized(list.list) { list.list.size } == 1 }
-            assertThat(list.list[0].formattedMessage).isEqualTo("undeliverable event")
-            assertThat(list.list[0].level).isEqualTo(Level.INFO)
+            // Then: the event surfaces in the fallback via the async
+            // dispatcher; the copy-on-write list gives the polling test
+            // thread a happens-before edge on the worker's write.
+            pollUntil(timeoutMs = 5000) { fallback.events.size == 1 }
+            assertThat(fallback.events[0].formattedMessage).isEqualTo("undeliverable event")
+            assertThat(fallback.events[0].level).isEqualTo(Level.INFO)
         }
     }
 }

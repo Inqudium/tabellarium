@@ -139,13 +139,23 @@ internal class FallbackDispatcher(
         } else {
             Thread(::runWorker, "kafka-appender-fallback-dispatcher").apply {
                 isDaemon = true
-                // An Error escaping the delivery loop kills the worker;
-                // account for the event it was carrying and surface the
-                // death - see onWorkerDeath.
+                // An Error escaping the delivery loop kills the worker.
+                // Leave the accepting state FIRST - with the worker gone,
+                // anything accepted would strand in a queue nothing ever
+                // drains - then count the event it was carrying plus
+                // everything queued as dropped, and surface the death -
+                // see onWorkerDeath. Later enqueue calls see
+                // running=false and count on the caller.
                 setUncaughtExceptionHandler { _, throwable ->
+                    running = false
+                    val m = metrics
                     inFlight.getAndSet(null)?.let {
                         droppedCount.incrementAndGet()
-                        metrics.fallbackDispatcherDropped()
+                        m.fallbackDispatcherDropped()
+                    }
+                    while (queue.poll() != null) {
+                        droppedCount.incrementAndGet()
+                        m.fallbackDispatcherDropped()
                     }
                     onWorkerDeath(throwable)
                 }
@@ -156,8 +166,9 @@ internal class FallbackDispatcher(
     /**
      * Number of events lost by this dispatcher: the queue was full when
      * [enqueue] was called, the fallback appender's `doAppend` threw,
-     * or [close] timed out before the queue - including the one event
-     * the worker had in flight - drained. Read from any thread.
+     * the worker died with events queued or in flight, or [close] timed
+     * out before the queue - including the one event the worker had in
+     * flight - drained. Read from any thread.
      */
     val droppedEventCount: Long
         get() = droppedCount.get()

@@ -91,11 +91,15 @@ import java.util.concurrent.atomic.AtomicReference
  * @param onWorkerDeath Invoked when the worker thread dies from a
  *                      [Throwable] the delivery loop does not handle
  *                      (an [Error] such as OOM - [Exception]s are
- *                      handled in place). The appender reports this to
- *                      the status manager: without the hook a dead
- *                      worker would be invisible - the queue fills and
- *                      everything diverts as `queue.full`, which reads
- *                      like a slow broker, not like a dead thread.
+ *                      handled in place). Before the hook runs, the
+ *                      death handler takes the dispatcher out of the
+ *                      accepting state and diverts the in-flight item
+ *                      plus everything queued (reason `send.error`), so
+ *                      no work strands in a queue nothing drains; later
+ *                      [dispatch] calls divert on the caller. The
+ *                      appender reports the death to the status
+ *                      manager so it does not masquerade as a slow
+ *                      broker.
  * @param synchronous Test-only hook, same pattern as
  *                    [FallbackDispatcher]: [dispatch] runs [sendAction]
  *                    inline on the caller and no worker is started, so
@@ -155,6 +159,17 @@ internal class SendDispatcher(
     @Volatile
     private var running = true
 
+    /**
+     * Set by the worker's uncaught-exception handler: the dispatcher
+     * has permanently lost its only worker and can never deliver again.
+     * Distinguishes the terminal diversion reason in [dispatch] -
+     * `send.error` after a worker death versus `shutdown` after
+     * [close] - so operators see the real cause instead of a phantom
+     * shutdown.
+     */
+    @Volatile
+    private var workerDied = false
+
     private val closeExecuted = AtomicBoolean(false)
 
     private val worker: Thread? =
@@ -163,12 +178,21 @@ internal class SendDispatcher(
         } else {
             Thread(::runWorker, "kafka-appender-send-dispatcher-${topicClass.tag}").apply {
                 isDaemon = true
-                // An Error escaping the delivery loop kills the worker;
-                // account for the item it was carrying and surface the
-                // death - see onWorkerDeath.
+                // An Error escaping the delivery loop kills the worker.
+                // Leave the accepting state FIRST - with the worker gone,
+                // anything accepted would strand in a queue nothing ever
+                // drains - then account for the in-flight item and divert
+                // everything already queued, and surface the death - see
+                // onWorkerDeath.
                 setUncaughtExceptionHandler { _, throwable ->
+                    workerDied = true
+                    running = false
                     inFlight.getAndSet(null)?.let {
                         divert(it, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                    }
+                    while (true) {
+                        val item = queue.poll() ?: break
+                        divert(item, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                     }
                     onWorkerDeath(throwable)
                 }
@@ -198,7 +222,7 @@ internal class SendDispatcher(
     ) {
         val item = PendingSend(topicName, payload, enrichment, originalEvent)
         if (!running) {
-            divert(item, KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
+            divert(item, terminalDiversionReason())
             return
         }
         if (synchronous) {
@@ -212,14 +236,27 @@ internal class SendDispatcher(
             divert(item, KafkaAppenderMetrics.FallbackReason.QUEUE_FULL)
             return
         }
-        // Close the check-then-act window against close(), same as
-        // FallbackDispatcher.enqueue: if close() finished its final
-        // drain between the running check and the offer, the item would
-        // be neither sent nor diverted. Re-check and reclaim.
+        // Close the check-then-act window against close() and against
+        // the worker-death handler, same as FallbackDispatcher.enqueue:
+        // if either finished its final drain between the running check
+        // and the offer, the item would be neither sent nor diverted.
+        // Re-check and reclaim.
         if (!running && queue.remove(item)) {
-            divert(item, KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
+            divert(item, terminalDiversionReason())
         }
     }
+
+    /**
+     * Why the dispatcher stopped accepting: a worker death diverts as
+     * `send.error` (delivery capability was lost to an error), a
+     * regular [close] as `shutdown`.
+     */
+    private fun terminalDiversionReason(): KafkaAppenderMetrics.FallbackReason =
+        if (workerDied) {
+            KafkaAppenderMetrics.FallbackReason.SEND_ERROR
+        } else {
+            KafkaAppenderMetrics.FallbackReason.SHUTDOWN
+        }
 
     override fun close() {
         if (!closeExecuted.compareAndSet(false, true)) {
