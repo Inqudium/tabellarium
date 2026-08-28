@@ -346,26 +346,14 @@ class KafkaAppenderTest {
 
     @Nested
     inner class `Mandatory override warnings` {
-        /**
-         * TopicMappingConfig variant that classifies the default topic
-         * as AUDIT, activating the mandatory-override machinery that
-         * the minimal XML surface cannot reach yet. Uses the same
-         * `open` seam Joran extensions would use.
-         */
-        private inner class AuditTopicMappingConfig : TopicMappingConfig() {
-            override fun toTopicTable(): TopicTable =
-                TopicTable(
-                    topicsByName = mapOf(defaultTopic to TopicClass.AUDIT),
-                    fallbackClass = TopicClass.AUDIT,
-                )
-        }
-
         @Test
         fun `should emit a status warning when a user value conflicts with a mandatory override`() {
             // What is to be tested? Whether mandatory-override violations
             //   from ProducerPropertiesBuilder are surfaced to operators
             //   via Logback's status manager - the addWarn wiring in
             //   start(), not just the builder-level violation records.
+            //   Activated through the real configuration surface: a
+            //   <mapping> classifying a topic as AUDIT.
             // How will the test case be deemed successful and why? Successful
             //   if a warning naming the property key, the user value, and
             //   the enforced value reaches the status manager. The warning
@@ -377,8 +365,7 @@ class KafkaAppenderTest {
             //   would later find a discrepancy between the documented
             //   configuration and the actual broker behavior.
 
-            // Given: the default topic classified as AUDIT and a conflicting
-            //   operator-supplied acks=1
+            // Given: an AUDIT mapping and a conflicting operator acks=1
             val factory = TestProducerFactory()
             val appender =
                 newAppender(
@@ -389,7 +376,13 @@ class KafkaAppenderTest {
                         ${ProducerConfig.ACKS_CONFIG}=1
                         """.trimIndent(),
                 )
-            appender.topicMapping = AuditTopicMappingConfig().apply { defaultTopic = "default.topic" }
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
 
             // When
             appender.start()
@@ -403,6 +396,43 @@ class KafkaAppenderTest {
                         it.contains("'1'") &&
                         it.contains("'all'")
                 }
+        }
+
+        @Test
+        fun `should instantiate one producer per class activated by mappings`() {
+            // What is to be tested? Whether a <mapping> with a non-default
+            //   topic class activates a second producer next to the
+            //   TECHNICAL fallback producer - the multi-class model
+            //   reached through the real configuration surface.
+            // How will the test case be deemed successful and why? Successful
+            //   if exactly two producers exist (AUDIT + TECHNICAL) and the
+            //   AUDIT one carries the per-class client.id suffix. This
+            //   pins the activation path end-to-end at the appender level.
+            // Why is it important to test this test case? The per-class
+            //   producer model was previously verifiable only by driving
+            //   internals directly; with the surface shipped, the
+            //   activation itself is part of the operator contract.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
+
+            // When
+            appender.start()
+
+            // Then: AUDIT + TECHNICAL fallback producers
+            assertThat(factory.createdProducers).hasSize(2)
+            assertThat(factory.createdWithProperties)
+                .anyMatch { it[ProducerConfig.CLIENT_ID_CONFIG] == "tabellarium-test-service-audit" }
+            assertThat(factory.createdWithProperties)
+                .anyMatch { it[ProducerConfig.CLIENT_ID_CONFIG] == "tabellarium-test-service-technical" }
         }
 
         @Test

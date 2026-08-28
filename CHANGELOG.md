@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client.id` wins.
 - Self-logging guard: events from the appender's own Kafka producer
   network threads are ignored, preventing producer-log feedback loops.
+- Marker-based topic routing and per-topic classification via
+  `<mapping>` elements in `<topicMapping>` (marker → topic →
+  topicClass), activating the four-class compliance model through
+  configuration; duplicate markers, conflicting classes, and unknown
+  class names are rejected at startup.
+- Joran round-trip tests: the declarative XML surface (including
+  `<mapping>` and `<appender-ref>`) is exercised end-to-end through
+  `JoranConfigurator`, offline against a real Kafka producer.
 - Eager validation of idempotence-incompatible producer tuning
   (`retries=0`, `max.in.flight.requests.per.connection>5`) with a
   clear startup error naming the conflict.
@@ -52,6 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kafka.appender.events.fallback` is documented as "diverted from
   Kafka" (counted also when no fallback is configured and the event is
   dropped).
+
+### Changed
+
+- The Micrometer bind/unbind lifecycle moved from the appender into the
+  internal `MetricsBindings` component (behavior unchanged).
+- `EnrichedRecord.headers` is `internal`: the shared pre-encoded header
+  arrays no longer appear on the public API, shrinking their read-only
+  contract to module-internal code.
+- Tests tagged `external-contract` are excluded from the default test
+  run; run them with `mvn -Pexternal-contract test`.
 - Configuration guide, metrics overview, and Grafana dashboards under
   `docs/config/` and `docs/metrics/`.
 

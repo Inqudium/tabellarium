@@ -71,6 +71,15 @@
         <resilience4j.version>2.4.0</resilience4j.version>
         <logstash-encoder.version>9.0</logstash-encoder.version>
 
+        <!--
+            JUnit tags excluded from the default test run. The external-contract
+            tag marks characterization tests of third-party behavior (emitter
+            call-site contracts of consuming services) that exercise no
+            tabellarium code; their failures would misdirect maintainers of
+            THIS library. Run them deliberately with -Pexternal-contract.
+        -->
+        <surefire.excludedGroups>external-contract</surefire.excludedGroups>
+
         <!-- Plugin Versions -->
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
@@ -310,6 +319,7 @@
                         <include>**/*Test.java</include>
                         <include>**/*Test.kt</include>
                     </includes>
+                    <excludedGroups>${surefire.excludedGroups}</excludedGroups>
                     <argLine>
                         --add-opens java.base/java.lang=ALL-UNNAMED
                         -XX:+EnableDynamicAgentLoading
@@ -380,4 +390,18 @@
 
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            Includes the external-contract characterization tests (see the
+            surefire.excludedGroups property) in the test run:
+            mvn -Pexternal-contract test
+        -->
+        <profile>
+            <id>external-contract</id>
+            <properties>
+                <surefire.excludedGroups/>
+            </properties>
+        </profile>
+    </profiles>
 </project>

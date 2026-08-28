@@ -20,7 +20,7 @@ metrics are catalogued in [`metrics-overview.md`](../metrics/metrics-overview.md
 - [10. Startup validation and failure behavior](#10-startup-validation-and-failure-behavior)
 - [11. Wrapping in an AsyncAppender](#11-wrapping-in-an-asyncappender)
 - [12. Defaults quick reference](#12-defaults-quick-reference)
-- [Appendix A: Topic classes (prepared, not yet active)](#appendix-a-topic-classes-prepared-not-yet-active)
+- [Appendix A: The four-class topic model](#appendix-a-the-four-class-topic-model)
 
 ---
 
@@ -61,7 +61,7 @@ Joran binds each to a setter of the matching name on the appender.
 | --------------------------- | :------: | -------------------------------------- | ----- |
 | `<encoder>`                 |   yes    | `Encoder<ILoggingEvent>`               | Standard Logback encoder. `LogstashEncoder` recommended for JSON. Started by the appender at `start()`. |
 | `<kafkaProducerProperties>` |   yes¹   | raw multi-line text                    | `.properties`-style Kafka producer config. See [§3](#3-kafka-producer-properties). |
-| `<topicMapping>`            |   yes    | nested `TopicMappingConfig`            | Contains `<defaultTopic>`. See [§5](#5-topic-routing). |
+| `<topicMapping>`            |   yes    | nested `TopicMappingConfig`            | Contains `<defaultTopic>` and any number of `<mapping>` elements. See [§5](#5-topic-routing). |
 | `<environment>`             |   yes    | `String` (trimmed, non-blank)          | Deployment environment (`prod`, `staging`, …). Emitted as the `meta.environment` header. |
 | `<component>`               |   yes    | `String` (trimmed, non-blank)          | Service component id (e.g. `spring.application.name`). Emitted as the `meta.component` header. |
 | `<cmdbId>`                  |   yes    | `String` (trimmed, non-blank)          | CMDB identifier of the deploying instance. Emitted as the `meta.cmdbId` header. |
@@ -138,18 +138,19 @@ overridden.
 
 ## 4. Producer property composition
 
-Today the appender runs a **single Kafka producer**: every event routes to
-`<defaultTopic>` and is handled by that one producer ([§5](#5-topic-routing)).
-Its configuration is composed from your base properties plus a set of built-in
-defaults.
+The appender runs **one Kafka producer per active topic class**. With the
+minimal configuration (only `<defaultTopic>`) that is a single producer for
+the `TECHNICAL` class; every `<mapping>` that names another class activates
+an additional producer ([§5](#5-topic-routing)). Each producer's
+configuration is composed from your base properties plus that class's
+built-in overrides.
 
-> The appender is internally built around a **four-class model** (AUDIT,
-> FUNCTIONAL, TECHNICAL, PERFORMANCE), each class with its own producer tuning
-> and circuit breaker. That model is fully implemented but **not yet reachable
-> through configuration** — today only the `TECHNICAL` class is ever active.
-> This section describes the composition as it behaves today; see
-> [Appendix A](#appendix-a-topic-classes-prepared-not-yet-active) for the full
-> class model.
+> The **four-class model** (AUDIT, FUNCTIONAL, TECHNICAL, PERFORMANCE) gives
+> each class its own producer tuning and circuit breaker, and is activated
+> per class through `<mapping>` elements. This section describes the
+> composition for the `TECHNICAL` class of the minimal configuration; see
+> [Appendix A](#appendix-a-the-four-class-topic-model) for the full
+> class model and all per-class values.
 
 ### Composition
 
@@ -165,10 +166,10 @@ forced:
    to `ByteArraySerializer` unconditionally ([§3](#3-kafka-producer-properties)).
 
 > A generic third merge layer — *mandatory* overrides that win even over an
-> explicit value you set — exists in the appender, but it is **empty for the
-> active `TECHNICAL` class**, so it changes nothing today. It only carries
-> enforced values for the AUDIT/FUNCTIONAL classes of the prepared model; see
-> [Appendix A](#appendix-a-topic-classes-prepared-not-yet-active).
+> explicit value you set — is **empty for the `TECHNICAL` class**, so it
+> changes nothing in the minimal configuration. It carries the enforced
+> values of the AUDIT/FUNCTIONAL classes once a `<mapping>` activates them;
+> see [Appendix A](#appendix-a-the-four-class-topic-model).
 
 ### Default overrides
 
@@ -188,8 +189,8 @@ The `client.id` default makes the producer attributable on the broker
 (connection logs, quotas, `kafka.producer.*` metrics) instead of Kafka's
 auto-generated `producer-N`. The `<component>` part is the appender's
 `<component>` value with characters outside `[a-zA-Z0-9._-]` replaced by
-`-` (they would break JMX registration). Under the prepared four-class
-model each class gets its own suffix (`…-audit`, `…-functional`, …), so
+`-` (they would break JMX registration). Each active class gets its own
+suffix (`…-audit`, `…-functional`, …), so
 producers never collide on JMX names. An explicit `client.id` in
 `<kafkaProducerProperties>` wins — note that it is then shared by every
 active class.
@@ -238,42 +239,68 @@ filling the gaps and the serializers forced:
 | `key.serializer`     | forced                         | `ByteArraySerializer`    |
 | `value.serializer`   | forced                         | `ByteArraySerializer`    |
 
-Nothing you set is ever overruled today — the active `TECHNICAL` class has no
-mandatory overrides. (Under the prepared `AUDIT` class the same `acks=1` would
-be forced to `acks=all`; see
-[Appendix A](#appendix-a-topic-classes-prepared-not-yet-active).)
+Nothing you set is overruled for the `TECHNICAL` class — it has no mandatory
+overrides. (For a topic mapped to `AUDIT`, the same `acks=1` is forced to
+`acks=all`, with a startup warning; see
+[Appendix A](#appendix-a-the-four-class-topic-model).)
 
 ---
 
 ## 5. Topic routing
 
-Routing is configured through `<topicMapping>`, which today accepts a
-**single** child element, `<defaultTopic>`:
+Routing is configured through `<topicMapping>`: a mandatory
+`<defaultTopic>` plus any number of `<mapping>` elements, each routing one
+SLF4J marker to a topic and assigning that topic its
+[topic class](#appendix-a-the-four-class-topic-model):
 
 ```xml
 <topicMapping>
     <defaultTopic>ichp-de.customerproducts.out</defaultTopic>
+    <mapping>
+        <marker>SECURITY</marker>
+        <topic>audit.security</topic>
+        <topicClass>AUDIT</topicClass>
+    </mapping>
+    <mapping>
+        <marker>METRICS</marker>
+        <topic>perf.metrics</topic>
+        <topicClass>PERFORMANCE</topicClass>
+    </mapping>
 </topicMapping>
 ```
 
-`<defaultTopic>` is trimmed on assignment and validated at `start()`: it must
-be non-blank and match the Kafka-permitted topic-name character set
-`[a-zA-Z0-9._-]+` (spaces and other characters are rejected). A violation
-aborts `start()`.
+**Resolution rules** per event:
 
-**Every event resolves to `<defaultTopic>`.** There is no other routing lever
-today:
+1. An event with **no markers** resolves to `<defaultTopic>`.
+2. Otherwise each SLF4J marker is checked in order: a direct name match
+   (exact, case-sensitive) wins; failing that, the marker's single-level
+   hierarchical references are checked (references of references are not
+   followed, which prevents cycles). The first match wins.
+3. No match → `<defaultTopic>`.
 
-- a `Marker` on a log statement has **no effect** — the appender's marker map
-  is empty, so no marker can ever match;
-- there is no way to route to a second topic, and no way to select a topic
-  class — all events go to the default topic and are handled by the single
-  (`TECHNICAL`) producer.
+The resolved topic is then classified: topics named in a `<mapping>` carry
+their `<topicClass>`; every other topic — including `<defaultTopic>` — falls
+back to `TECHNICAL` (the most neutral class: no compliance mandate,
+tolerable performance defaults), so a routing typo never crashes the log
+pipeline.
 
-A marker-based, multi-topic, multi-class routing model is fully implemented in
-the code but **not yet exposed through XML**. See
-[Appendix A](#appendix-a-topic-classes-prepared-not-yet-active) for that model
-and its planned configuration shape.
+**Validation at `start()`** — all of the following abort startup with a
+named error instead of surfacing per event:
+
+- blank or Kafka-invalid topic names (character set `[a-zA-Z0-9._-]+`, not
+  `.` or `..`, at most 249 characters) for `<defaultTopic>` and every
+  `<mapping>`;
+- a blank `<marker>`;
+- a `<topicClass>` that is not one of `AUDIT`, `FUNCTIONAL`, `TECHNICAL`,
+  `PERFORMANCE` (case-insensitive);
+- the same marker mapped twice;
+- the same topic assigned two different classes (several markers may share
+  one topic *with the same class*).
+
+All values are whitespace-trimmed on assignment. Multiple mappings to
+distinct classes activate one producer (and circuit breaker) per class —
+see [§4](#4-producer-property-composition) and
+[Appendix A](#appendix-a-the-four-class-topic-model).
 
 ---
 
@@ -304,10 +331,10 @@ supported at the API level but is not currently exposed through XML.
 
 Delivery is guarded by a Resilience4j circuit breaker per *active* topic
 class, a half-open probe throttle, and an optional asynchronous fallback
-appender. Classes fail **independently** — the breaker is per class by design,
-so once the [prepared multi-class model](#appendix-a-topic-classes-prepared-not-yet-active)
-is active a stuck audit broker will not throttle technical-log delivery.
-(Today only the `TECHNICAL` class is active, so there is a single breaker.)
+appender. Classes fail **independently** — the breaker is per class by
+design, so a stuck audit broker does not throttle technical-log delivery.
+(With the minimal configuration only the `TECHNICAL` class is active, so
+there is a single breaker.)
 
 ### Circuit breaker
 
@@ -569,17 +596,14 @@ listed so operators understand the runtime behavior.
 
 ---
 
-## Appendix A: Topic classes (prepared, not yet active)
+## Appendix A: The four-class topic model
 
-> **Status — prepared, not reachable through configuration.** Everything in
-> this appendix describes machinery that is fully implemented and unit-tested
-> in the appender but **inert today**. The XML binding (`TopicMappingConfig`)
-> wires the routing with an empty marker map, an empty topic→class map, and a
-> fixed `TECHNICAL` fallback, so at runtime only the `TECHNICAL` class is ever
-> active (see [§4](#4-producer-property-composition) and
-> [§5](#5-topic-routing)). **None of the XML shown in this appendix is
-> accepted by the current version.** It documents the intended full model so
-> it is understood ahead of the release that activates it.
+> **Status — active.** The four-class model is reachable through
+> configuration: every `<mapping>` element in `<topicMapping>` routes a
+> marker to a topic and assigns that topic a class
+> ([§5](#5-topic-routing)). With no `<mapping>` elements, only the
+> `TECHNICAL` fallback class is active and the appender runs a single
+> producer.
 
 ### A.1 What a topic class is for
 
@@ -595,9 +619,9 @@ two things:
   — a stuck audit broker never throttles technical-log delivery, and vice
   versa ([§7](#7-resilience-circuit-breaker-throttle-fallback)).
 
-### A.2 Runtime flow (how a class will be selected)
+### A.2 Runtime flow (how a class is selected)
 
-Once activated, every log event will travel this path on the way to Kafka:
+Every log event travels this path on the way to Kafka:
 
 ```
 log.info(MARKER, "…")
@@ -621,8 +645,8 @@ class is built once at startup by merging your base properties with that
 class's overrides ([A.4](#a4-property-overrides-per-class)). Only classes that
 some topic actually resolves to are *active* — the appender creates a
 producer, breaker, and I/O thread only for those, never for dormant classes.
-(Today no topic resolves to anything but `TECHNICAL`, which is why it is the
-only active class.)
+(Without `<mapping>` elements no topic resolves to anything but `TECHNICAL`,
+which is then the only active class.)
 
 ### A.3 The four classes
 
@@ -670,8 +694,9 @@ composed in three layers:
 3. **Mandatory overrides** — applied unconditionally; the enforced value wins,
    and any conflict is recorded.
 
-(Today only layers 1 and 2 have any effect, because the sole active class,
-`TECHNICAL`, has no mandatory overrides — see [§4](#4-producer-property-composition).)
+(In the minimal configuration only layers 1 and 2 have any effect, because
+the sole active class, `TECHNICAL`, has no mandatory overrides — see
+[§4](#4-producer-property-composition).)
 
 **Mandatory-override violations** — when a value you set conflicts with a
 mandatory override, the appender logs a warning to Logback's status manager at
@@ -685,41 +710,39 @@ This is a compliance requirement; see TopicClass.AUDIT for rationale.
 The record is still delivered with the enforced value; the warning exists so
 operators notice that their configuration intent was overruled.
 
-### A.5 Marker-based routing (planned XML)
+### A.5 Marker-based routing (XML)
 
-`TopicRouter` and `TopicTable` already support marker-to-topic mappings and
-per-topic class assignments; the XML binding for them is intentionally not
-implemented yet (YAGNI — every Joran setter that exists must be tested).
+The routing and classification surface is documented in
+[§5](#5-topic-routing): one `<mapping>` element per marker, carrying
+`<marker>`, `<topic>`, and `<topicClass>` as plain nested elements. (This
+flat shape was chosen over the originally sketched per-class nesting —
+`<audit><entry marker="…">…</entry></audit>` — because it uses only Joran's
+plainest binding mechanism: repeated `addXxx` collection setters with
+simple string properties, no attribute or body-text special cases.)
 
-**Resolution rules** (`TopicRouter`, once its marker map is populated):
-
-1. An event with **no markers** resolves to `<defaultTopic>`.
-2. Otherwise each SLF4J marker is checked in order: a direct name match wins;
-   failing that, the marker's single-level hierarchical references are checked
-   (references of references are not followed, which prevents cycles). The
-   first match wins.
-3. No match → `<defaultTopic>`.
-
-The resolved topic name is then mapped to a topic class by `TopicTable`;
-unmapped topics fall back to `TECHNICAL` (the most neutral class: no
-compliance mandate, tolerable performance defaults), so a routing typo never
-crashes the log pipeline.
-
-**Planned XML shape** — a nested element per class, each holding
-`marker → topic` entries:
+A worked multi-class example:
 
 ```xml
 <topicMapping>
     <defaultTopic>default.topic</defaultTopic>
-    <audit>
-        <entry marker="SECURITY">audit.security</entry>
-        <entry marker="MONEY">audit.transactions</entry>
-    </audit>
-    <technical>
-        <entry marker="DEBUG">tech.debug</entry>
-    </technical>
+    <mapping>
+        <marker>SECURITY</marker>
+        <topic>audit.security</topic>
+        <topicClass>AUDIT</topicClass>
+    </mapping>
+    <mapping>
+        <marker>MONEY</marker>
+        <topic>audit.transactions</topic>
+        <topicClass>AUDIT</topicClass>
+    </mapping>
+    <mapping>
+        <marker>DEBUG</marker>
+        <topic>tech.debug</topic>
+        <topicClass>TECHNICAL</topicClass>
+    </mapping>
 </topicMapping>
 ```
 
-Until that lands, configuration is limited to a single default topic and the
-single `TECHNICAL` producer.
+This activates AUDIT (two topics) alongside the TECHNICAL fallback:
+two producers, two breakers, and the AUDIT mandatory overrides of
+[A.4](#a4-property-overrides-per-class) enforced for both audit topics.

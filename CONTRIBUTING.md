@@ -36,6 +36,9 @@ test suite and the [ktlint](https://pinterest.github.io/ktlint/) check.
   tested, how success is determined, why it matters).
 - Unit tests use `MockProducer` from `kafka-clients`; no test may require
   a running Kafka broker or Docker.
+- Tests tagged `external-contract` (characterization tests of third-party
+  behavior that exercise no tabellarium code) are excluded from the
+  default run; execute them deliberately with `mvn -Pexternal-contract test`.
 
 ## Pull requests
 

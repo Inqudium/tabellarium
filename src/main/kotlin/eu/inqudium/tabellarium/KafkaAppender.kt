@@ -194,17 +194,12 @@ class KafkaAppender :
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
 
     /**
-     * State of the last [bindMeterRegistry] call, kept so [stop] (and a
-     * repeated bind) can deregister everything that was registered:
-     * the appender's own meters, the per-producer [io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics]
-     * binders (which are [AutoCloseable] and must be closed), and the
-     * Resilience4j circuit-breaker meters. Without this teardown, every
-     * Logback reconfiguration cycle would leak meters and leave gauges
-     * reporting the previous instance's (closed) dispatcher queue.
+     * Owns the Micrometer bind/unbind lifecycle (appender meters,
+     * per-producer Kafka client metrics, circuit-breaker metrics).
+     * See [MetricsBindings] for the probe pattern and the teardown
+     * rationale.
      */
-    private var boundMetrics: MicrometerKafkaAppenderMetrics? = null
-    private var boundRegistry: io.micrometer.core.instrument.MeterRegistry? = null
-    private val producerMetricBindings = mutableListOf<AutoCloseable>()
+    private val metricsBindings = MetricsBindings(this)
 
     /**
      * Guards the teardown in [stop] so a repeated stop (Logback may call
@@ -405,7 +400,8 @@ class KafkaAppender :
             super.stop()
             return
         }
-        unbindMetrics()
+        metricsBindings.unbind()
+        metrics = KafkaAppenderMetrics.NO_OP
         if (this::producerRegistry.isInitialized) {
             try {
                 producerRegistry.close()
@@ -490,183 +486,19 @@ class KafkaAppender :
             addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
             return
         }
-        // A repeated bind (context refresh, manual re-wiring) first tears
-        // down the previous registration so meters are not duplicated and
-        // stale gauges do not linger.
-        unbindMetrics()
-        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = this.name)
+        // A repeated bind (context refresh, manual re-wiring) replaces the
+        // previous registration - MetricsBindings tears it down first.
+        val impl =
+            metricsBindings.bind(
+                registry = registry,
+                commonTags = commonTags,
+                appenderName = this.name,
+                circuitBreakerRegistry = messageSender.circuitBreakerRegistry,
+                producerRegistry = producerRegistry,
+            )
         metrics = impl
         messageSender.setMetrics(impl)
         fallbackDispatcher?.setMetrics(impl)
-        boundMetrics = impl
-        boundRegistry = registry
-
-        bindResilience4jMetrics(registry, commonTags)
-        bindKafkaProducerMetrics(registry, commonTags)
-    }
-
-    /**
-     * Reverses everything [bindMeterRegistry] registered: closes the
-     * per-producer Kafka metric binders, removes the Resilience4j
-     * circuit-breaker meters for this appender's breakers, and removes
-     * the appender's own meters from the registry. No-op when nothing
-     * is bound. Called from [stop] and before a repeated bind.
-     */
-    private fun unbindMetrics() {
-        val registry = boundRegistry ?: return
-        producerMetricBindings.forEach { binding ->
-            try {
-                binding.close()
-            } catch (e: Exception) {
-                addWarn("Error closing Kafka producer metric binding: ${e.message}", e)
-            }
-        }
-        producerMetricBindings.clear()
-        try {
-            removeResilience4jMeters(registry)
-        } catch (e: Exception) {
-            addWarn("Error removing Resilience4j meters: ${e.message}", e)
-        }
-        try {
-            boundMetrics?.deregisterFrom(registry)
-        } catch (e: Exception) {
-            addWarn("Error deregistering appender meters: ${e.message}", e)
-        }
-        boundMetrics = null
-        boundRegistry = null
-        metrics = KafkaAppenderMetrics.NO_OP
-    }
-
-    /**
-     * Removes the circuit-breaker meters that
-     * [io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics]
-     * registered for this appender's breakers. The binder itself offers
-     * no removal API, so the meters are found by their name prefix plus
-     * the breaker-name tag, restricted to this appender's own breaker
-     * names so an operator's unrelated breakers on a shared registry are
-     * never touched.
-     */
-    private fun removeResilience4jMeters(registry: io.micrometer.core.instrument.MeterRegistry) {
-        if (!this::producerRegistry.isInitialized) return
-        val breakerNames =
-            producerRegistry.activeTopicClasses
-                .map { ResilientMessageSender.circuitBreakerName(it) }
-                .toSet()
-        registry.meters
-            .filter { meter ->
-                meter.id.name.startsWith("resilience4j.circuitbreaker") &&
-                    meter.id.getTag("name") in breakerNames
-            }.forEach { registry.remove(it) }
-    }
-
-    /**
-     * Best-effort binding of Resilience4j circuit-breaker metrics.
-     * Requires `io.github.resilience4j:resilience4j-micrometer` on the
-     * classpath. Silently skipped if the class is missing; reported
-     * via status manager if the call itself fails.
-     *
-     * ## Lazy class-loading pattern
-     *
-     * The first step is a [Class.forName] **probe** that succeeds
-     * only when `TaggedCircuitBreakerMetrics` is on the classpath. If
-     * the probe throws [ClassNotFoundException], we never enter
-     * [doBindResilience4jMetrics] and the JVM never has to resolve
-     * the symbols that method references - so the appender works
-     * fine without resilience4j-micrometer in the dependency tree.
-     *
-     * The actual binding logic lives in [doBindResilience4jMetrics],
-     * which uses the bridge class **directly** (no reflection). This
-     * is safe because Kotlin compiles `private fun` to a regular
-     * private static JVM method; the JVM resolves the referenced
-     * types only when the method is first invoked, not when the
-     * containing class is loaded. The `Class.forName` probe gates
-     * that invocation.
-     */
-    private fun bindResilience4jMetrics(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        commonTags: Iterable<io.micrometer.core.instrument.Tag>,
-    ) {
-        try {
-            Class.forName("io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics")
-        } catch (_: ClassNotFoundException) {
-            // resilience4j-micrometer not on classpath; expected when
-            // operators opt out. Stay silent.
-            return
-        }
-        try {
-            doBindResilience4jMetrics(registry)
-        } catch (e: Exception) {
-            addInfo(
-                "Failed to bind Resilience4j metrics to MeterRegistry " +
-                    "(circuit-breaker state metrics will be unavailable): ${e.message}",
-            )
-        }
-    }
-
-    /**
-     * Performs the actual Resilience4j binding using direct typed
-     * references. Only ever called from [bindResilience4jMetrics]
-     * after the [Class.forName] probe has confirmed the bridge
-     * class is available - so the JVM symbol resolution that
-     * happens on first method entry will succeed.
-     */
-    private fun doBindResilience4jMetrics(registry: io.micrometer.core.instrument.MeterRegistry) {
-        io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics
-            .ofCircuitBreakerRegistry(messageSender.circuitBreakerRegistry)
-            .bindTo(registry)
-    }
-
-    /**
-     * Best-effort binding of Kafka producer-internal metrics. Requires
-     * `io.micrometer:micrometer-core` with the Kafka binder on the
-     * classpath. Silently skipped if the class is missing.
-     *
-     * See [bindResilience4jMetrics] for the rationale of the
-     * probe-then-direct-call pattern.
-     */
-    private fun bindKafkaProducerMetrics(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        commonTags: Iterable<io.micrometer.core.instrument.Tag>,
-    ) {
-        try {
-            Class.forName("io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics")
-        } catch (_: ClassNotFoundException) {
-            // micrometer-core kafka binder not on classpath; silent.
-            return
-        }
-        try {
-            doBindKafkaProducerMetrics(registry, commonTags)
-        } catch (e: Exception) {
-            addInfo(
-                "Failed to bind Kafka producer metrics to MeterRegistry " +
-                    "(producer-internal metrics will be unavailable): ${e.message}",
-            )
-        }
-    }
-
-    /**
-     * Performs the actual Kafka producer binding using direct typed
-     * references. Only ever called from [bindKafkaProducerMetrics]
-     * after the probe has confirmed the binder class is available.
-     */
-    private fun doBindKafkaProducerMetrics(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        commonTags: Iterable<io.micrometer.core.instrument.Tag>,
-    ) {
-        for (topicClass in producerRegistry.activeTopicClasses) {
-            val producer = producerRegistry.producerFor(topicClass)
-            val tagsForClass =
-                io.micrometer.core.instrument.Tags
-                    .of(commonTags)
-                    .and(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, topicClass.tag)
-            val binding =
-                io.micrometer.core.instrument.binder.kafka
-                    .KafkaClientMetrics(producer, tagsForClass)
-            binding.bindTo(registry)
-            // Tracked so unbindMetrics() can close the binder (it is
-            // AutoCloseable and removes its meters on close).
-            producerMetricBindings += binding
-        }
     }
 
     // -- AppenderAttachable<ILoggingEvent> ------------------------------

@@ -5,58 +5,49 @@ package eu.inqudium.tabellarium
  *
  * ## XML format
  *
- * The current XML format is minimal:
- *
  * ```xml
  * <topicMapping>
- *   <defaultTopic>ichp-de.customerproducts.out</defaultTopic>
+ *   <defaultTopic>my-application.logs</defaultTopic>
+ *   <mapping>
+ *     <marker>SECURITY</marker>
+ *     <topic>audit.security</topic>
+ *     <topicClass>AUDIT</topicClass>
+ *   </mapping>
+ *   <mapping>
+ *     <marker>METRICS</marker>
+ *     <topic>perf.metrics</topic>
+ *     <topicClass>PERFORMANCE</topicClass>
+ *   </mapping>
  * </topicMapping>
  * ```
  *
  * Joran maps the `<topicMapping>` element to a [TopicMappingConfig]
  * instance because the [KafkaAppender] exposes a setter of that type.
- * Inside it, the `<defaultTopic>` sub-element is routed to the
- * [defaultTopic] property (via the generated `setDefaultTopic` setter).
+ * Inside it, `<defaultTopic>` is routed to the [defaultTopic] property,
+ * and each `<mapping>` element is materialized as a [TopicMappingEntry]
+ * via the collection-population setter [addMapping] (Joran picks up
+ * `addXxx` methods taking a single bean-style parameter). The entry's
+ * children are plain string properties, which is the most robust Joran
+ * shape - no attribute or body-text special cases.
  *
- * ## Future extension
+ * Events whose markers match no `<mapping>` (and events without
+ * markers) route to [defaultTopic], which is classified as
+ * [TopicClass.TECHNICAL] via the table fallback.
  *
- * The [TopicRouter] already supports marker-to-topic mappings, and the
- * [TopicTable] already supports per-topic class assignments. When the
- * configuration grows to include those, the natural extension is a
- * nested element per [TopicClass], for example:
+ * ## Validation
  *
- * ```xml
- * <topicMapping>
- *   <defaultTopic>default.topic</defaultTopic>
- *   <audit>
- *     <entry marker="SECURITY">audit.security</entry>
- *     <entry marker="MONEY">audit.transactions</entry>
- *   </audit>
- *   <technical>
- *     <entry marker="DEBUG">tech.debug</entry>
- *   </technical>
- * </topicMapping>
- * ```
+ * All structural validation happens eagerly when the appender builds
+ * its pipeline ([toTopicRouter] / [toTopicTable]), so misconfiguration
+ * aborts `start()` with a named error instead of surfacing per event:
  *
- * That would map to `addAudit(MarkerEntry)` / `addTechnical(MarkerEntry)`
- * setters on this class (Joran picks up `addXxx` methods that take a
- * single bean-style parameter as collection-population setters). The
- * `MarkerEntry` would be a tiny class with `setMarker(String)` and
- * `setTopic(String)` setters plus a `setValue(String)` for the text
- * content. Until that need arises this class deliberately stays
- * minimal - every Joran setter that exists must be tested, so adding
- * them speculatively is YAGNI.
- *
- * ## Defaults when only `<defaultTopic>` is configured
- *
- * - The [TopicRouter] returned from [toTopicRouter] has no marker
- *   mappings: every event resolves to [defaultTopic].
- * - The [TopicTable] returned from [toTopicTable] has no explicit
- *   topic-to-class assignments: every topic - including the default -
- *   resolves to [TopicClass.TECHNICAL] via the fallback. Only one
- *   producer (the TECHNICAL one) is instantiated.
+ * - blank marker/topic names and Kafka-invalid topic names (via
+ *   [TopicRouter]'s validation),
+ * - an unknown `<topicClass>` value (must be one of the [TopicClass]
+ *   constants, case-insensitive),
+ * - the same marker mapped twice,
+ * - the same topic mapped to two different classes.
  */
-open class TopicMappingConfig {
+class TopicMappingConfig {
     /**
      * The default topic for events whose markers do not match any
      * explicit mapping. Set by Joran from the `<defaultTopic>` text
@@ -67,29 +58,111 @@ open class TopicMappingConfig {
             field = value.trim()
         }
 
+    private val mutableMappings = mutableListOf<TopicMappingEntry>()
+
+    /**
+     * The `<mapping>` entries in configuration order. Exposed read-only
+     * so tests (and diagnostics) can inspect what Joran bound.
+     */
+    val mappings: List<TopicMappingEntry>
+        get() = mutableMappings.toList()
+
+    /**
+     * Called by Joran for every `<mapping>` element inside
+     * `<topicMapping>`.
+     */
+    fun addMapping(entry: TopicMappingEntry) {
+        mutableMappings += entry
+    }
+
     /**
      * Builds the [TopicRouter] from the current configuration.
      *
-     * @throws IllegalArgumentException via [TopicRouter]'s own validation
-     *                                  when [defaultTopic] is blank or
-     *                                  contains characters Kafka does not
-     *                                  permit.
+     * @throws IllegalArgumentException when [defaultTopic] is blank or
+     *                                  Kafka-invalid, when a mapping
+     *                                  carries a blank marker/topic or
+     *                                  a Kafka-invalid topic name, or
+     *                                  when the same marker is mapped
+     *                                  more than once.
      */
-    open fun toTopicRouter(): TopicRouter =
-        TopicRouter(
+    fun toTopicRouter(): TopicRouter {
+        val duplicateMarkers =
+            mutableMappings
+                .groupBy { it.marker }
+                .filterValues { it.size > 1 }
+                .keys
+        require(duplicateMarkers.isEmpty()) {
+            "Each marker may be mapped to exactly one topic; mapped more than once: " +
+                duplicateMarkers.joinToString { "'$it'" }
+        }
+        return TopicRouter(
             defaultTopic = defaultTopic,
-            markerMappings = emptyMap(),
+            markerMappings = mutableMappings.associate { it.marker to it.topic },
         )
+    }
 
     /**
-     * Builds the [TopicTable] from the current configuration. With only
-     * a `<defaultTopic>` configured, the table has no explicit
-     * topic-to-class assignments and every topic resolves to the
-     * fallback class.
+     * Builds the [TopicTable] from the current configuration. Topics
+     * without an explicit `<mapping>` - including [defaultTopic] -
+     * resolve to the [TopicClass.TECHNICAL] fallback.
+     *
+     * @throws IllegalArgumentException when a `<topicClass>` value is
+     *                                  not a [TopicClass] constant, or
+     *                                  when the same topic is assigned
+     *                                  two different classes.
      */
-    open fun toTopicTable(): TopicTable =
-        TopicTable(
-            topicsByName = emptyMap(),
+    fun toTopicTable(): TopicTable {
+        val byTopic = mutableMappings.groupBy({ it.topic }, { it.resolvedTopicClass() })
+        val conflicting = byTopic.filterValues { it.toSet().size > 1 }
+        require(conflicting.isEmpty()) {
+            "Each topic must map to exactly one topic class; conflicting assignments: " +
+                conflicting.entries.joinToString { (topic, classes) ->
+                    "'$topic' -> ${classes.toSet().joinToString()}"
+                }
+        }
+        return TopicTable(
+            topicsByName = byTopic.mapValues { (_, classes) -> classes.first() },
             fallbackClass = TopicClass.TECHNICAL,
         )
+    }
+}
+
+/**
+ * One `<mapping>` element inside `<topicMapping>`: routes events that
+ * carry [marker] to [topic], and classifies [topic] as [topicClass].
+ *
+ * A plain Joran bean: no-arg constructor, string setters, values
+ * trimmed on assignment. Validation is centralized in
+ * [TopicMappingConfig.toTopicRouter] / [TopicMappingConfig.toTopicTable]
+ * so every error surfaces as a named startup failure.
+ */
+class TopicMappingEntry {
+    /** SLF4J marker name that selects this mapping. Exact, case-sensitive match. */
+    var marker: String = ""
+        set(value) {
+            field = value.trim()
+        }
+
+    /** Kafka topic events with [marker] are routed to. */
+    var topic: String = ""
+        set(value) {
+            field = value.trim()
+        }
+
+    /**
+     * Name of the [TopicClass] governing [topic]'s producer
+     * configuration (`AUDIT`, `FUNCTIONAL`, `TECHNICAL`,
+     * `PERFORMANCE`); case-insensitive.
+     */
+    var topicClass: String = ""
+        set(value) {
+            field = value.trim()
+        }
+
+    internal fun resolvedTopicClass(): TopicClass =
+        TopicClass.entries.firstOrNull { it.name.equals(topicClass, ignoreCase = true) }
+            ?: throw IllegalArgumentException(
+                "Unknown <topicClass> '$topicClass' for marker '$marker' (topic '$topic'); " +
+                    "must be one of ${TopicClass.entries.joinToString()}",
+            )
 }

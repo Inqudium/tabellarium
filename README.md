@@ -79,7 +79,7 @@ Reference for every supported element:
 |------------------------------|----------|---------|------------------------------------------------------------------------------------|
 | `<encoder>`                  | Yes      | nested  | Standard Logback encoder. `LogstashEncoder` recommended.                           |
 | `<kafkaProducerProperties>`  | Yes      | text    | Multi-line `key=value` Kafka producer config. Comments with `#` supported.         |
-| `<topicMapping>`             | Yes      | nested  | Currently supports only `<defaultTopic>` — see [Extension points](#extension-points). |
+| `<topicMapping>`             | Yes      | nested  | `<defaultTopic>` plus any number of `<mapping>` elements (marker → topic → topic class) — see [Topic routing](#topic-routing). |
 | `<environment>`              | Yes      | string  | Deployment environment (e.g. `prod`, `staging`).                                   |
 | `<component>`                | Yes      | string  | Service component identifier (typically `${spring.application.name}`).             |
 | `<cmdbId>`                   | Yes      | string  | CMDB identifier of the deploying instance.                                         |
@@ -118,10 +118,35 @@ WARN  Mandatory override applied for AUDIT: acks forced from '1' to 'all'.
       This is a compliance requirement; see TopicClass.AUDIT for rationale.
 ```
 
-The current minimal configuration (only `<defaultTopic>`) results in
-all topics being treated as TECHNICAL — no mandatory overrides apply.
-The compliance differentiation activates as soon as
-[marker mappings](#extension-points) are introduced.
+With the minimal configuration (only `<defaultTopic>`) all topics are
+treated as TECHNICAL — no mandatory overrides apply. The compliance
+differentiation activates per class through
+[`<mapping>` elements](#topic-routing).
+
+## Topic routing
+
+`<topicMapping>` routes events by SLF4J marker and classifies each
+mapped topic:
+
+```xml
+<topicMapping>
+  <defaultTopic>my-application.logs</defaultTopic>
+  <mapping>
+    <marker>SECURITY</marker>
+    <topic>audit.security</topic>
+    <topicClass>AUDIT</topicClass>
+  </mapping>
+</topicMapping>
+```
+
+Events whose markers match no `<mapping>` (including marker-less
+events) go to `<defaultTopic>`, which is classified TECHNICAL. Each
+class named by a mapping activates its own producer and circuit
+breaker with the class's overrides. Misconfiguration — unknown
+`<topicClass>`, a marker mapped twice, one topic with two classes,
+Kafka-invalid topic names — aborts `start()` with a named error. Full
+resolution rules and validation live in the
+[configuration guide](docs/config/kafka-appender-config-guide.md).
 
 ## Resilience
 
@@ -557,31 +582,6 @@ testing or extension.
 
 ## Extension points
 
-### Marker-based topic mapping
-
-The `TopicRouter` and `TopicTable` already support marker-based
-routing per topic class. To enable it, extend `TopicMappingConfig`
-with collection-population setters per class and a small
-`MarkerEntry` value class. The KDoc on `TopicMappingConfig` describes
-the recommended XML shape:
-
-```xml
-<topicMapping>
-  <defaultTopic>default.topic</defaultTopic>
-  <audit>
-    <entry marker="SECURITY">audit.security</entry>
-    <entry marker="MONEY">audit.transactions</entry>
-  </audit>
-  <technical>
-    <entry marker="DEBUG">tech.debug</entry>
-  </technical>
-</topicMapping>
-```
-
-This is deliberately not implemented in the current revision because
-no production deployment uses it yet, and adding speculative Joran
-setters would mean speculative tests as well.
-
 ### Custom partitioning key
 
 `MessageEnricher` takes an optional partitioning-key extractor in its
@@ -621,13 +621,6 @@ configuration. A Testcontainers-based integration test that runs
 against a real Kafka broker would close this gap. Would live in a
 separate test module to avoid imposing a Docker dependency on the
 fast unit-test loop.
-
-### Marker-based topic mapping
-
-See [Extension points](#extension-points). The TopicRouter and
-TopicTable already support it; only the Joran configuration surface
-(`TopicMappingConfig`) needs the additional setters. Deferred until
-a concrete deployment uses marker-based classification.
 
 ## Build
 

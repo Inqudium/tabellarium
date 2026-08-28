@@ -207,6 +207,15 @@ class MessageEnricher(
  * would silently share the mutable arrays. Instances compare by
  * identity; there is no use case for value equality on this type.
  *
+ * ## Why [headers] is `internal`
+ *
+ * The shared byte arrays are safe only as long as nobody mutates
+ * them. Keeping the map off the public API shrinks that read-only
+ * contract from "every consumer of the library" to "code in this
+ * module" - the only code that ever touches the arrays is the
+ * enricher (writes once) and the sender (hands them to Kafka, which
+ * does not mutate header values).
+ *
  * @param partitioningKey The Kafka record key. Null means "no key": the
  *                        producer will then distribute records via its
  *                        configured partitioner (sticky-random by default).
@@ -214,7 +223,7 @@ class MessageEnricher(
  *                value bytes. Same instance across all enrich calls of
  *                a given enricher. Byte arrays must NOT be mutated.
  */
-class EnrichedRecord(
+class EnrichedRecord internal constructor(
     val partitioningKey: String?,
-    val headers: Map<String, ByteArray>,
+    internal val headers: Map<String, ByteArray>,
 )

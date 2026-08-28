@@ -165,4 +165,145 @@ class TopicMappingConfigTest {
             assertThat(table.activeTopicClasses).containsExactly(TopicClass.TECHNICAL)
         }
     }
+
+    @Nested
+    inner class `Marker mappings` {
+        private fun entry(
+            marker: String,
+            topic: String,
+            topicClass: String,
+        ): TopicMappingEntry =
+            TopicMappingEntry().apply {
+                this.marker = marker
+                this.topic = topic
+                this.topicClass = topicClass
+            }
+
+        private fun configWith(vararg entries: TopicMappingEntry): TopicMappingConfig =
+            TopicMappingConfig().apply {
+                defaultTopic = "default.topic"
+                entries.forEach { addMapping(it) }
+            }
+
+        @Test
+        fun `should route a mapped marker to its topic and classify the topic`() {
+            // What is to be tested? The end-to-end effect of a <mapping>
+            //   element: the marker routes to the topic, and the topic
+            //   carries the configured class - through the same
+            //   toTopicRouter/toTopicTable path the appender uses.
+            // How will the test case be deemed successful and why? Successful
+            //   if the router resolves the marker to the mapped topic and
+            //   the table classifies that topic with the mapped class,
+            //   while unmapped topics stay on the TECHNICAL fallback.
+            // Why is it important to test this test case? This is the
+            //   activation path of the entire four-class compliance model;
+            //   a silent regression here would strip AUDIT topics of their
+            //   mandatory overrides without any startup signal.
+
+            // Given
+            val config =
+                configWith(
+                    entry("SECURITY", "audit.security", "AUDIT"),
+                    entry("METRICS", "perf.metrics", "performance"),
+                )
+
+            // When
+            val router = config.toTopicRouter()
+            val table = config.toTopicTable()
+
+            // Then: routing
+            val securityMarker = org.slf4j.MarkerFactory.getDetachedMarker("SECURITY")
+            assertThat(router.route(listOf(securityMarker))).isEqualTo("audit.security")
+            assertThat(router.route(emptyList())).isEqualTo("default.topic")
+            // And: classification (topicClass parsing is case-insensitive)
+            assertThat(table.classFor("audit.security")).isEqualTo(TopicClass.AUDIT)
+            assertThat(table.classFor("perf.metrics")).isEqualTo(TopicClass.PERFORMANCE)
+            assertThat(table.classFor("default.topic")).isEqualTo(TopicClass.TECHNICAL)
+            assertThat(table.activeTopicClasses)
+                .containsExactlyInAnyOrder(TopicClass.AUDIT, TopicClass.PERFORMANCE, TopicClass.TECHNICAL)
+        }
+
+        @Test
+        fun `should trim whitespace on all entry properties`() {
+            // Given: XML-typical indentation whitespace on every value
+            val config = configWith(entry("  SECURITY  ", "  audit.security  ", "  AUDIT  "))
+
+            // When / Then
+            assertThat(
+                config.toTopicRouter().route(
+                    listOf(org.slf4j.MarkerFactory.getDetachedMarker("SECURITY")),
+                ),
+            ).isEqualTo("audit.security")
+            assertThat(config.toTopicTable().classFor("audit.security")).isEqualTo(TopicClass.AUDIT)
+        }
+
+        @Test
+        fun `should reject an unknown topic class with a named error`() {
+            // Given
+            val config = configWith(entry("SECURITY", "audit.security", "AUDIT_LOGS"))
+
+            // When / Then: the error names the bad value, its mapping, and the valid values
+            assertThatThrownBy { config.toTopicTable() }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("AUDIT_LOGS")
+                .hasMessageContaining("SECURITY")
+                .hasMessageContaining("AUDIT, FUNCTIONAL, TECHNICAL, PERFORMANCE")
+        }
+
+        @Test
+        fun `should reject the same marker mapped twice`() {
+            // What is to be tested? Whether a marker collision fails at
+            //   startup instead of silently keeping the last mapping.
+            // How will the test case be deemed successful and why? Successful
+            //   if toTopicRouter throws and names the duplicated marker.
+            //   Map.associate would otherwise silently drop one mapping -
+            //   an event stream quietly landing on the wrong topic.
+            // Why is it important to test this test case? A silently
+            //   dropped AUDIT mapping is a compliance incident, not a
+            //   configuration nuance.
+
+            // Given
+            val config =
+                configWith(
+                    entry("SECURITY", "audit.security", "AUDIT"),
+                    entry("SECURITY", "other.topic", "TECHNICAL"),
+                )
+
+            // When / Then
+            assertThatThrownBy { config.toTopicRouter() }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("'SECURITY'")
+        }
+
+        @Test
+        fun `should reject the same topic assigned two different classes`() {
+            // Given: two markers routing to one topic with conflicting classes
+            val config =
+                configWith(
+                    entry("SECURITY", "shared.topic", "AUDIT"),
+                    entry("MONEY", "shared.topic", "FUNCTIONAL"),
+                )
+
+            // When / Then
+            assertThatThrownBy { config.toTopicTable() }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("'shared.topic'")
+        }
+
+        @Test
+        fun `should accept two markers sharing one topic with the same class`() {
+            // Given: a legal fan-in - both markers route to one AUDIT topic
+            val config =
+                configWith(
+                    entry("SECURITY", "audit.events", "AUDIT"),
+                    entry("MONEY", "audit.events", "AUDIT"),
+                )
+
+            // When / Then: no conflict; both markers route there
+            val router = config.toTopicRouter()
+            assertThat(router.route(listOf(org.slf4j.MarkerFactory.getDetachedMarker("MONEY"))))
+                .isEqualTo("audit.events")
+            assertThat(config.toTopicTable().classFor("audit.events")).isEqualTo(TopicClass.AUDIT)
+        }
+    }
 }

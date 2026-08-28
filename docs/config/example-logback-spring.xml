@@ -86,10 +86,22 @@
              event goes to that one topic and is treated as TECHNICAL —
              a single Kafka producer is instantiated.
 
-             Marker-based per-class routing is a planned extension. See
-             the KDoc on TopicMappingConfig and README "Extension points". -->
+             Optional <mapping> elements route events by SLF4J marker to
+             other topics and assign each mapped topic a topic class
+             (AUDIT, FUNCTIONAL, TECHNICAL, PERFORMANCE); each class
+             named by a mapping activates its own producer and circuit
+             breaker with the class's overrides (e.g. acks=all and
+             idempotence enforced for AUDIT). See the configuration
+             guide, section "Topic routing". -->
         <topicMapping>
             <defaultTopic>my-application.logs</defaultTopic>
+            <!--
+            <mapping>
+                <marker>SECURITY</marker>
+                <topic>audit.security</topic>
+                <topicClass>AUDIT</topicClass>
+            </mapping>
+            -->
         </topicMapping>
 
         <!-- Metadata attached to every Kafka record as headers
