@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" role="img" aria-label="Tabellarium banner, delivery road style, light variant">
+  <defs>
+    <linearGradient id="bnrBgL" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F6EEDD"/>
+      <stop offset="1" stop-color="#EBDEC2"/>
+    </linearGradient>
+    <linearGradient id="woodL" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C99A4B"/>
+      <stop offset="1" stop-color="#9A6F2C"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="320" fill="url(#bnrBgL)"/>
+
+  <!-- wordmark -->
+  <text x="84" y="118" font-family="Georgia, 'Times New Roman', serif" font-size="80" fill="#2B2B33">Tabellarium</text>
+  <text x="88" y="164" font-family="Verdana, Geneva, sans-serif" font-size="19" fill="#6E6656">A resilient Logback appender for Apache Kafka</text>
+
+  <!-- the story: tablet -> road -> breaker gap -> Kafka; side road below for the fallback -->
+  <g transform="translate(0 40)">
+    <!-- small tablet at the start of the road -->
+    <g transform="translate(84 158)">
+      <rect x="0" y="0" width="52" height="72" rx="6" fill="url(#woodL)"/>
+      <rect x="7" y="7" width="38" height="58" rx="3" fill="#5C1A12"/>
+      <g stroke="#E8C388" stroke-width="3" stroke-linecap="round" opacity="0.9">
+        <line x1="13" y1="21" x2="39" y2="21"/>
+        <line x1="13" y1="35" x2="33" y2="35"/>
+        <line x1="13" y1="49" x2="37" y2="49"/>
+      </g>
+    </g>
+
+    <!-- main road -->
+    <line x1="150" y1="194" x2="700" y2="194" stroke="#9A6F2C" stroke-width="7" stroke-linecap="round"/>
+    <!-- circuit breaker: contacts + open arm -->
+    <circle cx="712" cy="194" r="7" fill="#9A6F2C"/>
+    <circle cx="782" cy="194" r="7" fill="#9A6F2C"/>
+    <line x1="712" y1="194" x2="774" y2="158" stroke="#9A6F2C" stroke-width="7" stroke-linecap="round"/>
+    <!-- road resumes after the breaker -->
+    <line x1="794" y1="194" x2="1050" y2="194" stroke="#9A6F2C" stroke-width="7" stroke-linecap="round"/>
+    <!-- arrowhead into the cluster -->
+    <path d="M 1074 194 L 1046 182 L 1046 206 Z" fill="#9A6F2C"/>
+
+    <!-- fallback side road: dashed, dips under the breaker gap -->
+    <path d="M 640 194 C 690 250, 810 250, 860 194" fill="none" stroke="#8E2C21" stroke-width="5"
+          stroke-linecap="round" stroke-dasharray="2 14"/>
+
+    <!-- Kafka-esque node cluster -->
+    <g fill="#F0E6CF" stroke="#9A6F2C" stroke-width="4">
+      <circle cx="1122" cy="150" r="22"/>
+      <circle cx="1122" cy="238" r="22"/>
+      <circle cx="1180" cy="194" r="22"/>
+    </g>
+    <g stroke="#9A6F2C" stroke-width="3" opacity="0.7">
+      <line x1="1122" y1="172" x2="1122" y2="216"/>
+      <line x1="1140" y1="162" x2="1162" y2="182"/>
+      <line x1="1140" y1="226" x2="1162" y2="206"/>
+    </g>
+  </g>
+</svg>

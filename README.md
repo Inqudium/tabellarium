@@ -1,4 +1,8 @@
-![Tabellarium — a resilient Logback appender for Apache Kafka](docs/assets/banner.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.svg">
+  <img src="docs/assets/banner-light.svg" alt="Tabellarium — a resilient Logback appender for Apache Kafka">
+</picture>
 
 # Tabellarium
 
