@@ -1,5 +1,5 @@
-![Tabellarium banner](assets/banner-light.svg#only-light)
-![Tabellarium banner](assets/banner-dark.svg#only-dark)
+![Tabellarium banner](assets/banner-light-docs.svg#only-light)
+![Tabellarium banner](assets/banner-dark-docs.svg#only-dark)
 
 # Tabellarium
 
@@ -41,6 +41,8 @@ be shipped.
   [appender dashboard](metrics/kafka-appender-dashboard.json) and
   [producer-internals dashboard](metrics/kafka-producer-internals-dashboard.json),
   ready for import.
+- **[API reference](https://inqudium.github.io/tabellarium/api/)** —
+  the KDoc of the public API, generated with Dokka.
 
 ## Project
 

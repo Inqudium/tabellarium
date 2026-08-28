@@ -34,6 +34,7 @@ nav:
   - Home: index.md
   - Configuration guide: config/kafka-appender-config-guide.md
   - Metrics overview: metrics/metrics-overview.md
+  - API reference: https://inqudium.github.io/tabellarium/api/
 
 markdown_extensions:
   - admonition

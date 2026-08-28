@@ -74,6 +74,7 @@
         <!-- Plugin Versions -->
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
+        <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -313,6 +314,29 @@
                         <sourceRoot>${project.basedir}/src/main/kotlin</sourceRoot>
                         <sourceRoot>${project.basedir}/src/test/kotlin</sourceRoot>
                     </sourceRoots>
+                </configuration>
+            </plugin>
+
+            <!--
+                KDoc API reference, generated on demand with `mvn dokka:dokka`
+                (not bound to the default lifecycle to keep `mvn verify` fast).
+                The docs workflow publishes the output under /api/ on the
+                documentation site.
+            -->
+            <plugin>
+                <groupId>org.jetbrains.dokka</groupId>
+                <artifactId>dokka-maven-plugin</artifactId>
+                <version>${dokka-maven-plugin.version}</version>
+                <configuration>
+                    <moduleName>tabellarium</moduleName>
+                    <outputDir>${project.build.directory}/dokka</outputDir>
+                    <sourceLinks>
+                        <link>
+                            <path>src/main/kotlin</path>
+                            <url>https://github.com/Inqudium/tabellarium/tree/main/src/main/kotlin</url>
+                            <lineSuffix>#L</lineSuffix>
+                        </link>
+                    </sourceLinks>
                 </configuration>
             </plugin>
 
