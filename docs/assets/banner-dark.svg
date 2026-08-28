@@ -14,7 +14,7 @@
 
   <!-- wordmark -->
   <text x="84" y="118" font-family="Georgia, 'Times New Roman', serif" font-size="80" fill="#F4EAD8">Tabellarium</text>
-  <text x="88" y="164" font-family="Verdana, Geneva, sans-serif" font-size="19" fill="#8F8A96">A resilient Logback appender for Apache Kafka</text>
+  <text x="88" y="164" font-family="Verdana, Geneva, sans-serif" font-size="28.5" fill="#8F8A96">A resilient Logback appender for Apache Kafka</text>
 
   <!-- the story: tablet -> road -> breaker gap -> Kafka; side road below for the fallback -->
   <g transform="translate(0 40)">
