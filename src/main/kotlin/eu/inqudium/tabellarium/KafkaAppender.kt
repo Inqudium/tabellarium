@@ -176,6 +176,13 @@ class KafkaAppender :
     private val firstHotPathErrorLogged = AtomicBoolean(false)
 
     /**
+     * The effective `client.id` values of this appender's producers,
+     * snapshot from the [ProducerRegistry] in [buildPipeline]. Used by
+     * the self-logging guard in [append]; see there.
+     */
+    private var producerClientIds: Set<String> = emptySet()
+
+    /**
      * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP].
      * Replaced by [bindMeterRegistry] when an operator wires the
      * appender to a Micrometer registry - typically from a Spring
@@ -257,6 +264,7 @@ class KafkaAppender :
                 activeTopicClasses = topicTable.activeTopicClasses,
                 producerFactory = producerFactory,
             )
+        producerClientIds = producerRegistry.clientIds
         // Wrap the fallback appender in a dispatcher so the Kafka I/O
         // thread is never blocked on the fallback's downstream I/O.
         // See FallbackDispatcher KDoc for the rationale.
@@ -305,6 +313,18 @@ class KafkaAppender :
     // -- Hot path -------------------------------------------------------
 
     override fun append(event: ILoggingEvent) {
+        // Self-logging guard: the Kafka client names its internal threads
+        // after the producer's client.id (e.g. "kafka-producer-network-
+        // thread | tabellarium-<component>-technical"). Log events from
+        // those threads are the producer's own logging; routing them back
+        // into this appender would feed the producer its own output - a
+        // feedback loop that amplifies exactly when the producer logs
+        // most (broker trouble). Such events are ignored entirely: no
+        // metrics, no fallback.
+        val threadName = event.threadName
+        if (threadName != null && producerClientIds.any { threadName.contains(it) }) {
+            return
+        }
         // Snapshot once so all hooks for this event use the same instance.
         val m = metrics
         // Determine topic class before the try so we can use it in both

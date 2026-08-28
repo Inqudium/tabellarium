@@ -36,6 +36,14 @@ class ProducerRegistry private constructor(
     private val producersByClass: Map<TopicClass, Producer<ByteArray, ByteArray>>,
     private val closeTimeout: Duration,
     val mandatoryOverrideViolations: List<MandatoryOverrideViolation>,
+    /**
+     * The effective `client.id` values of all created producers, for the
+     * appender's self-logging guard: the Kafka client names its internal
+     * threads after the client.id, and log events from those threads must
+     * not be routed back into the producer. Blank ids are excluded (a
+     * blank id would match every thread name).
+     */
+    val clientIds: Set<String>,
 ) : AutoCloseable {
     /**
      * Topic classes for which a producer was successfully created.
@@ -140,11 +148,15 @@ class ProducerRegistry private constructor(
 
             val createdProducers = LinkedHashMap<TopicClass, Producer<ByteArray, ByteArray>>()
             val allViolations = mutableListOf<MandatoryOverrideViolation>()
+            val clientIds = mutableSetOf<String>()
 
             try {
                 activeTopicClasses.forEach { topicClass ->
                     val resolved = propertiesBuilder.buildFor(topicClass)
                     allViolations += resolved.mandatoryOverrideViolations
+                    resolved.properties[ProducerConfig.CLIENT_ID_CONFIG]
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { clientIds += it }
                     createdProducers[topicClass] = producerFactory.create(resolved.properties)
                 }
             } catch (e: Exception) {
@@ -164,6 +176,7 @@ class ProducerRegistry private constructor(
                 producersByClass = java.util.Map.copyOf(createdProducers),
                 closeTimeout = closeTimeout,
                 mandatoryOverrideViolations = allViolations.toList(),
+                clientIds = clientIds.toSet(),
             )
         }
     }

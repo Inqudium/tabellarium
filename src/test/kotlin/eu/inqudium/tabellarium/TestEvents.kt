@@ -20,10 +20,12 @@ internal fun newTestLoggingEvent(
     mdc: Map<String, String> = emptyMap(),
     level: Level = Level.INFO,
     loggerName: String = "test-logger",
+    threadName: String? = null,
 ): ILoggingEvent {
     val context = LoggerContext()
     val logger = context.getLogger(loggerName)
     return LoggingEvent("fqcn.dummy", logger, level, message, null, null).apply {
         mdcPropertyMap = mdc
+        threadName?.let { this.threadName = it }
     }
 }

@@ -405,6 +405,99 @@ class KafkaAppenderTest {
     }
 
     @Nested
+    inner class `Producer self-logging guard` {
+        @Test
+        fun `should ignore events from threads whose name contains a producer client id`() {
+            // What is to be tested? Whether a log event originating from one
+            //   of the appender's own Kafka producer threads (the client
+            //   names them after the client.id) is dropped instead of being
+            //   routed back into that producer.
+            // How will the test case be deemed successful and why? Successful
+            //   if neither the producer nor the fallback sees the event.
+            //   This pins down the feedback-loop guard: producer-internal
+            //   logging must never be shipped through the producer itself.
+            // Why is it important to test this test case? Under broker
+            //   trouble the Kafka client logs from its network thread on
+            //   every failure; feeding those events back into the failing
+            //   producer amplifies load and floods the fallback exactly when
+            //   the system is least able to absorb it.
+
+            // Given
+            val encoder = TestEncoder()
+            val factory = TestProducerFactory()
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = encoder,
+                    producerFactory = factory,
+                    fallback = fallback,
+                    component = "checkout-service",
+                )
+            appender.start()
+
+            // When: an event from the producer's own network thread
+            appender.doAppend(
+                newTestLoggingEvent(
+                    message = "Connection to node -1 could not be established",
+                    threadName = "kafka-producer-network-thread | tabellarium-checkout-service-technical",
+                ),
+            )
+
+            // Then: fully ignored - not encoded, not sent, not in fallback
+            assertThat(encoder.encodedEvents).isEmpty()
+            assertThat(factory.createdProducers[0].history()).isEmpty()
+            assertThat(fallback.events).isEmpty()
+        }
+
+        @Test
+        fun `should deliver events from ordinary threads`() {
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.start()
+
+            // When
+            appender.doAppend(newTestLoggingEvent(threadName = "http-nio-8080-exec-3"))
+
+            // Then
+            assertThat(factory.createdProducers[0].history()).hasSize(1)
+        }
+
+        @Test
+        fun `should not drop events when the operator sets a blank client id`() {
+            // What is to be tested? Whether a blank operator-supplied
+            //   client.id is excluded from the guard set.
+            // How will the test case be deemed successful and why? Successful
+            //   if an ordinary event is still delivered. A blank id in the
+            //   guard would be contained in every thread name and silently
+            //   drop all logging.
+            // Why is it important to test this test case? `client.id=` (empty
+            //   value) is accepted by the properties parser; without the
+            //   blank-filter this valid-if-unusual configuration would turn
+            //   the appender into a black hole.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender =
+                newAppender(
+                    producerFactory = factory,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.CLIENT_ID_CONFIG}=
+                        """.trimIndent(),
+                )
+            appender.start()
+
+            // When
+            appender.doAppend(newTestLoggingEvent(threadName = "main"))
+
+            // Then
+            assertThat(factory.createdProducers[0].history()).hasSize(1)
+        }
+    }
+
+    @Nested
     inner class `Hot path` {
         @Test
         fun `should encode and send the event when appended`() {

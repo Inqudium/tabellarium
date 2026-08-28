@@ -194,6 +194,16 @@ producers never collide on JMX names. An explicit `client.id` in
 `<kafkaProducerProperties>` wins — note that it is then shared by every
 active class.
 
+The client.id also powers the **self-logging guard**: the Kafka client
+names its internal threads after the client.id
+(`kafka-producer-network-thread | <client.id>`), and the appender
+ignores any log event whose thread name contains one of its producers'
+client.ids — otherwise the producer's own logging would be routed back
+through the producer, a feedback loop that amplifies exactly during
+broker trouble. Ignored means ignored entirely: no metrics, no
+fallback. A blank operator-supplied `client.id` is excluded from the
+guard (it would match every thread name).
+
 ### Worked example
 
 Given this configuration:

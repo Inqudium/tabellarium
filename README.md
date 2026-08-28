@@ -166,6 +166,12 @@ Three resilience mechanisms run independently per topic class:
    fallback says "loss is unacceptable here"; leaving it out says
    "best-effort is fine".
 
+In addition, a **self-logging guard** keeps the appender out of feedback
+loops: log events originating from the appender's own Kafka producer
+threads (recognizable because the Kafka client names them after the
+producer's `client.id`) are ignored entirely — the producer's internal
+logging is never shipped through the producer itself.
+
 ## Should I wrap this in a Logback `AsyncAppender`?
 
 **Short answer: no.** A common pattern with Kafka appenders is to

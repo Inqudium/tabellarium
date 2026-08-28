@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-class `client.id` default (`tabellarium-<component>-<topicclass>`)
   so producers are attributable on the broker; an operator-supplied
   `client.id` wins.
+- Self-logging guard: events from threads whose name contains one of
+  the appender's producer `client.id`s (the Kafka client's own threads)
+  are ignored, preventing producer-log feedback loops.
 - Configuration guide, metrics overview, and Grafana dashboards under
   `docs/config/` and `docs/metrics/`.
 
