@@ -358,6 +358,110 @@ class SendDispatcherTest {
     }
 
     @Nested
+    inner class `Worker death` {
+        @Test
+        fun `should report a worker death and account for the in-flight item`() {
+            // What is to be tested? Whether a worker killed by an Error
+            //   (which the delivery loop deliberately does not catch) is
+            //   surfaced via the onWorkerDeath hook and whether the item
+            //   it was carrying is diverted instead of vanishing.
+            // How will the test case be deemed successful and why? Successful
+            //   if the hook receives the Error and the in-flight event
+            //   lands in the fallback exactly once.
+            // Why is it important to test this test case? A silently dead
+            //   worker degrades the class to permanent queue.full
+            //   diversion that reads like a slow broker; the hook is what
+            //   lets the appender tell operators the real cause.
+
+            // Given: a send action that dies with an Error
+            val death = AtomicReference<Throwable?>()
+            val recorder = RecordingAppender()
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = { throw AssertionError("simulated worker death") },
+                    fallbackDispatcher = newFallback(recorder),
+                    onWorkerDeath = { death.set(it) },
+                )
+            try {
+                // When
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("doomed"))
+
+                // Then: death reported, item diverted exactly once
+                pollUntil { death.get() != null }
+                assertThat(death.get()).hasMessage("simulated worker death")
+                pollUntil { recorder.events.size == 1 }
+                assertThat(recorder.events[0].formattedMessage).isEqualTo("doomed")
+            } finally {
+                dispatcher.close()
+            }
+        }
+    }
+
+    @Nested
+    inner class `Diversion claim` {
+        @Test
+        fun `should let the send action stand down when the shutdown divert already claimed the item`() {
+            // What is to be tested? The exactly-once contract between a
+            //   forced close() and the send action's own error routing:
+            //   the PendingSend's claim is handed to the sender
+            //   (ResilientMessageSender uses it before every fallback
+            //   diversion), so whoever claims first diverts alone.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after close() diverted the pinned in-flight item with
+            //   reason shutdown, the send action's later claim attempt
+            //   returns false - modelling the sender finding the
+            //   diversion already taken.
+            // Why is it important to test this test case? This is the
+            //   dispatcher-level pin for the duplicate-delivery scenario:
+            //   without the shared claim, the same event would reach the
+            //   fallback twice on exactly this timeline.
+
+            // Given: an uninterruptibly pinned send action that records
+            //   its claim attempt once released
+            val release = CountDownLatch(1)
+            val entered = CountDownLatch(1)
+            val lateClaim = AtomicReference<Boolean?>()
+            val recorder = RecordingAppender()
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = { item ->
+                        entered.countDown()
+                        var wasInterrupted = false
+                        while (release.count > 0) {
+                            try {
+                                release.await()
+                            } catch (_: InterruptedException) {
+                                wasInterrupted = true
+                            }
+                        }
+                        if (wasInterrupted) {
+                            Thread.currentThread().interrupt()
+                        }
+                        // The sender would now take its send-error path
+                        // and ask for the claim first:
+                        lateClaim.set(item.tryClaimDiversion())
+                    },
+                    fallbackDispatcher = newFallback(recorder),
+                    drainTimeoutMs = 100,
+                )
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("pinned"))
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+
+            // When: forced shutdown claims and diverts, then the send unblocks
+            dispatcher.close()
+            assertThat(recorder.events.map { it.formattedMessage }).containsExactly("pinned")
+            release.countDown()
+            pollUntil { lateClaim.get() != null }
+
+            // Then: the late claim lost - no second diversion possible
+            assertThat(lateClaim.get()).isFalse()
+            assertThat(recorder.events).hasSize(1)
+        }
+    }
+
+    @Nested
     inner class `Metrics wiring` {
         @Test
         fun `should register the send queue gauges for its topic class`() {
@@ -383,6 +487,28 @@ class SendDispatcherTest {
 
     @Nested
     inner class `Synchronous test mode` {
+        @Test
+        fun `should divert instead of sending when dispatching after close in synchronous mode`() {
+            // The sync test mode must keep the worker path's after-close
+            // accounting: a dispatch after close() diverts (reason
+            // shutdown) instead of still invoking the send action.
+            val sent = AtomicBoolean(false)
+            val recorder = RecordingAppender()
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = { sent.set(true) },
+                    fallbackDispatcher = newFallback(recorder),
+                    synchronous = true,
+                )
+            dispatcher.close()
+
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("late"))
+
+            assertThat(sent.get()).isFalse()
+            assertThat(recorder.events.map { it.formattedMessage }).containsExactly("late")
+        }
+
         @Test
         fun `should run the send action inline on the caller thread when synchronous`() {
             // Given

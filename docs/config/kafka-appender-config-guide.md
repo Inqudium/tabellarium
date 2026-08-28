@@ -568,10 +568,10 @@ producer fails to construct, the already-created ones are closed and the
 exception is rethrown — the registry is never partially initialized, and
 `start()` reports the failure via `addError`.
 
-At `stop()` the send dispatchers are closed first: each drains its queue
-by still sending through the open producers (budget **1 s** per class);
-whatever cannot be sent in time diverts to the fallback appender with
-metric reason `shutdown`. Then every producer is closed **in parallel**
+At `stop()` the send dispatchers are closed first, **in parallel**
+within one shared **~2 s** budget: each drains its queue by still
+sending through the open producers; whatever cannot be sent in time
+diverts to the fallback appender with metric reason `shutdown`. Then every producer is closed **in parallel**
 within a **10 s** overall budget. A per-producer close failure does not
 prevent the others from closing (partial cleanup beats none); failures
 are aggregated and surfaced as a status warning. The parallel close
@@ -754,7 +754,7 @@ bound.
 | Circuit breaker: half-open permitted calls   | `10`                             | code |
 | Half-open probe gap                          | `5 ms`                           | code |
 | Send dispatcher queue capacity (per class)   | `1024`                           | XML (`<sendQueueCapacity>`) |
-| Send dispatcher drain timeout on stop        | `1 s`                            | code |
+| Send dispatcher drain on stop (parallel)     | `1 s` drain + margin, shared     | code |
 | Fallback dispatcher queue capacity           | `1024`                           | code |
 | Fallback dispatcher shutdown timeout         | `5 s`                            | code |
 | Producer close timeout                       | `10 s`                           | code |

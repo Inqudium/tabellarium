@@ -375,7 +375,17 @@ class KafkaAppender :
         // See FallbackDispatcher KDoc for the rationale.
         fallbackDispatcher =
             fallbackAppender?.let {
-                FallbackDispatcher(it, synchronous = useSynchronousFallbackForTests)
+                FallbackDispatcher(
+                    it,
+                    onWorkerDeath = { t ->
+                        addWarn(
+                            "Fallback dispatcher worker died from ${t.javaClass.name}; " +
+                                "queued fallback events will be dropped and counted.",
+                            t,
+                        )
+                    },
+                    synchronous = useSynchronousFallbackForTests,
+                )
             }
         messageSender =
             ResilientMessageSender(
@@ -393,11 +403,30 @@ class KafkaAppender :
                 SendDispatcher(
                     topicClass = topicClass,
                     sendAction = { pending ->
-                        sender.send(topicClass, pending.topicName, pending.payload, pending.enrichment, pending.originalEvent)
+                        // claimDiversion shares the per-item exactly-once
+                        // guard with the dispatcher, so a forced-shutdown
+                        // divert and the sender's own error routing can
+                        // never both deliver the same event.
+                        sender.send(
+                            topicClass,
+                            pending.topicName,
+                            pending.payload,
+                            pending.enrichment,
+                            pending.originalEvent,
+                            claimDiversion = pending::tryClaimDiversion,
+                        )
                     },
                     fallbackDispatcher = fallbackDispatcher,
                     reentryGuard = inAppend,
                     queueCapacity = sendQueueCapacity,
+                    onWorkerDeath = { t ->
+                        addWarn(
+                            "Send dispatcher worker for $topicClass died from ${t.javaClass.name}; " +
+                                "further $topicClass events will divert to the fallback once the " +
+                                "queue fills (reason queue.full).",
+                            t,
+                        )
+                    },
                     synchronous = useSynchronousSendForTests,
                 )
             }
@@ -580,14 +609,11 @@ class KafkaAppender :
         // graceful drain delivers the queued events through the still-
         // open producers; whatever cannot be sent in time diverts to the
         // fallback dispatcher (which closes later for exactly that
-        // reason).
-        sendDispatchers.values.forEach { dispatcher ->
-            try {
-                dispatcher.close()
-            } catch (e: Exception) {
-                addWarn("Error closing send dispatcher: ${e.message}", e)
-            }
-        }
+        // reason). Closed IN PARALLEL so the per-dispatcher budgets
+        // (drain plus interrupt grace) do not stack across topic classes
+        // - the same single-overall-budget principle the producer
+        // registry applies to its close.
+        closeSendDispatchersInParallel()
         if (this::producerRegistry.isInitialized) {
             try {
                 producerRegistry.close()
@@ -627,6 +653,46 @@ class KafkaAppender :
             addWarn("Error stopping encoder: ${e.message}", e)
         }
         super.stop()
+    }
+
+    /**
+     * Closes all send dispatchers concurrently and waits for them within
+     * one shared budget. Each [SendDispatcher.close] is itself bounded
+     * (drain timeout plus interrupt grace), so the closer threads always
+     * finish; the join budget only adds scheduling margin. An interrupt
+     * of the stopping thread ends the wait early - the daemon closer
+     * threads complete on their own - and is restored before returning.
+     */
+    private fun closeSendDispatchersInParallel() {
+        if (sendDispatchers.isEmpty()) return
+        val closers =
+            sendDispatchers.map { (topicClass, dispatcher) ->
+                Thread({
+                    try {
+                        dispatcher.close()
+                    } catch (e: Exception) {
+                        addWarn("Error closing send dispatcher for $topicClass: ${e.message}", e)
+                    }
+                }, "tabellarium-send-dispatcher-close-${topicClass.tag}").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+        var interrupted = false
+        val deadlineNanos = System.nanoTime() + SEND_DISPATCHER_CLOSE_BUDGET_MS * 1_000_000
+        for (closer in closers) {
+            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+            if (remainingMs <= 0) break
+            try {
+                closer.join(remainingMs)
+            } catch (_: InterruptedException) {
+                interrupted = true
+                break
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     // -- Public API: metrics integration --------------------------------
@@ -748,6 +814,15 @@ class KafkaAppender :
     }
 
     private companion object {
+        /**
+         * Overall wait budget for the parallel send-dispatcher close:
+         * one dispatcher's own bounded close (drain timeout plus
+         * interrupt grace) plus scheduling margin. Shared across all
+         * dispatchers because they close concurrently.
+         */
+        private const val SEND_DISPATCHER_CLOSE_BUDGET_MS: Long =
+            SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
+
         /**
          * Kafka's fixed naming scheme for the producer's network thread;
          * the client.id follows verbatim after this prefix. See

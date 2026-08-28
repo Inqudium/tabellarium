@@ -88,6 +88,14 @@ import java.util.concurrent.atomic.AtomicReference
  *                      bursts, small enough to bound memory.
  * @param drainTimeoutMs Time allowed in [close] for the worker to
  *                       drain the queue by actually sending.
+ * @param onWorkerDeath Invoked when the worker thread dies from a
+ *                      [Throwable] the delivery loop does not handle
+ *                      (an [Error] such as OOM - [Exception]s are
+ *                      handled in place). The appender reports this to
+ *                      the status manager: without the hook a dead
+ *                      worker would be invisible - the queue fills and
+ *                      everything diverts as `queue.full`, which reads
+ *                      like a slow broker, not like a dead thread.
  * @param synchronous Test-only hook, same pattern as
  *                    [FallbackDispatcher]: [dispatch] runs [sendAction]
  *                    inline on the caller and no worker is started, so
@@ -102,6 +110,7 @@ internal class SendDispatcher(
     private val reentryGuard: ThreadLocal<Boolean>? = null,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val drainTimeoutMs: Long = DEFAULT_DRAIN_TIMEOUT_MS,
+    private val onWorkerDeath: (Throwable) -> Unit = {},
     private val synchronous: Boolean = false,
 ) : AutoCloseable {
     /**
@@ -113,7 +122,22 @@ internal class SendDispatcher(
         val payload: ByteArray,
         val enrichment: EnrichedRecord,
         val originalEvent: ILoggingEvent,
-    )
+    ) {
+        /**
+         * Exactly-once guard for the fallback diversion of this item,
+         * shared between the dispatcher (overflow, shutdown, worker
+         * death) and [ResilientMessageSender]'s own diversion paths
+         * (throttle, open breaker, send failure): whoever wins the
+         * compare-and-set diverts; everyone else stands down. Without
+         * this, a forced shutdown could route the in-flight event to
+         * the fallback twice - once as `shutdown` by close(), once as
+         * `send.error` by the sender when the parked send later
+         * unblocks with an exception.
+         */
+        private val diverted = AtomicBoolean(false)
+
+        fun tryClaimDiversion(): Boolean = diverted.compareAndSet(false, true)
+    }
 
     private val queue: LinkedBlockingQueue<PendingSend> = LinkedBlockingQueue(queueCapacity)
 
@@ -139,6 +163,15 @@ internal class SendDispatcher(
         } else {
             Thread(::runWorker, "kafka-appender-send-dispatcher-${topicClass.tag}").apply {
                 isDaemon = true
+                // An Error escaping the delivery loop kills the worker;
+                // account for the item it was carrying and surface the
+                // death - see onWorkerDeath.
+                setUncaughtExceptionHandler { _, throwable ->
+                    inFlight.getAndSet(null)?.let {
+                        divert(it, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                    }
+                    onWorkerDeath(throwable)
+                }
                 start()
             }
         }
@@ -163,14 +196,16 @@ internal class SendDispatcher(
         enrichment: EnrichedRecord,
         originalEvent: ILoggingEvent,
     ) {
-        if (synchronous) {
-            // Test mode: the caller performs the send inline.
-            sendAction(PendingSend(topicName, payload, enrichment, originalEvent))
-            return
-        }
         val item = PendingSend(topicName, payload, enrichment, originalEvent)
         if (!running) {
             divert(item, KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
+            return
+        }
+        if (synchronous) {
+            // Test mode: the caller performs the send inline. The
+            // running check above applies first so the sync mode keeps
+            // the same after-close accounting as the worker path.
+            sendAction(item)
             return
         }
         if (!queue.offer(item)) {
@@ -290,6 +325,11 @@ internal class SendDispatcher(
         item: PendingSend,
         reason: KafkaAppenderMetrics.FallbackReason,
     ) {
+        // Exactly-once across ALL diversion paths, the sender's
+        // included - see PendingSend.tryClaimDiversion.
+        if (!item.tryClaimDiversion()) {
+            return
+        }
         metrics.eventFallback(topicClass, reason)
         fallbackDispatcher?.enqueue(item.originalEvent)
     }

@@ -156,6 +156,17 @@ internal class ResilientMessageSender(
      * [topicClass]. If the circuit is open or the send fails, [originalEvent]
      * is enqueued for asynchronous delivery to the fallback appender.
      *
+     * @param claimDiversion Exactly-once guard for the fallback
+     *        diversion of this event. Every diversion path (throttle,
+     *        open breaker, synchronous send failure, callback error)
+     *        first asks this function for the claim and diverts only
+     *        when it returns true. The [SendDispatcher] passes its
+     *        per-item compare-and-set here so that an event already
+     *        diverted by a forced dispatcher shutdown (reason
+     *        `shutdown`) is not routed to the fallback a second time
+     *        when the parked send later unblocks with an exception.
+     *        The default claims unconditionally - correct for direct
+     *        callers, where no other party diverts.
      * @throws IllegalStateException if [topicClass] is not active in the
      *                               registry. This is a programming error
      *                               (configuration drift), not a runtime
@@ -167,6 +178,7 @@ internal class ResilientMessageSender(
         payload: ByteArray,
         enrichment: EnrichedRecord,
         originalEvent: ILoggingEvent,
+        claimDiversion: () -> Boolean = { true },
     ) {
         val circuitBreaker =
             circuitBreakersByClass[topicClass]
@@ -181,15 +193,19 @@ internal class ResilientMessageSender(
         // route to the fallback without consuming a Resilience4j
         // permission. See HalfOpenThrottle KDoc for the rationale.
         if (!throttle.mayAttemptProbe()) {
-            m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.THROTTLE)
-            sendToFallback(originalEvent)
+            if (claimDiversion()) {
+                m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.THROTTLE)
+                sendToFallback(originalEvent)
+            }
             return
         }
 
         if (!circuitBreaker.tryAcquirePermission()) {
             // Breaker is OPEN, or HALF_OPEN with no further permitted calls.
-            m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.BREAKER_OPEN)
-            sendToFallback(originalEvent)
+            if (claimDiversion()) {
+                m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.BREAKER_OPEN)
+                sendToFallback(originalEvent)
+            }
             return
         }
 
@@ -208,8 +224,10 @@ internal class ResilientMessageSender(
                 if (exception != null) {
                     circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, exception)
                     m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
-                    m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
-                    sendToFallback(originalEvent)
+                    if (claimDiversion()) {
+                        m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                        sendToFallback(originalEvent)
+                    }
                 } else {
                     circuitBreaker.onSuccess(elapsed, TimeUnit.NANOSECONDS)
                     m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.SUCCESS, elapsedDuration)
@@ -225,8 +243,10 @@ internal class ResilientMessageSender(
             val elapsed = System.nanoTime() - startNanos
             circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, e)
             m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, Duration.ofNanos(elapsed))
-            m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
-            sendToFallback(originalEvent)
+            if (claimDiversion()) {
+                m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                sendToFallback(originalEvent)
+            }
         }
     }
 

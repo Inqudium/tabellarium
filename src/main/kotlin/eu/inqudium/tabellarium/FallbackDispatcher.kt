@@ -60,6 +60,12 @@ import java.util.concurrent.atomic.AtomicReference
  *                      tolerance for brief fallback slowness.
  * @param shutdownTimeoutMs Time allowed in [close] for the worker to
  *                          drain. Default 5 seconds.
+ * @param onWorkerDeath Invoked when the worker thread dies from a
+ *                      [Throwable] the delivery loop does not handle
+ *                      (an [Error] such as OOM - [Exception]s are
+ *                      handled in place). The appender reports this to
+ *                      the status manager so a dead worker does not
+ *                      masquerade as a merely slow fallback appender.
  * @param synchronous Test-only hook. When true, [enqueue] invokes
  *                    [fallbackAppender.doAppend] directly on the
  *                    caller's thread and no worker thread is started.
@@ -73,6 +79,7 @@ internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    private val onWorkerDeath: (Throwable) -> Unit = {},
     private val synchronous: Boolean = false,
 ) : AutoCloseable {
     private val queue: LinkedBlockingQueue<ILoggingEvent> = LinkedBlockingQueue(queueCapacity)
@@ -132,6 +139,16 @@ internal class FallbackDispatcher(
         } else {
             Thread(::runWorker, "kafka-appender-fallback-dispatcher").apply {
                 isDaemon = true
+                // An Error escaping the delivery loop kills the worker;
+                // account for the event it was carrying and surface the
+                // death - see onWorkerDeath.
+                setUncaughtExceptionHandler { _, throwable ->
+                    inFlight.getAndSet(null)?.let {
+                        droppedCount.incrementAndGet()
+                        metrics.fallbackDispatcherDropped()
+                    }
+                    onWorkerDeath(throwable)
+                }
                 start()
             }
         }
@@ -164,7 +181,11 @@ internal class FallbackDispatcher(
             try {
                 fallbackAppender.doAppend(event)
             } catch (_: Exception) {
-                // Same swallow policy as the worker.
+                // Same swallow-and-account policy as the worker path,
+                // so tests observe the same loss accounting as
+                // production.
+                droppedCount.incrementAndGet()
+                metrics.fallbackDispatcherDropped()
             }
             return true
         }

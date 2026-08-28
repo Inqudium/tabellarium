@@ -362,7 +362,69 @@ class FallbackDispatcherTest {
     }
 
     @Nested
+    inner class `Worker death` {
+        @Test
+        fun `should report a worker death and count the in-flight event as dropped`() {
+            // What is to be tested? Whether a worker killed by an Error
+            //   from doAppend (only Exceptions are handled in place) is
+            //   surfaced via onWorkerDeath and the event it carried is
+            //   counted as dropped.
+            // How will the test case be deemed successful and why? Successful
+            //   if the hook receives the Error and droppedEventCount
+            //   reaches exactly 1.
+            // Why is it important to test this test case? Without the
+            //   hook, a dead fallback worker looks like a full queue -
+            //   operators would tune queue sizes instead of finding the
+            //   dead thread.
+
+            // Given: an appender whose doAppend dies with an Error
+            val death = AtomicReference<Throwable?>()
+            val dyingAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw AssertionError("simulated fallback death")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }
+            val dispatcher =
+                FallbackDispatcher(
+                    fallbackAppender = dyingAppender,
+                    onWorkerDeath = { death.set(it) },
+                )
+            try {
+                // When
+                dispatcher.enqueue(newTestLoggingEvent(message = "doomed"))
+
+                // Then
+                pollUntil { death.get() != null }
+                assertThat(death.get()).hasMessage("simulated fallback death")
+                assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+            } finally {
+                dispatcher.close()
+            }
+        }
+    }
+
+    @Nested
     inner class `Synchronous test mode` {
+        @Test
+        fun `should count a failed doAppend as dropped in synchronous mode`() {
+            // The sync test mode must observe the same loss accounting as
+            // the worker path: a throwing fallback appender increments
+            // droppedEventCount, exactly as in production.
+            val throwingAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("simulated fallback failure")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }
+            val dispatcher = FallbackDispatcher(throwingAppender, synchronous = true)
+
+            dispatcher.enqueue(newTestLoggingEvent(message = "doomed"))
+
+            assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+            dispatcher.close()
+        }
+
         @Test
         fun `should invoke the fallback appender directly when synchronous is true`() {
             // Given

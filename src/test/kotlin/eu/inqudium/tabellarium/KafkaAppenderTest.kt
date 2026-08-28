@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class KafkaAppenderTest {
@@ -1298,19 +1299,30 @@ class KafkaAppenderTest {
                 val clientId = properties[ProducerConfig.CLIENT_ID_CONFIG].orEmpty()
                 producersByClientId[clientId] = mock
                 val blocked = blockedClasses.any { clientId.endsWith("-$it") }
-                if (!blocked) {
-                    return mock
-                }
+                // Always wrap: MockProducer is not thread-safe, and the
+                // dispatcher worker sends while the test thread polls
+                // history - same rationale as SynchronizedTestProducerFactory.
                 return object : Producer<ByteArray, ByteArray> by mock {
                     override fun send(
                         record: ProducerRecord<ByteArray, ByteArray>,
                         callback: Callback?,
                     ): Future<RecordMetadata> {
-                        sendEntered.countDown()
-                        release.await()
-                        return mock.send(record, callback)
+                        if (blocked) {
+                            sendEntered.countDown()
+                            release.await()
+                        }
+                        return synchronized(mock) { mock.send(record, callback) }
                     }
                 }
+            }
+
+            /** History size of the producer whose client.id ends in [clientIdSuffix], read under the send lock. */
+            fun historySize(clientIdSuffix: String): Int {
+                val mock =
+                    producersByClientId.entries
+                        .single { it.key.endsWith(clientIdSuffix) }
+                        .value
+                return synchronized(mock) { mock.history().size }
             }
         }
 
@@ -1403,11 +1415,7 @@ class KafkaAppenderTest {
                 }
 
                 // Then: the technical producer received them all
-                val technicalProducer =
-                    factory.producersByClientId.entries
-                        .single { it.key.endsWith("-technical") }
-                        .value
-                pollUntil { technicalProducer.history().size == 3 }
+                pollUntil { factory.historySize("-technical") == 3 }
             } finally {
                 factory.release.countDown()
                 appender.stop()
@@ -1456,6 +1464,79 @@ class KafkaAppenderTest {
                 factory.release.countDown()
                 appender.stop()
             }
+        }
+
+        @Test
+        fun `should deliver the in-flight event to the fallback exactly once when a pinned send fails after stop`() {
+            // What is to be tested? The exactly-once diversion guard
+            //   across dispatcher AND sender: stop() claims the event
+            //   pinned in an uninterruptible producer.send and diverts it
+            //   (reason shutdown); when the send later unblocks by
+            //   THROWING, the sender's own send-error routing must stand
+            //   down instead of delivering the same event a second time.
+            // How will the test case be deemed successful and why? Successful
+            //   if the fallback recorder holds exactly one copy of the
+            //   pinned event - after stop() and still after the late
+            //   failure. Without the shared claim, this scenario produced
+            //   a duplicate fallback line and a double fallback count.
+            // Why is it important to test this test case? Loss accounting
+            //   is the operator's trust anchor during shutdown forensics;
+            //   duplicates overstate the loss and pollute the fallback
+            //   file with repeated (possibly audit-grade) records.
+
+            // Given: a producer whose send blocks uninterruptibly, then
+            //   throws once released - modelling a send parked past the
+            //   interrupt grace that fails late
+            val release = CountDownLatch(1)
+            val sendEntered = CountDownLatch(1)
+            val sendReturned = AtomicBoolean(false)
+            val throwingBlockedFactory =
+                ProducerFactory { _ ->
+                    val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                    object : Producer<ByteArray, ByteArray> by mock {
+                        override fun send(
+                            record: ProducerRecord<ByteArray, ByteArray>,
+                            callback: Callback?,
+                        ): Future<RecordMetadata> {
+                            sendEntered.countDown()
+                            var wasInterrupted = false
+                            while (release.count > 0) {
+                                try {
+                                    release.await()
+                                } catch (_: InterruptedException) {
+                                    wasInterrupted = true
+                                }
+                            }
+                            if (wasInterrupted) {
+                                Thread.currentThread().interrupt()
+                            }
+                            sendReturned.set(true)
+                            throw RuntimeException("late send failure")
+                        }
+                    }
+                }
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = throwingBlockedFactory,
+                    fallback = fallback,
+                )
+            appender.useSynchronousSendForTests = false
+            appender.start()
+            appender.doAppend(newTestLoggingEvent(message = "pinned"))
+            assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+            // When: stop() claims and diverts the pinned event, then the
+            //   send unblocks and fails
+            appender.stop()
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
+            release.countDown()
+            pollUntil { sendReturned.get() }
+
+            // Then: still exactly one copy - the sender's error routing
+            //   found the diversion already claimed
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
         }
     }
 
@@ -1555,6 +1636,76 @@ class KafkaAppenderTest {
             assertThat(failures.get()).isZero()
             assertThat(factory.historySize()).isEqualTo(threadCount * eventsPerThread)
             assertThat(fallback.events).isEmpty()
+        }
+
+        @Test
+        fun `should deliver every event when many threads append concurrently through the asynchronous dispatch`() {
+            // What is to be tested? The same contention guarantee as the
+            //   previous test, but through the PRODUCTION dispatch mode:
+            //   many threads race into dispatch() while a single worker
+            //   drains - the hand-off (bounded queue offer) and the
+            //   worker loop must neither lose nor duplicate events.
+            // How will the test case be deemed successful and why? Successful
+            //   if all N x M events eventually reach the producer and
+            //   nothing lands in the fallback. The queue capacity is
+            //   raised above the total so no legitimate overflow occurs.
+            // Why is it important to test this test case? The rest of the
+            //   suite runs the synchronous test mode by default; without
+            //   this test, the concurrency of the actual production path
+            //   (multi-producer queue, single consumer) would be
+            //   exercised nowhere.
+
+            // Given
+            val threadCount = 8
+            val eventsPerThread = 250
+            val factory = SynchronizedTestProducerFactory()
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = factory,
+                    fallback = fallback,
+                )
+            appender.useSynchronousSendForTests = false
+            appender.sendQueueCapacity = threadCount * eventsPerThread + 1
+            appender.start()
+
+            val startLatch = CountDownLatch(1)
+            val doneLatch = CountDownLatch(threadCount)
+            val failures = AtomicInteger(0)
+            val executor = Executors.newFixedThreadPool(threadCount)
+            try {
+                // When: all threads hammer the asynchronous dispatch
+                repeat(threadCount) { t ->
+                    executor.submit {
+                        try {
+                            startLatch.await()
+                            repeat(eventsPerThread) { i ->
+                                appender.doAppend(
+                                    newTestLoggingEvent(
+                                        message = "t$t-e$i",
+                                        threadName = "worker-$t",
+                                    ),
+                                )
+                            }
+                        } catch (_: Throwable) {
+                            failures.incrementAndGet()
+                        } finally {
+                            doneLatch.countDown()
+                        }
+                    }
+                }
+                startLatch.countDown()
+                assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue()
+
+                // Then: the worker delivers everything, nothing diverted
+                assertThat(failures.get()).isZero()
+                pollUntil(timeoutMs = 10_000) { factory.historySize() == threadCount * eventsPerThread }
+                assertThat(fallback.events).isEmpty()
+            } finally {
+                executor.shutdownNow()
+                appender.stop()
+            }
         }
     }
 

@@ -28,10 +28,11 @@ configuration guide, metrics overview, and Grafana dashboards.
 
 ### Delivery
 
-- **The sender is never made to wait.** The hot path takes no lock
-  (`UnsynchronizedAppenderBase`, atomics only) and never calls
-  `producer.send` itself: the caller only routes, encodes and enriches,
-  then hands the record to a bounded per-topic-class send queue in O(1).
+- **The sender is never made to wait.** The hot path never blocks
+  (`UnsynchronizedAppenderBase` - no synchronized `doAppend`, no waits,
+  no I/O) and never calls `producer.send` itself: the caller only
+  routes, encodes and enriches, then hands the record to a bounded
+  per-topic-class send queue in O(1).
   A dedicated worker per class performs the send, so a stalled broker
   neither pins carrier threads on virtual threads nor stalls a Reactor
   event loop - and a stuck `AUDIT` route never delays `TECHNICAL`
@@ -111,7 +112,7 @@ door, and getting it to its destination even when the usual road was closed.
 That is precisely this project's job, transposed to logging. Every log event is a
 tabella — one encoded, structured record — and the appender is the carrier that accepts
 it at the moment of logging and delivers it to Kafka. The craft lies in *how* it
-carries: the **sender is never made to wait** (the hot path takes no lock, and the
+carries: the **sender is never made to wait** (the hot path never blocks, and the
 delivery outcome is reported asynchronously through the send callback), a **broken road
 is not hammered** (a circuit breaker per topic class suspends dispatch while the route
 is down), and an undeliverable tablet takes the **side road rather than the ditch** (the
