@@ -78,7 +78,7 @@ Reference for every supported element:
 
 | Element                      | Required | Type    | Notes                                                                              |
 |------------------------------|----------|---------|------------------------------------------------------------------------------------|
-| `<encoder>`                  | Yes      | nested  | Standard Logback encoder. `LogstashEncoder` recommended — JSON escaping also prevents log forging via attacker-influenced message text. |
+| `<encoder>`                  | Yes      | nested  | Any standard Logback encoder. `LogstashEncoder` recommended (and `optional`, so opt-in) — JSON escaping also prevents log forging via attacker-influenced message text; any JSON encoder does. |
 | `<kafkaProducerProperties>`  | Yes      | text    | Multi-line `key=value` Kafka producer config. Comments with `#` supported.         |
 | `<topicMapping>`             | Yes      | nested  | `<defaultTopic>` plus any number of `<mapping>` elements (marker → topic → topic class) — see [Topic routing](#topic-routing). |
 | `<environment>`              | Yes      | string  | Deployment environment (e.g. `prod`, `staging`).                                   |

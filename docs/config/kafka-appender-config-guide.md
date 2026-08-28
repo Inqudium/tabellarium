@@ -120,6 +120,13 @@ If a line-oriented encoder is unavoidable, neutralize the newlines at the
 encoder (Logback's `replace(…)` conversion word) rather than relying on
 callers to sanitize every log statement.
 
+`LogstashEncoder` is a **recommendation, not a dependency**: the appender
+accepts any `Encoder<ILoggingEvent>` and never inspects the bytes it
+produces, and `logstash-logback-encoder` is declared `optional`, so it
+only reaches your classpath if you ask for it. Any JSON-producing
+encoder satisfies the property described above; switching to another one
+is a change to the `<encoder>` element and nothing else.
+
 ### Placeholder resolution (where the values come from)
 
 The appender performs **no placeholder substitution of its own** — Joran
