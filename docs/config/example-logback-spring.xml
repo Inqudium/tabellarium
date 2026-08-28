@@ -12,10 +12,31 @@
     2. <debug>true</debug> affects only startup diagnostics, not
        per-event behavior. Consider leaving it out.
 
-  See README.md for the full reference.
+  Every ${...} placeholder below is resolved BEFORE the appender sees
+  the value (Logback variable substitution, <springProperty>, Helm
+  templating, or Maven resource filtering) - see the configuration
+  guide, section "Placeholder resolution", for the full chain.
+
+  See README.md and kafka-appender-config-guide.md for the full
+  reference.
 -->
 
 <configuration>
+
+    <!-- =================================================================
+         Spring-property bridge (works only in logback-spring.xml, where
+         Spring Boot drives the Logback initialization). Values from the
+         Spring Environment (application.yml, config server, env-var
+         relaxed binding) are NOT visible to Logback's own ${...}
+         substitution - a literal ${spring.application.name} would stay
+         unresolved. <springProperty> imports them as Logback context
+         properties under a local name:
+         ================================================================= -->
+    <springProperty scope="context" name="appName" source="spring.application.name"/>
+    <!-- Optional further bridges, e.g. a custom property with default:
+    <springProperty scope="context" name="cmdbId"
+                    source="myapp.cmdb-id" defaultValue="MyApplication"/>
+    -->
 
     <!-- =================================================================
          Fallback file appender for when Kafka delivery is unavailable
@@ -32,10 +53,10 @@
     </appender>
 
     <!-- =================================================================
-         Main Kafka appender. See:
-         - https://github.com/.../README.md
-         - kafka-appender-code-analysis.md (audit report)
-         - kafka-appender-architecture-note.md (design rationale)
+         Main Kafka appender. Full reference:
+         - README.md (design rationale, resilience model, metrics)
+         - kafka-appender-config-guide.md (every element, defaults,
+           placeholder resolution, topic classes)
          ================================================================= -->
     <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
 
@@ -106,9 +127,17 @@
 
         <!-- Metadata attached to every Kafka record as headers
              (meta.component, meta.cmdbId, meta.environment) and used by
-             the appender to validate that the deployment is identifiable. -->
+             the appender to validate that the deployment is identifiable.
+
+             ${STAGE} resolves from an OS environment variable (set by the
+             container/deployment); ${appName} comes from the
+             <springProperty> bridge at the top of this file. All three
+             values are validated non-blank at start() - but an entirely
+             UNRESOLVED placeholder keeps its literal text (e.g.
+             "${STAGE}"), passes validation, and shows up as an odd
+             header value in the log sink. -->
         <environment>${STAGE}</environment>
-        <component>${ARTIFACT_ID}</component>
+        <component>${appName}</component>
         <cmdbId>MyApplication</cmdbId>
 
         <!-- Optional. When true, the appender emits extra startup info
@@ -126,21 +155,26 @@
     </appender>
 
     <!-- =================================================================
-         Root logger configuration. In production, wrap the KafkaAppender
-         in an AsyncAppender to decouple application threads from Kafka
-         producer back-pressure:
+         Root logger configuration. Reference the KafkaAppender DIRECTLY:
+         wrapping it in an AsyncAppender is NOT recommended - the appender
+         already bounds caller-thread blocking internally (max.block.ms,
+         circuit breaker, async fallback dispatcher), and default
+         AsyncAppender settings weaken the loss semantics. See README,
+         "Should I wrap this in a Logback AsyncAppender?".
+
+         Only for sub-100 ms hard-latency SLAs is a wrapper justified,
+         and then with non-default settings:
 
            <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
              <appender-ref ref="KAFKA"/>
-             <queueSize>1024</queueSize>
+             <queueSize>2048</queueSize>
              <discardingThreshold>0</discardingThreshold>
              <neverBlock>true</neverBlock>
+             <includeCallerData>false</includeCallerData>
            </appender>
 
-         and then reference ASYNC_KAFKA from <root>. AsyncAppender is part
-         of Logback core; this module does not provide its own async layer
-         on purpose — operators tune queue size and discard policy to their
-         environment.
+         (Be aware that neverBlock=true drops events silently without
+         routing them to the fallback.)
          ================================================================= -->
     <root level="INFO">
         <appender-ref ref="KAFKA"/>
