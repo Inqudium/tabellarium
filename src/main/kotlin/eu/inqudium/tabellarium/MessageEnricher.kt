@@ -7,10 +7,9 @@ import eu.inqudium.tabellarium.MessageEnricher.Companion.TRACE_ID_MDC_KEY
 /**
  * Enriches logging events with static metadata and a per-event partitioning key.
  *
- * The enricher is a **pure function**: it never mutates the incoming logging event
- * (in deliberate contrast to legacy implementations that wrote into
- * `LoggerContextVO.getPropertyMap` per event), holds no per-call state, and returns
- * the same immutable header map instance across all calls.
+ * The enricher is a **pure function**: it never mutates the incoming logging event,
+ * holds no per-call state, and returns the same immutable header map instance
+ * across all calls.
  *
  * ## What gets enriched
  *

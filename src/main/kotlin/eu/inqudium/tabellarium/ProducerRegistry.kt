@@ -86,8 +86,8 @@ class ProducerRegistry private constructor(
          *   well under the grace period).
          * - **Long enough** to give the Kafka producer's internal retry
          *   loop time to flush partially-buffered records on flaky
-         *   networks. The legacy 5-second value tended to drop records
-         *   that would have been recoverable.
+         *   networks. A shorter value (e.g. 5 seconds) tends to drop
+         *   records that would have been recoverable.
          *
          * ## Interaction with `delivery.timeout.ms`
          *
@@ -177,7 +177,7 @@ class ProducerRegistry private constructor(
  * and value, regardless of any serializer property the caller supplied.
  * This is the wire format produced by the appender; using a different
  * serializer would cause a `ClassCastException` in the Kafka sender
- * thread for every record (audit finding F-034). The override is silent -
+ * thread for every record. The override is silent -
  * if the appender's mandatory-override mechanism in
  * [ProducerPropertiesBuilder] is later extended to cover serializers as
  * well, the resulting violation will surface there instead.
@@ -203,7 +203,7 @@ fun interface ProducerFactory {
          */
         fun default(): ProducerFactory =
             ProducerFactory { properties ->
-                // Force the serializers - see KDoc above and audit finding F-034.
+                // Force the serializers - see KDoc above.
                 val configs: Map<String, Any> =
                     properties +
                         mapOf(

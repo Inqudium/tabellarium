@@ -213,13 +213,12 @@ class KafkaAppenderTest {
 
         @Test
         fun `should instantiate one producer for the active topic class`() {
-            // What is to be tested? Whether the minimal legacy configuration
+            // What is to be tested? Whether the minimal configuration
             //   (only <defaultTopic>) results in a single producer instantiation
-            //   for the fallback class - matching the legacy single-producer
-            //   semantics.
+            //   for the fallback class.
             // How will the test case be deemed successful and why? Successful
             //   if exactly one MockProducer was created via the factory.
-            //   This pins down the operational drop-in guarantee: existing
+            //   This pins down the single-producer guarantee: existing
             //   deployments do not silently spin up four Kafka producers
             //   when the configuration only mentions one default topic.
             // Why is it important to test this test case? A regression where
@@ -289,19 +288,19 @@ class KafkaAppenderTest {
     @Nested
     inner class `Debug diagnostics` {
         @Test
-        fun `should emit the migration note when debug is enabled`() {
+        fun `should emit the diagnostics note when debug is enabled`() {
             // What is to be tested? Whether enabling <debug>true</debug>
-            //   surfaces the explicit migration note that informs operators
-            //   the flag no longer has per-event effect.
+            //   surfaces the explicit note that informs operators the flag
+            //   has no per-event effect.
             // How will the test case be deemed successful and why? Successful
-            //   if a status message references the F-011 audit finding by
-            //   number and recommends removing the flag. This pins down the
-            //   operator-facing migration path.
-            // Why is it important to test this test case? Operators who
-            //   inherit the legacy configuration must know that the flag's
-            //   behavior changed; without the note they would either keep
-            //   the flag (no harm done, but configuration debt accumulates)
-            //   or wonder why the per-record debug output disappeared.
+            //   if a status message says the flag is startup-only and
+            //   recommends removing it. This pins down the operator-facing
+            //   guidance.
+            // Why is it important to test this test case? Operators must
+            //   know that the flag affects only startup diagnostics; without
+            //   the note they would either keep the flag (no harm done, but
+            //   configuration debt accumulates) or expect per-record debug
+            //   output that never comes.
 
             // Given
             val appender = newAppender(debug = true)
@@ -311,11 +310,11 @@ class KafkaAppenderTest {
 
             // Then
             assertThat(appender.statusMessages())
-                .anyMatch { it.contains("F-011") && it.contains("removing") }
+                .anyMatch { it.contains("no per-event effect") && it.contains("removing") }
         }
 
         @Test
-        fun `should not emit the migration note when debug is disabled`() {
+        fun `should not emit the diagnostics note when debug is disabled`() {
             // Given
             val appender = newAppender(debug = false)
 
@@ -536,9 +535,9 @@ class KafkaAppenderTest {
         fun `should stop the attached fallback appender when stopping the KafkaAppender`() {
             // What is to be tested? Whether stop() releases the fallback
             //   appender's resources (file handles, worker threads). This
-            //   is the fix for the resource-leak finding: the AppenderAttachable
+            //   guards against a resource leak: the AppenderAttachable
             //   contract requires detachAndStopAllAppenders to run on
-            //   shutdown, but the legacy stop() did not call it.
+            //   shutdown.
             // How will the test case be deemed successful and why? Successful
             //   if the fallback appender reports isStarted=false after the
             //   KafkaAppender's stop() returns. This pins the lifecycle
@@ -574,7 +573,7 @@ class KafkaAppenderTest {
             // How will the test case be deemed successful and why? Successful
             //   if calling addAppender(...) stores the appender as the
             //   fallback and a subsequent failed send routes the event
-            //   through it. This pins down the Drop-In path for the
+            //   through it. This pins down the path for the
             //   standard <appender-ref ref="..."/> Logback syntax.
             // Why is it important to test this test case? Without this,
             //   users could write the standard Logback XML and find that

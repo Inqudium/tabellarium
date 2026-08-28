@@ -20,9 +20,9 @@ import org.apache.kafka.clients.producer.ProducerConfig
  *   the property themselves. They encode reasonable defaults that the
  *   caller is free to override.
  *
- * The four classes correspond to the topic groups in the legacy `TopicMapping`
- * configuration structure: `audit`, `functional`, `technical`, `performance`.
- * Their Kafka-side requirements differ substantially:
+ * The four classes correspond to the topic groups `audit`, `functional`,
+ * `technical`, and `performance` in the `TopicMapping` configuration
+ * structure. Their Kafka-side requirements differ substantially:
  *
  * | Class       | Durability | Reorder cost | Volume    |
  * | ----------- | ---------- | ------------ | --------- |

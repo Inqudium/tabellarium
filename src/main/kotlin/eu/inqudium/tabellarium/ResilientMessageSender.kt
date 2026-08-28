@@ -44,9 +44,8 @@ import java.util.concurrent.TimeUnit
  *        then route to fallback.
  *
  * The Future returned by `producer.send` is deliberately not retained:
- * delivery outcome is reported exclusively through the callback, which
- * fixes audit finding F-002 (the legacy implementation discarded the
- * Future *and* had no callback, so delivery failures were silent).
+ * delivery outcome is reported exclusively through the callback, so
+ * delivery failures are never silent.
  *
  * ## Half-open throttling
  *

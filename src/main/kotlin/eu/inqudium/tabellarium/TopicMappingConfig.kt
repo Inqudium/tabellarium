@@ -1,11 +1,11 @@
 package eu.inqudium.tabellarium
 
 /**
- * Joran-populated holder for the legacy `<topicMapping>` XML element.
+ * Joran-populated holder for the `<topicMapping>` XML element.
  *
- * ## Drop-in compatibility
+ * ## XML format
  *
- * The current legacy XML format observed in production is minimal:
+ * The current XML format is minimal:
  *
  * ```xml
  * <topicMapping>
@@ -54,8 +54,7 @@ package eu.inqudium.tabellarium
  * - The [TopicTable] returned from [toTopicTable] has no explicit
  *   topic-to-class assignments: every topic - including the default -
  *   resolves to [TopicClass.TECHNICAL] via the fallback. Only one
- *   producer (the TECHNICAL one) is instantiated, matching the
- *   semantics of the legacy single-producer appender.
+ *   producer (the TECHNICAL one) is instantiated.
  */
 class TopicMappingConfig {
     /**

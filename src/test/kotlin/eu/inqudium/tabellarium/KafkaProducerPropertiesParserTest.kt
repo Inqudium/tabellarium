@@ -49,15 +49,15 @@ class KafkaProducerPropertiesParserTest {
             //   indentation, blank lines for visual grouping, and SSL property
             //   names with multiple dots.
             // How will the test case be deemed successful and why? Successful
-            //   if every property from the legacy <kafkaProducerProperties>
+            //   if every property from the <kafkaProducerProperties>
             //   element is extracted with the expected key and (trimmed) value.
-            //   This pins down Drop-In compatibility with the existing config.
+            //   This pins down compatibility with the existing config.
             // Why is it important to test this test case? Any regression that
             //   broke parsing of the real-world layout would render the
             //   appender unable to start in any of the existing deployments -
             //   the most visible failure mode possible.
 
-            // Given: the kafkaProducerProperties block from the legacy XML
+            // Given: a production-style kafkaProducerProperties block
             val text =
                 """
                 bootstrap.servers=broker.example.com:9092

@@ -35,35 +35,22 @@ one well-defined capability, here the element of reliable carriage. The two neig
 even share a story — Limesium is the watchtower that records each crossing at the
 service's own boundary; Tabellarium is the courier who carries the records away.
 
-## Heritage
-
-The appender is a **Drop-In replacement** for the legacy
-`com.ing.log.logback.KafkaAppender` v0.4.0. Existing
-`logback-spring.xml` configurations continue to work unchanged; only
-the `class="..."` attribute needs to point at the new
-`eu.inqudium.tabellarium.KafkaAppender`. The rewrite was driven by a
-full audit of the legacy appender; its findings are cited by their
-F-numbers (F-001, F-002, ...) throughout this document.
-
 ## Quick start
 
-1. Replace the appender class in your `logback-spring.xml`:
+1. Declare the appender in your `logback-spring.xml`:
 
-   ```diff
-   - <appender name="KAFKA" class="com.ing.log.logback.KafkaAppender">
-   + <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
+   ```xml
+   <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
    ```
 
-2. Optionally add a fallback appender (recommended) — see
+2. Fill in the required elements — see [Configuration](#configuration)
+   and the complete example at
+   [`docs/metrics+config/example-logback-spring.xml`](docs/metrics+config/example-logback-spring.xml).
+
+3. Optionally add a fallback appender (recommended) — see
    [Resilience](#resilience) below.
 
-3. Optionally remove `<debug>true</debug>` if present — the flag now
-   affects only startup diagnostics (see [Migration notes](#migration-notes)).
-
 4. Deploy.
-
-That is the complete Drop-In migration. Nothing else in the appender
-configuration changes.
 
 ## Configuration
 
@@ -79,7 +66,7 @@ Reference for every supported element:
 | `<environment>`              | Yes      | string  | Deployment environment (e.g. `prod`, `staging`).                                   |
 | `<component>`                | Yes      | string  | Service component identifier (typically `${spring.application.name}`).             |
 | `<cmdbId>`                   | Yes      | string  | CMDB identifier of the deploying instance.                                         |
-| `<debug>`                    | No       | boolean | Startup diagnostics only — see [Migration notes](#migration-notes).                |
+| `<debug>`                    | No       | boolean | Startup diagnostics only: logs the active topic classes and fallback configuration to Logback's status manager. No per-event effect. |
 | `<appender-ref ref="..."/>`  | No       | ref     | Single fallback appender — see [Resilience](#resilience).                          |
 
 Missing or blank values for the five required elements cause the
@@ -88,11 +75,10 @@ status manager. The error message identifies which element is missing.
 
 ## Mandatory override policy (compliance)
 
-The legacy appender used a single Kafka producer for every topic,
-regardless of the topic's compliance class. This means an audit topic
-and a debug topic shared the same `acks` value — and if the operator
-configured `acks=1` for throughput, audit records could silently be
-lost on a Kafka leader failover.
+A single Kafka producer shared by every topic would mean an audit
+topic and a debug topic share the same `acks` value — and if the
+operator configured `acks=1` for throughput, audit records could
+silently be lost on a Kafka leader failover.
 
 This module classifies every topic into one of four classes and
 enforces per-class producer configuration:
@@ -138,9 +124,8 @@ Three resilience mechanisms run independently per topic class:
    Kafka's `producer.send` is invoked with a callback that feeds the
    circuit breaker (`onSuccess` / `onError`). The `Future` returned by
    `send` is deliberately not retained — the callback is the single
-   source of truth for delivery outcome. This is the fix for audit
-   finding F-002, where the legacy appender discarded both the Future
-   *and* had no callback, making delivery failures invisible.
+   source of truth for delivery outcome, so delivery failures are
+   never invisible.
 
 3. **Fallback appender.** When the circuit is open or a send fails
    synchronously, the original `ILoggingEvent` is routed to the
@@ -166,24 +151,17 @@ Three resilience mechanisms run independently per topic class:
 
 ## Should I wrap this in a Logback `AsyncAppender`?
 
-**Short answer: no.** A common pattern with the legacy appender was
-to wrap it in `ch.qos.logback.classic.AsyncAppender` to keep
+**Short answer: no.** A common pattern with Kafka appenders is to
+wrap them in `ch.qos.logback.classic.AsyncAppender` to keep
 application threads from blocking on Kafka I/O. This module makes
 that pattern unnecessary and, with default `AsyncAppender` settings,
 counterproductive.
 
-### Why it was needed before
+### Why it is not needed
 
-`AsyncAppender` exists to absorb caller-thread blocking. The legacy
-appender could block on a synchronous `producer.send()` for the full
-`max.block.ms` (Kafka default: 60 seconds) when the producer buffer
-was full or metadata was stale. Wrapping it in `AsyncAppender` moved
-that wait off the application threads and onto a dedicated worker.
-
-### Why it is not needed here
-
-This module already mitigates caller-thread blocking through three
-layered defenses:
+`AsyncAppender` exists to absorb caller-thread blocking. This module
+already mitigates caller-thread blocking through three layered
+defenses:
 
 1. **`max.block.ms` is forced to 500 ms** per topic class. Worst-case
    block per `send()` is now bounded at half a second.
@@ -232,8 +210,8 @@ Use the `KafkaAppender` directly:
 </root>
 ```
 
-If the legacy `logback-spring.xml` wrapped the Kafka appender in an
-`AsyncAppender`, drop the wrapper as part of the migration:
+If an existing `logback-spring.xml` wraps the Kafka appender in an
+`AsyncAppender`, drop the wrapper:
 
 ```diff
 - <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
@@ -274,9 +252,9 @@ This module is safe to use in Reactor-Netty / WebFlux services and
 in code that runs on JDK virtual threads. The largest reactive
 hazard — `synchronized` blocks in the appender hot path, which cause
 carrier-thread pinning on virtual threads and Reactor-Netty
-event-loop stalls — is eliminated by audit finding F-001: the
-appender extends `UnsynchronizedAppenderBase`. There are no locks in
-the hot path; only atomics and volatiles.
+event-loop stalls — does not arise: the appender extends
+`UnsynchronizedAppenderBase`. There are no locks in the hot path;
+only atomics and volatiles.
 
 Two reactive-specific concerns remain that are worth tuning per
 service.
@@ -553,217 +531,6 @@ Every component below `KafkaAppender` is a pure function or a
 side-effect-isolated wrapper, has its own dedicated unit test, and
 can be substituted via constructor injection in `KafkaAppender` for
 testing or extension.
-
-## Audit findings addressed
-
-| Finding | Severity | How it is fixed                                                                |
-|---------|----------|--------------------------------------------------------------------------------|
-| F-001   | CRITICAL | `UnsynchronizedAppenderBase` instead of synchronized `doAppend`                |
-| F-002   | CRITICAL | `producer.send(...)` invoked with callback; circuit-breaker tracking           |
-| F-003   | CRITICAL | `MessageEnricher` is a pure function; no mutation of `LoggerContextVO`         |
-| F-007   | HIGH     | Operator-tunable `max.block.ms` via `<kafkaProducerProperties>`                |
-| F-010   | HIGH     | Configurable fallback via `<appender-ref>`                                     |
-| F-011   | MEDIUM   | `<debug>` flag no longer triggers per-record formatting                        |
-| F-017   | MEDIUM   | `ProducerRegistry.close()` uses configured timeout, per-producer try/catch    |
-| F-025   | CRITICAL | Mock-mode code path removed entirely                                           |
-| F-026   | HIGH     | `acks=all` mandatory for AUDIT topics                                          |
-| F-027   | HIGH     | Partitioning key derived from MDC `traceId` by default                         |
-| F-032   | HIGH     | Encoder is required and never overwritten                                      |
-| F-033   | HIGH     | Topic names validated against Kafka's permitted character set at startup       |
-| F-034   | MEDIUM   | `ByteArraySerializer` forcibly set in `ProducerFactory.default()`              |
-| F-037   | CRITICAL | No internal logging in the hot path; one-shot error reporting on failures     |
-| F-038   | HIGH     | Eager validation in `start()` rejects null/blank required configuration       |
-
-The complete audit (48 findings) is not shipped with this repository; findings are cited
-by their F-numbers throughout this document and the KDoc.
-
-## Observable differences from the broker's perspective
-
-Most of this module's changes are internal to the JVM: thread safety,
-exception handling, allocation patterns. From the Kafka broker's
-perspective, however, two things look measurably different. This
-section documents what an operator monitoring the broker will see,
-and how to reduce the difference if exact byte-for-byte equivalence
-with the legacy appender is needed.
-
-### 1. Record key is no longer null
-
-**Legacy behavior:** every record was sent with a null key. Kafka's
-default partitioner then distributed records round-robin (pre-2.4) or
-sticky-random (2.4+) across partitions of the destination topic. From
-the broker's perspective, records from the same trace, the same
-request, or the same user landed on arbitrary, uncorrelated partitions.
-
-**New behavior:** the record key is the MDC `traceId` of the
-originating log event (UTF-8 encoded), or null if the MDC has no
-`traceId` entry or it is blank. Records that share a trace id land on
-the same partition; records from different traces are distributed by
-the default partitioner's hash function.
-
-**What an operator sees on the broker:**
-
-- Partition skew shifts. Whether the new distribution is more or less
-  uniform than round-robin depends on the trace-id distribution. In a
-  typical microservices setup with many concurrent traces, the result
-  is close to uniform — Kafka's `murmur2` hash distributes trace ids
-  evenly. In a setup dominated by a few long-running traces (batch
-  jobs, scheduled tasks), one or two partitions may receive
-  disproportionate traffic.
-- Per-partition throughput patterns change. Consumers that previously
-  assumed records were time-ordered within a partition may now see
-  bursts as the same trace's records arrive consecutively.
-- The `meta.cmdbId`, `meta.component`, `meta.environment`, and
-  `meta.agent.*` headers appear on every record. None of these existed
-  in the legacy wire format. SIEM consumers and ingestion pipelines
-  that filter by header now have additional dimensions available.
-
-**How to reduce the difference:**
-
-- **Restore the null key** by passing a custom
-  `partitioningKeyExtractor` to `MessageEnricher` that always returns
-  null:
-
-  ```kotlin
-  MessageEnricher(component, cmdbId, environment, partitioningKeyExtractor = { null })
-  ```
-
-  This is not currently exposed via XML — see
-  [Extension points](#extension-points). The `meta.*` headers are
-  unaffected; they ride on every record regardless of the key.
-
-- **Pin a specific partitioning strategy** by setting
-  `partitioner.class` in `<kafkaProducerProperties>`. The default is
-  Kafka's `DefaultPartitioner`, which hashes the key. To force
-  sticky-random regardless of key, configure
-  `partitioner.class=org.apache.kafka.clients.producer.RoundRobinPartitioner`
-  (Kafka ≥ 2.4 has multiple partitioners; check broker compatibility).
-
-- **Remove the metadata headers** by passing a `MessageEnricher`
-  built with empty component / cmdbId / environment. Not currently
-  supported — the appender refuses to start with blank metadata,
-  which is the deliberate design choice (audit finding F-038: every
-  record must be traceable to its origin).
-
-### 2. acks, idempotence, and other producer settings differ for AUDIT topics
-
-**Legacy behavior:** every topic shared a single Kafka producer with
-whatever `acks` and other settings the operator configured in
-`<kafkaProducerProperties>`. If the operator wrote `acks=1` for
-throughput, audit topics inherited it — and audit records could be
-silently lost on a Kafka leader failover.
-
-**New behavior:** when a topic is classified as AUDIT, the appender
-forces `acks=all` and `enable.idempotence=true` regardless of the
-operator's configuration, and emits a status warning naming the
-override. Other classes (FUNCTIONAL, TECHNICAL, PERFORMANCE) have
-their own override sets; see [Mandatory override policy](#mandatory-override-policy-compliance).
-
-**What an operator sees on the broker:**
-
-- Audit producers wait for full ISR acknowledgment, so observed
-  per-record produce latency increases. With a healthy 3-broker
-  cluster and ISR=3, latency typically goes from ~2–5 ms (acks=1) to
-  ~10–30 ms (acks=all). Tail latency (p99) increases more.
-- Audit topics now receive records with the producer-id and sequence-
-  number metadata that idempotent producers attach. Topics that
-  previously held only non-idempotent records gain a new control-batch
-  type in their log segments. Consumers using `read_committed`
-  isolation may behave differently if a producer transaction is
-  initiated by other tooling on the same topic.
-- The producer requires `max.in.flight.requests.per.connection ≤ 5`
-  when idempotence is enabled. If the operator's configuration set a
-  higher value, the producer rejects it at startup. The appender does
-  not currently catch this in `validateConfiguration()` — Kafka's
-  producer constructor throws and the appender's `buildPipeline()`
-  catches it as a generic build failure. This is a known gap; see
-  [Future work](#future-work).
-- One Kafka producer per active TopicClass. With the minimal
-  configuration (only `<defaultTopic>`) that is still exactly one
-  producer, matching the legacy single-producer behavior. As soon as
-  marker mappings activate multiple classes, the broker sees N
-  separate producer connections from each JVM instance, with
-  independent `client.id` values that include the producer count.
-
-**How to reduce the difference:**
-
-- **Avoid AUDIT classification entirely.** With the current minimal
-  XML (`<defaultTopic>` only), no topic is classified as AUDIT — every
-  record goes to the TECHNICAL fallback, which has no mandatory
-  overrides. The wire-level behavior is then very close to the legacy
-  appender: same `acks` value, no idempotence-related headers.
-- **Configure latency-tolerating ingestion paths for audit topics.**
-  If AUDIT classification is desired, the latency increase is
-  intrinsic to the safety guarantee — `acks=all` and idempotence are
-  the entire point. Downstream consumers should be sized for the new
-  latency profile rather than trying to roll it back.
-- **Consolidate producers via the registry.** The current design has
-  one producer per class. If wire-level producer count matters (for
-  example, because the broker enforces a per-IP producer-connection
-  limit), this could be changed to share a single producer across
-  classes that have compatible configurations. Not implemented because
-  it complicates the per-class circuit-breaker isolation; see
-  [Future work](#future-work).
-
-### Summary
-
-| Difference                       | Magnitude                          | Reversible?                                |
-|----------------------------------|------------------------------------|--------------------------------------------|
-| Non-null record keys             | High (changes partitioning)        | Yes, via custom extractor                  |
-| Metadata headers                 | Low (additive, ignorable)          | Not by design (audit finding F-038)        |
-| `acks=all` for AUDIT             | High (latency ↑, durability ↑)     | Yes, by not classifying topics as AUDIT    |
-| `enable.idempotence` for AUDIT   | Medium (different log-segment format) | Yes, by not classifying topics as AUDIT |
-| One producer per active class    | Low–Medium (with minimal config: 1) | Possible via registry consolidation       |
-
-The honest summary: the wire-level behavior is **identical to legacy**
-as long as the configuration stays minimal (only `<defaultTopic>`).
-The differences appear only when marker mappings activate AUDIT
-classification — which is exactly the point at which the new behavior
-is being asked for. A bank that does not yet classify topics by
-compliance class gets a transparent rewrite; one that classifies AUDIT
-topics gets the compliance enforcement, with the broker-side cost that
-comes with it.
-
-## Migration notes
-
-### `<debug>true</debug>`
-
-In the legacy appender, this flag injected per-event debug output into
-the hot path: `formatter.format(loggingEvent)` was called on every
-event regardless of whether the debug output was actually consumed
-(audit finding F-011). That behavior is removed.
-
-The flag is still accepted for Drop-In compatibility, but now affects
-**startup diagnostics only**. When `true`, the appender logs the active
-topic classes, fallback configuration, and a migration note to
-Logback's status manager at startup. Per-event behavior is unaffected.
-
-**Recommendation:** remove `<debug>true</debug>` from your configuration.
-
-### Producer count
-
-The legacy appender instantiated a single Kafka producer. With the
-minimal configuration (only `<defaultTopic>`), this module also
-instantiates a single producer — for the TECHNICAL class, because
-that is the fallback when no topic is explicitly classified.
-
-If marker mappings are introduced ([Extension points](#extension-points))
-and they reference multiple `TopicClass` values, the appender will
-instantiate one producer per active class. Each producer has its own
-network thread and `buffer.memory` (default 32 MB per producer), so
-plan capacity accordingly.
-
-### `AsyncAppender` wrapper
-
-If the legacy configuration wraps the Kafka appender in a
-`ch.qos.logback.classic.AsyncAppender`, drop the wrapper as part of
-the migration — the new appender provides equivalent
-caller-thread-blocking protection internally, and the default
-`AsyncAppender` settings actually weaken loss semantics. Full
-discussion in
-[Should I wrap this in a Logback `AsyncAppender`?](#should-i-wrap-this-in-a-logback-asyncappender).
-
-**Recommendation:** remove the `AsyncAppender` wrapper unless your
-service has sub-100 ms latency SLAs.
 
 ## Extension points
 

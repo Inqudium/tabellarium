@@ -18,7 +18,7 @@ import java.util.Properties
  * ssl.keystore.location=/cert/identity.pkcs12
  * ```
  *
- * This matches the legacy `<kafkaProducerProperties>` element verbatim,
+ * The element text is parsed as standard `.properties` content,
  * including:
  *
  * - **Leading whitespace** (XML indentation) - handled by the underlying

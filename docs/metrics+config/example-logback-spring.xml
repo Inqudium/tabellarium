@@ -3,19 +3,16 @@
 <!--
   Example configuration for eu.inqudium.tabellarium.KafkaAppender.
 
-  This is a Drop-In replacement for the legacy
-  com.ing.log.logback.KafkaAppender v0.4.0. The configuration surface
-  is identical to the legacy XML, with two additions:
+  Two elements deserve special mention:
 
     1. <appender-ref ref="..."/> inside <appender> attaches a fallback
        appender for when Kafka delivery fails. Optional but strongly
        recommended in production.
 
-    2. <debug>true</debug> is still accepted for backward compatibility
-       but now affects only startup diagnostics, not per-event behavior.
-       Consider removing it from new deployments.
+    2. <debug>true</debug> affects only startup diagnostics, not
+       per-event behavior. Consider leaving it out.
 
-  See README.md for the full reference and the migration notes.
+  See README.md for the full reference.
 -->
 
 <configuration>
@@ -105,7 +102,7 @@
         <!-- Optional. When true, the appender emits extra startup info
              (active topic classes, mandatory-override violations,
              fallback configuration) to Logback's status manager. Has
-             NO per-event effect; legacy per-record debug output is gone.
+             NO per-event effect.
              Recommended: leave unset or set to false. -->
         <!-- <debug>true</debug> -->
 

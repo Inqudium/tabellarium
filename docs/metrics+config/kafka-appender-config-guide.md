@@ -4,11 +4,8 @@ Reference for configuring `eu.inqudium.tabellarium.KafkaAppender` — the
 Logback appender that ships log events to Kafka through per-topic-class
 circuit breakers, with an optional fallback appender for delivery failures.
 
-The appender is a **drop-in replacement** for the legacy
-`com.ing.log.logback.KafkaAppender` v0.4.0: the XML configuration surface is
-identical, with two additive elements (`<appender-ref>` for a fallback
-appender and a now-diagnostics-only `<debug>` flag). A working example lives
-in [`example-logback-spring.xml`](./example-logback-spring.xml); the emitted
+A working example lives in
+[`example-logback-spring.xml`](./example-logback-spring.xml); the emitted
 metrics are catalogued in [`metrics-overview.md`](./metrics-overview.md).
 
 - [1. Minimal configuration](#1-minimal-configuration)
@@ -23,7 +20,6 @@ metrics are catalogued in [`metrics-overview.md`](./metrics-overview.md).
 - [10. Startup validation and failure behavior](#10-startup-validation-and-failure-behavior)
 - [11. Wrapping in an AsyncAppender](#11-wrapping-in-an-asyncappender)
 - [12. Defaults quick reference](#12-defaults-quick-reference)
-- [13. Migration notes from the legacy appender](#13-migration-notes-from-the-legacy-appender)
 - [Appendix A: Topic classes (prepared, not yet active)](#appendix-a-topic-classes-prepared-not-yet-active)
 
 ---
@@ -50,8 +46,7 @@ Kafka bootstrap servers, a default topic, and the three identity fields:
 
 With only `<defaultTopic>` configured, every event is routed to that one
 topic and classified as `TECHNICAL`, so exactly **one** Kafka producer is
-instantiated — matching the semantics of the legacy single-producer
-appender. Without a fallback appender, events that cannot be delivered to
+instantiated. Without a fallback appender, events that cannot be delivered to
 Kafka are silently dropped (see [§7](#7-resilience-circuit-breaker-throttle-fallback)).
 
 ---
@@ -83,12 +78,10 @@ validated as non-blank at `start()`. Blank values abort startup with an
 
 ### The `<debug>` flag
 
-`<debug>true</debug>` is accepted for backward compatibility but now affects
-only **startup diagnostics**: when enabled, the appender emits the active
-topic classes, the fallback configuration, and any mandatory-override
-conflicts to Logback's status manager. The legacy per-record debug output
-was removed for performance (audit finding F-011). Leave it unset or `false`
-in new deployments.
+`<debug>true</debug>` affects only **startup diagnostics**: when enabled,
+the appender emits the active topic classes, the fallback configuration,
+and any mandatory-override conflicts to Logback's status manager. It has
+no per-event effect. Leave it unset or `false` in new deployments.
 
 ---
 
@@ -138,8 +131,8 @@ The key and value serializers are **always** set to `ByteArraySerializer`,
 regardless of any `key.serializer` / `value.serializer` you supply. The
 appender's wire format is bytes (the encoder's output); a different
 serializer would raise a `ClassCastException` on every record in the Kafka
-sender thread (audit finding F-034). Do not set the serializer properties —
-they are silently overridden.
+sender thread. Do not set the serializer properties — they are silently
+overridden.
 
 ---
 
@@ -217,8 +210,8 @@ filling the gaps and the serializers forced:
 | `acks`               | default (you set nothing)      | `1`                      |
 | `max.block.ms`       | default (you set nothing)      | `500`                    |
 | `batch.size`         | default (you set nothing)      | `32768`                  |
-| `key.serializer`     | forced (F-034)                 | `ByteArraySerializer`    |
-| `value.serializer`   | forced (F-034)                 | `ByteArraySerializer`    |
+| `key.serializer`     | forced                         | `ByteArraySerializer`    |
+| `value.serializer`   | forced                         | `ByteArraySerializer`    |
 
 Nothing you set is ever overruled today — the active `TECHNICAL` class has no
 mandatory overrides. (Under the prepared `AUDIT` class the same `acks=1` would
@@ -491,8 +484,8 @@ appender **stopped** rather than throwing. Checked conditions:
 
 Mandatory-override conflicts are logged as warnings but do **not** stop the
 appender. In the hot path, an unexpected per-event failure (encoder bug, OOM)
-is logged **once** (subsequent occurrences suppressed to prevent log storms,
-audit finding F-037) and the event is routed to the fallback.
+is logged **once** (subsequent occurrences suppressed to prevent log storms)
+and the event is routed to the fallback.
 
 Inspect Logback's status output to confirm a clean start — for example add
 `<statusListener class="ch.qos.logback.core.status.OnConsoleStatusListener"/>`
@@ -547,26 +540,6 @@ to their environment. The metrics binding recurses through the
 
 "code" defaults are not exposed through the XML surface today; they are
 listed so operators understand the runtime behavior.
-
----
-
-## 13. Migration notes from the legacy appender
-
-The XML surface is a drop-in replacement for
-`com.ing.log.logback.KafkaAppender` v0.4.0. Two things changed:
-
-1. **`<debug>` is diagnostics-only.** It no longer produces per-record output
-   (F-011). Consider removing it from new deployments.
-2. **New optional `<appender-ref>`** attaches a fallback appender. The legacy
-   appender silently discarded events on delivery failure *and* had no send
-   callback, so failures were invisible (F-002); this appender reports send
-   outcomes and can persist undelivered events. Adding a fallback is strongly
-   recommended.
-
-Everything else — `<encoder>`, `<kafkaProducerProperties>`, `<topicMapping>`,
-`<environment>`, `<component>`, `<cmdbId>` — maps verbatim. See
-[`example-logback-spring.xml`](./example-logback-spring.xml) for a complete,
-annotated configuration.
 
 ---
 

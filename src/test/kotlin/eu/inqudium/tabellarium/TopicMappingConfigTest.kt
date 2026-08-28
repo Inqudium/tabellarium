@@ -145,7 +145,7 @@ class TopicMappingConfigTest {
             // How will the test case be deemed successful and why? Successful
             //   if activeTopicClasses contains TECHNICAL and nothing else.
             //   This pins down the single-producer semantics expected for
-            //   the minimal legacy configuration.
+            //   the minimal configuration.
             // Why is it important to test this test case? If extra classes
             //   leaked into the active set, the ProducerRegistry would
             //   instantiate four KafkaProducers at startup - four times

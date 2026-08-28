@@ -14,7 +14,7 @@ package eu.inqudium.tabellarium
  * For each [buildFor] call, three layers are merged in this order:
  *
  * 1. **Base properties** - the caller's configuration, typically parsed
- *    from `kafkaProducerProperties` in the legacy XML configuration.
+ *    from the `<kafkaProducerProperties>` XML element.
  * 2. **Default overrides** - applied via `putIfAbsent`, so the caller's
  *    value wins where both are present.
  * 3. **Mandatory overrides** - applied unconditionally. When the caller's

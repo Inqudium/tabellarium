@@ -316,9 +316,9 @@ class ResilientMessageSenderTest {
             //   block on the Future and depends entirely on the callback.
             // Why is it important to test this test case? Async-failure handling
             //   is the entire reason this sender exists; if a callback error
-            //   went unhandled (audit finding F-002), the event would be lost
-            //   without ever reaching the fallback - exactly the situation the
-            //   refactor aims to eliminate.
+            //   went unhandled, the event would be lost without ever reaching
+            //   the fallback - exactly the situation this sender is meant to
+            //   eliminate.
 
             // Given: a non-auto-completing MockProducer so we control the callback
             val ctx = newSender(autoComplete = false)

@@ -328,16 +328,15 @@ class MessageEnricherTest {
         @Test
         fun `should not modify the MDC map of the incoming event`() {
             // What is to be tested? Whether the enricher leaves the input event's
-            //   MDC map untouched - the very behavior that the legacy
-            //   implementation violated via LoggerContextVO.getPropertyMap.put.
+            //   MDC map untouched.
             // How will the test case be deemed successful and why? Successful if
             //   the event's MDC map after enrich() contains exactly the same
-            //   entries it had before. This is the contractual fix for audit
-            //   finding F-003.
+            //   entries it had before. This is the enricher's purity contract.
             // Why is it important to test this test case? Mutation of the MDC map
             //   by one appender propagates to all other appenders sharing the
             //   logger context, causing cross-talk that is notoriously hard to
-            //   debug. The fix is the entire reason this component exists.
+            //   debug. The purity guarantee is the entire reason this component
+            //   exists.
 
             // Given
             val mdc = mapOf("traceId" to "trace-abc-123", "userId" to "u-42")

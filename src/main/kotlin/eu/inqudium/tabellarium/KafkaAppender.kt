@@ -15,10 +15,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * This is the orchestrator: it wires together the individual components
  * ([TopicRouter], [TopicTable], [MessageEnricher], [ProducerRegistry],
- * [ResilientMessageSender]), exposes the legacy XML configuration
+ * [ResilientMessageSender]), exposes the XML configuration
  * surface to Joran, and runs the per-event hot path.
  *
- * ## Configuration surface (Drop-In to the legacy appender)
+ * ## Configuration surface
  *
  * ```xml
  * <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
@@ -39,11 +39,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * </appender>
  * ```
  *
- * Every element of the legacy XML is supported with the same semantics
- * - except [debug], whose former per-event hot-path behavior (audit
- * finding F-011) has been removed: the flag now affects **startup
- * diagnostics only**. A migration note is emitted to the status manager
- * when [debug] is `true`.
+ * [debug] affects **startup diagnostics only** - it has no per-event
+ * effect. A note to that effect is emitted to the status manager when
+ * [debug] is `true`.
  *
  * ## Lifecycle
  *
@@ -67,10 +65,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ## Why UnsynchronizedAppenderBase
  *
- * The legacy appender extended `AppenderBase`, whose `doAppend` is
- * `synchronized`. In a Reactor Netty / virtual-thread environment that
- * lock causes carrier-thread pinning and ripples up the call chain as
- * back-pressure (audit finding F-001). The components used in [append]
+ * `AppenderBase`'s `doAppend` is `synchronized`. In a Reactor Netty /
+ * virtual-thread environment that lock causes carrier-thread pinning
+ * and ripples up the call chain as
+ * back-pressure. The components used in [append]
  * are all thread-safe (Kafka `Producer.send` is documented thread-safe;
  * the [TopicRouter] / [TopicTable] / [MessageEnricher] are pure
  * functions; Resilience4j `CircuitBreaker` is thread-safe), so the
@@ -111,13 +109,9 @@ class KafkaAppender :
     /**
      * Enables additional startup diagnostics in the status manager.
      *
-     * **Important behavior change:** in the legacy appender, this flag
-     * also injected per-record debug output into the hot path (audit
-     * finding F-011: `formatter.format(loggingEvent)` was invoked on
-     * every event regardless of whether the debug output was actually
-     * consumed). That behavior has been removed. The flag now affects
-     * **startup only**; operators should consider removing
-     * `<debug>true</debug>` from their configuration.
+     * The flag affects **startup only** - it has no per-event effect.
+     * Operators should consider removing `<debug>true</debug>` from
+     * their configuration.
      */
     var debug: Boolean = false
 
@@ -282,9 +276,8 @@ class KafkaAppender :
 
     private fun emitDebugDiagnostics() {
         addInfo(
-            "Debug mode enabled. Note: <debug> now affects only startup " +
-                "diagnostics; per-record debug output has been removed for " +
-                "performance (audit finding F-011). Consider removing " +
+            "Debug mode enabled. Note: <debug> affects only startup " +
+                "diagnostics and has no per-event effect. Consider removing " +
                 "<debug>true</debug> from your logback configuration.",
         )
         addInfo("Active topic classes: ${producerRegistry.activeTopicClasses.joinToString()}")
@@ -320,8 +313,8 @@ class KafkaAppender :
         } catch (e: Exception) {
             // Hot-path failure (encoder bug, OOM, etc. - should be rare).
             // Log the first occurrence so operators notice, then suppress
-            // to prevent log storms (audit finding F-037); route the event
-            // to fallback regardless.
+            // to prevent log storms; route the event to fallback
+            // regardless.
             if (firstHotPathErrorLogged.compareAndSet(false, true)) {
                 addError(
                     "Hot path error in KafkaAppender. Further errors will " +
