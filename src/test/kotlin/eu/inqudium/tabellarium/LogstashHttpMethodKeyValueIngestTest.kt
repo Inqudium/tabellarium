@@ -193,7 +193,9 @@ class LogstashHttpMethodKeyValueIngestTest {
 
         appender.stop() // flush the stream
         val encodeErrors =
-            context.statusManager.copyOfStatusList.drop(statusesBefore).count { it.level == Status.ERROR }
+            context.statusManager.copyOfStatusList
+                .drop(statusesBefore)
+                .count { it.level == Status.ERROR }
         return Emitted(out.toString(StandardCharsets.UTF_8).trim(), encodeErrors)
     }
 

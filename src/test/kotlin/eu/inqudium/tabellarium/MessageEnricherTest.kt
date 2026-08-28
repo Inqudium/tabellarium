@@ -53,8 +53,7 @@ class MessageEnricherTest {
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = "  ", cmdbId = cmdbId, environment = environment)
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("Component must not be blank")
         }
 
@@ -63,8 +62,7 @@ class MessageEnricherTest {
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = component, cmdbId = "", environment = environment)
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("CMDB id must not be blank")
         }
 
@@ -73,8 +71,7 @@ class MessageEnricherTest {
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = component, cmdbId = cmdbId, environment = "")
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("Environment must not be blank")
         }
     }

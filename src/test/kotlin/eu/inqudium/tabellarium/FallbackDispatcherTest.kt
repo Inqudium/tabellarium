@@ -17,7 +17,9 @@ class FallbackDispatcherTest {
      * AppenderBase instances, Logback emits "No context given for ..."
      * warnings to stderr on every doAppend.
      */
-    private val testContext = ch.qos.logback.classic.LoggerContext()
+    private val testContext =
+        ch.qos.logback.classic
+            .LoggerContext()
 
     /** Appender that records the events it receives. */
     private inner class RecordingAppender : AppenderBase<ILoggingEvent>() {
@@ -45,7 +47,9 @@ class FallbackDispatcherTest {
          * release latch. Used by tests to deterministically wait for
          * the dispatcher worker to enter the blocking call.
          */
-        val inAppend = java.util.concurrent.atomic.AtomicBoolean(false)
+        val inAppend =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
 
         init {
             context = testContext

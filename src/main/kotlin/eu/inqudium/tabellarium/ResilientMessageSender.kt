@@ -312,7 +312,8 @@ internal class ResilientMessageSender(
          * exists to react to.
          */
         fun defaultCircuitBreakerConfig(): CircuitBreakerConfig =
-            CircuitBreakerConfig.custom()
+            CircuitBreakerConfig
+                .custom()
                 .failureRateThreshold(50f)
                 .slidingWindowSize(20)
                 .minimumNumberOfCalls(10)
@@ -323,8 +324,7 @@ internal class ResilientMessageSender(
                     org.apache.kafka.common.errors.InvalidTopicException::class.java,
                     org.apache.kafka.common.errors.SerializationException::class.java,
                     org.apache.kafka.common.errors.TopicAuthorizationException::class.java,
-                )
-                .build()
+                ).build()
 
         /**
          * Convenience factory for a registry preconfigured with

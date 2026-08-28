@@ -13,8 +13,7 @@ class TopicTableTest {
             // When / Then
             assertThatThrownBy {
                 TopicTable(mapOf("  " to TopicClass.AUDIT))
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("must not be blank")
         }
 

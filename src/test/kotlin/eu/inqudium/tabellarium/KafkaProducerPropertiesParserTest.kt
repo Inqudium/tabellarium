@@ -287,8 +287,7 @@ class KafkaProducerPropertiesParserTest {
             // When / Then
             assertThatThrownBy {
                 parseKafkaProducerProperties("client.id=\\u12")
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("Unicode")
         }
     }

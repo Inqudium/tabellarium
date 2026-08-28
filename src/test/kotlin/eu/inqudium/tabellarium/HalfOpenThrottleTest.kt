@@ -21,7 +21,9 @@ class HalfOpenThrottleTest {
      * tests can advance time by arbitrary increments. Always returns
      * the current value in nanoseconds.
      */
-    private class FakeNanoClock(initialNanos: Long = 0L) {
+    private class FakeNanoClock(
+        initialNanos: Long = 0L,
+    ) {
         private val nanos = AtomicLong(initialNanos)
 
         fun now(): Long = nanos.get()
@@ -43,7 +45,8 @@ class HalfOpenThrottleTest {
         // accepts transitionToOpenState directly.
         return CircuitBreaker.of(
             name,
-            CircuitBreakerConfig.custom()
+            CircuitBreakerConfig
+                .custom()
                 .slidingWindowSize(10)
                 .minimumNumberOfCalls(10)
                 .permittedNumberOfCallsInHalfOpenState(10)
@@ -56,9 +59,7 @@ class HalfOpenThrottleTest {
         breaker: CircuitBreaker = newBreaker(),
         gap: Duration = Duration.ofMillis(5),
         clock: FakeNanoClock = FakeNanoClock(),
-    ): Pair<HalfOpenThrottle, FakeNanoClock> {
-        return HalfOpenThrottle(breaker, gap, clock::now) to clock
-    }
+    ): Pair<HalfOpenThrottle, FakeNanoClock> = HalfOpenThrottle(breaker, gap, clock::now) to clock
 
     // -- Tests ----------------------------------------------------------
 
@@ -283,8 +284,7 @@ class HalfOpenThrottleTest {
             // Given / When / Then
             assertThatThrownBy {
                 HalfOpenThrottle(newBreaker(), Duration.ofMillis(-1))
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("non-negative")
         }
 

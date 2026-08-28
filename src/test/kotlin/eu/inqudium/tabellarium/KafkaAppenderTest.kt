@@ -462,9 +462,7 @@ class KafkaAppenderTest {
                         start()
                     }
 
-                    override fun append(event: ILoggingEvent) {
-                        throw RuntimeException("fallback also broken")
-                    }
+                    override fun append(event: ILoggingEvent): Unit = throw RuntimeException("fallback also broken")
                 }
             val appender =
                 newAppender(

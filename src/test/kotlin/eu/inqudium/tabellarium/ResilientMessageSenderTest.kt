@@ -65,7 +65,11 @@ class ResilientMessageSenderTest {
      * nested.
      */
     private class CapturingMetrics : KafkaAppenderMetrics {
-        data class Event(val kind: String, val topicClass: TopicClass?, val detail: String?)
+        data class Event(
+            val kind: String,
+            val topicClass: TopicClass?,
+            val detail: String?,
+        )
 
         val events: MutableList<Event> = java.util.Collections.synchronizedList(mutableListOf())
 
@@ -656,7 +660,8 @@ class ResilientMessageSenderTest {
                     originalEvent = newTestLoggingEvent(message = "huge-$it"),
                 )
                 ctx.factory.createdProducers[0].errorNext(
-                    org.apache.kafka.common.errors.RecordTooLargeException("payload exceeds max.request.size"),
+                    org.apache.kafka.common.errors
+                        .RecordTooLargeException("payload exceeds max.request.size"),
                 )
             }
 
@@ -697,7 +702,8 @@ class ResilientMessageSenderTest {
                     originalEvent = newTestLoggingEvent(message = "timeout-$it"),
                 )
                 ctx.factory.createdProducers[0].errorNext(
-                    org.apache.kafka.common.errors.TimeoutException("ack not received in time"),
+                    org.apache.kafka.common.errors
+                        .TimeoutException("ack not received in time"),
                 )
             }
 
@@ -718,10 +724,14 @@ class ResilientMessageSenderTest {
             // When: a mix of client-side exceptions, all ignored
             val ignoredExceptions =
                 listOf<RuntimeException>(
-                    org.apache.kafka.common.errors.RecordTooLargeException("too big"),
-                    org.apache.kafka.common.errors.InvalidTopicException("bad name"),
-                    org.apache.kafka.common.errors.SerializationException("encode failed"),
-                    org.apache.kafka.common.errors.TopicAuthorizationException("denied"),
+                    org.apache.kafka.common.errors
+                        .RecordTooLargeException("too big"),
+                    org.apache.kafka.common.errors
+                        .InvalidTopicException("bad name"),
+                    org.apache.kafka.common.errors
+                        .SerializationException("encode failed"),
+                    org.apache.kafka.common.errors
+                        .TopicAuthorizationException("denied"),
                 )
             repeat(20) { i ->
                 ctx.sender.send(

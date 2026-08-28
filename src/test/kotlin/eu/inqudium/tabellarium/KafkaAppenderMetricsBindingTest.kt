@@ -43,8 +43,7 @@ class KafkaAppenderMetricsBindingTest {
      * cluster involved.
      */
     private class MockProducerFactory : ProducerFactory {
-        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> =
-            MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
     }
 
     private lateinit var loggerContext: LoggerContext
@@ -148,7 +147,8 @@ class KafkaAppenderMetricsBindingTest {
                 .run { ctx ->
                     val registry = ctx.getBean(MeterRegistry::class.java)
                     val before =
-                        registry.find("kafka.appender.events.accepted")
+                        registry
+                            .find("kafka.appender.events.accepted")
                             .counters()
                             .sumOf { it.count() }
 
@@ -157,7 +157,8 @@ class KafkaAppenderMetricsBindingTest {
 
                     // Then
                     val after =
-                        registry.find("kafka.appender.events.accepted")
+                        registry
+                            .find("kafka.appender.events.accepted")
                             .counters()
                             .sumOf { it.count() }
                     assertThat(after - before).isEqualTo(1.0)
@@ -180,12 +181,12 @@ class KafkaAppenderMetricsBindingTest {
                 .withUserConfiguration(
                     MeterRegistryConfig::class.java,
                     BindingWithTagsConfig::class.java,
-                )
-                .run { ctx ->
+                ).run { ctx ->
                     val registry = ctx.getBean(MeterRegistry::class.java)
 
                     fun taggedCounters() =
-                        registry.find("kafka.appender.events.accepted")
+                        registry
+                            .find("kafka.appender.events.accepted")
                             .tag("application", "test-service")
                             .tag("region", "eu-central-1")
                             .counters()
@@ -228,16 +229,19 @@ class KafkaAppenderMetricsBindingTest {
                     // Publish a second refresh event manually
                     val publisher = ctx.sourceApplicationContext
                     publisher.publishEvent(
-                        org.springframework.context.event.ContextRefreshedEvent(publisher),
+                        org.springframework.context.event
+                            .ContextRefreshedEvent(publisher),
                     )
 
                     val before =
-                        registry.find("kafka.appender.events.accepted")
+                        registry
+                            .find("kafka.appender.events.accepted")
                             .counters()
                             .sumOf { it.count() }
                     appender.doAppend(loggingEvent())
                     val after =
-                        registry.find("kafka.appender.events.accepted")
+                        registry
+                            .find("kafka.appender.events.accepted")
                             .counters()
                             .sumOf { it.count() }
                     assertThat(after - before).isEqualTo(1.0)

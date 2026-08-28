@@ -115,7 +115,9 @@ interface KafkaAppenderMetrics {
     }
 
     /** Outcome of a single producer.send() callback. */
-    enum class SendOutcome(val tag: String) {
+    enum class SendOutcome(
+        val tag: String,
+    ) {
         /** Callback reported no exception. */
         SUCCESS("success"),
 

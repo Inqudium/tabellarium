@@ -418,7 +418,8 @@ class KafkaAppender :
     fun bindMeterRegistry(
         registry: io.micrometer.core.instrument.MeterRegistry,
         commonTags: Iterable<io.micrometer.core.instrument.Tag> =
-            io.micrometer.core.instrument.Tags.empty(),
+            io.micrometer.core.instrument.Tags
+                .empty(),
     ) {
         if (!isStarted) {
             addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
@@ -530,9 +531,11 @@ class KafkaAppender :
         for (topicClass in producerRegistry.activeTopicClasses) {
             val producer = producerRegistry.producerFor(topicClass)
             val tagsForClass =
-                io.micrometer.core.instrument.Tags.of(commonTags)
+                io.micrometer.core.instrument.Tags
+                    .of(commonTags)
                     .and(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, topicClass.tag)
-            io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics(producer, tagsForClass)
+            io.micrometer.core.instrument.binder.kafka
+                .KafkaClientMetrics(producer, tagsForClass)
                 .bindTo(registry)
         }
     }

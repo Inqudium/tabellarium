@@ -268,8 +268,7 @@ class TopicRouterTest {
                     defaultTopic = "  ",
                     markerMappings = emptyMap(),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("Default topic must not be blank")
         }
 
@@ -281,8 +280,7 @@ class TopicRouterTest {
                     defaultTopic = "default topic with space",
                     markerMappings = emptyMap(),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("not permitted by Kafka")
         }
 
@@ -294,8 +292,7 @@ class TopicRouterTest {
                     defaultTopic = "default-topic",
                     markerMappings = mapOf("" to "some-topic"),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("Marker name must not be blank")
         }
 
@@ -307,8 +304,7 @@ class TopicRouterTest {
                     defaultTopic = "default-topic",
                     markerMappings = mapOf("AUDIT" to "  "),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("must not be blank")
         }
 
@@ -320,8 +316,7 @@ class TopicRouterTest {
                     defaultTopic = "default-topic",
                     markerMappings = mapOf("AUDIT" to "topic with space"),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("not permitted by Kafka")
         }
 

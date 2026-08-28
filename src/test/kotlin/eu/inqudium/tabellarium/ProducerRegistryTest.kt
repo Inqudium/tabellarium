@@ -38,15 +38,14 @@ class ProducerRegistryTest {
      * Test producer that throws on [close], used to verify the registry's
      * per-producer try/catch in [ProducerRegistry.close].
      */
-    private class ThrowingOnCloseProducer : MockProducer<ByteArray, ByteArray>(
-        true,
-        FixedZeroPartitioner(),
-        ByteArraySerializer(),
-        ByteArraySerializer(),
-    ) {
-        override fun close(timeout: java.time.Duration) {
-            throw RuntimeException("simulated close failure")
-        }
+    private class ThrowingOnCloseProducer :
+        MockProducer<ByteArray, ByteArray>(
+            true,
+            FixedZeroPartitioner(),
+            ByteArraySerializer(),
+            ByteArraySerializer(),
+        ) {
+        override fun close(timeout: java.time.Duration): Unit = throw RuntimeException("simulated close failure")
     }
 
     @Nested
@@ -60,8 +59,7 @@ class ProducerRegistryTest {
                     activeTopicClasses = emptySet(),
                     producerFactory = RecordingFactory(),
                 )
-            }
-                .isInstanceOf(IllegalArgumentException::class.java)
+            }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("At least one active topic class")
         }
 
@@ -146,7 +144,8 @@ class ProducerRegistryTest {
 
             // Then
             assertThat(registry.mandatoryOverrideViolations).hasSize(2)
-            assertThat(registry.mandatoryOverrideViolations).extracting<TopicClass> { it.topicClass }
+            assertThat(registry.mandatoryOverrideViolations)
+                .extracting<TopicClass> { it.topicClass }
                 .containsExactlyInAnyOrder(TopicClass.AUDIT, TopicClass.FUNCTIONAL)
         }
     }
@@ -228,8 +227,7 @@ class ProducerRegistryTest {
                         ),
                     producerFactory = failingFactory,
                 )
-            }
-                .isInstanceOf(RuntimeException::class.java)
+            }.isInstanceOf(RuntimeException::class.java)
                 .hasMessage("simulated factory failure")
 
             // And: the two already-created producers were closed by rollback
