@@ -1461,6 +1461,175 @@ class KafkaAppenderTest {
             assertThat(countAfterSecond).isEqualTo(countAfterFirst)
             appender.stop()
         }
+
+        @Test
+        fun `should register appender-tagged circuit-breaker meters without resilience4j-micrometer`() {
+            // What is to be tested? Whether the appender's own breaker
+            //   binder publishes the resilience4j.circuitbreaker.* meters
+            //   and stamps them with the appender tag - the tag that makes
+            //   the meter IDs unique per appender instance.
+            // How will the test case be deemed successful and why? Successful
+            //   if the registry carries the state gauge, the call timers
+            //   and the not-permitted counter for the technical breaker,
+            //   each with appender=<name> and name=<breaker>. The metric
+            //   names mirror TaggedCircuitBreakerMetrics, so existing
+            //   dashboards keep working.
+            // Why is it important to test this test case? The breaker
+            //   metrics are the operator's primary broker-outage signal;
+            //   this pins both their presence (now independent of the
+            //   optional resilience4j-micrometer bridge) and the tag that
+            //   finding M-5 identified as missing.
+
+            // Given
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender()
+            appender.name = "KAFKA_A"
+            appender.start()
+
+            // When
+            appender.bindMeterRegistry(registry)
+
+            // Then: state gauge, call timers and not-permitted counter
+            //   exist, all tagged with the appender name
+            val breakerMeters =
+                registry.meters.filter { it.id.name.startsWith("resilience4j.circuitbreaker") }
+            assertThat(breakerMeters).isNotEmpty()
+            assertThat(breakerMeters).allSatisfy { meter ->
+                assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_A")
+                assertThat(meter.id.getTag("name")).isEqualTo("kafka-appender-technical")
+            }
+            assertThat(breakerMeters.map { it.id.name }).contains(
+                "resilience4j.circuitbreaker.state",
+                "resilience4j.circuitbreaker.calls",
+                "resilience4j.circuitbreaker.not.permitted.calls",
+                "resilience4j.circuitbreaker.buffered.calls",
+                "resilience4j.circuitbreaker.failure.rate",
+            )
+            appender.stop()
+        }
+
+        @Test
+        fun `should record breaker call outcomes through the appender-tagged timers`() {
+            // What is to be tested? Whether the event-driven call meters
+            //   actually receive the breaker's outcomes - the own binder
+            //   wires Resilience4j event consumers by hand, and a wiring
+            //   mistake would leave permanently-zero timers that look
+            //   healthy on a dashboard.
+            // How will the test case be deemed successful and why? Successful
+            //   if a successful send increments the kind=successful call
+            //   timer of this appender's breaker.
+            // Why is it important to test this test case? A silent
+            //   zero-counting timer would be worse than an absent one:
+            //   operators would read "no calls" during an incident and
+            //   look elsewhere.
+
+            // Given: a bound appender whose MockProducer auto-succeeds
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender()
+            appender.name = "KAFKA_A"
+            appender.start()
+            appender.bindMeterRegistry(registry)
+
+            // When: one event flows through the breaker-guarded send
+            appender.doAppend(newTestLoggingEvent(message = "counted"))
+
+            // Then: the successful-calls timer of THIS appender counted it
+            val successTimer =
+                registry
+                    .find("resilience4j.circuitbreaker.calls")
+                    .tags("kind", "successful", "appender", "KAFKA_A")
+                    .timer()
+            assertThat(successTimer).isNotNull()
+            assertThat(successTimer!!.count()).isEqualTo(1L)
+            appender.stop()
+        }
+
+        @Test
+        fun `should keep two appenders' circuit-breaker meters apart on a shared registry`() {
+            // What is to be tested? The multi-instance scenario of finding
+            //   M-5: two KafkaAppenders bound to the same MeterRegistry
+            //   must produce distinguishable breaker meters, and stopping
+            //   one must not tear down the observability of the other.
+            // How will the test case be deemed successful and why? Successful
+            //   if both appenders' state gauges coexist under distinct
+            //   appender tags, and after stopping the first appender its
+            //   meters are gone while the second appender's remain.
+            // Why is it important to test this test case? Before the
+            //   appender tag, the IDs collided: gauges reported only one
+            //   instance, and one appender's unbind removed the meters the
+            //   other was still using - operators then made breaker
+            //   decisions on missing or mixed data.
+
+            // Given: two named appenders on one registry
+            val registry = SimpleMeterRegistry()
+            val appenderA = newAppender()
+            appenderA.name = "KAFKA_A"
+            val appenderB = newAppender()
+            appenderB.name = "KAFKA_B"
+            appenderA.start()
+            appenderB.start()
+            appenderA.bindMeterRegistry(registry)
+            appenderB.bindMeterRegistry(registry)
+
+            // Then: both instances' breaker meters coexist, distinct by tag
+            val stateGauges =
+                registry
+                    .find("resilience4j.circuitbreaker.state")
+                    .gauges()
+            assertThat(stateGauges.map { it.id.getTag("appender") }.toSet())
+                .containsExactlyInAnyOrder("KAFKA_A", "KAFKA_B")
+            // And: no collision warning was emitted for distinct names
+            assertThat(appenderB.statusMessages())
+                .noneMatch { it.contains("already contains circuit-breaker meters") }
+
+            // When: the first appender stops
+            appenderA.stop()
+
+            // Then: its meters are gone, the second appender's remain
+            val remaining =
+                registry.meters.filter { it.id.name.startsWith("resilience4j.circuitbreaker") }
+            assertThat(remaining).isNotEmpty()
+            assertThat(remaining).allSatisfy { meter ->
+                assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_B")
+            }
+            appenderB.stop()
+            assertThat(registry.meters)
+                .noneMatch { it.id.name.startsWith("resilience4j.circuitbreaker") }
+        }
+
+        @Test
+        fun `should warn when two appenders share the same name on one registry`() {
+            // What is to be tested? The residual collision the appender
+            //   tag cannot resolve: two appenders with the SAME name (the
+            //   tag value) on the same registry. The binding must tell the
+            //   operator that these breaker meters are not trustworthy.
+            // How will the test case be deemed successful and why? Successful
+            //   if the second bind emits the collision warning naming the
+            //   affected breakers.
+            // Why is it important to test this test case? The warning is
+            //   the only remaining guard for this misconfiguration; if it
+            //   silently regressed, mixed breaker data would again look
+            //   healthy.
+
+            // Given: two appenders with the same name on one registry
+            val registry = SimpleMeterRegistry()
+            val appenderA = newAppender()
+            appenderA.name = "KAFKA"
+            val appenderB = newAppender()
+            appenderB.name = "KAFKA"
+            appenderA.start()
+            appenderB.start()
+            appenderA.bindMeterRegistry(registry)
+
+            // When
+            appenderB.bindMeterRegistry(registry)
+
+            // Then
+            assertThat(appenderB.statusMessages())
+                .anyMatch { it.contains("already contains circuit-breaker meters") && it.contains("KAFKA") }
+            appenderA.stop()
+            appenderB.stop()
+        }
     }
 
     @Nested

@@ -170,23 +170,20 @@
             Optional metrics integration.
 
             micrometer-core enables the bindMeterRegistry() integration on
-            the appender. resilience4j-micrometer adds the circuit-breaker
-            state metrics; if absent, the appender silently skips the
-            Resilience4j binding (no failure, no warning).
+            the appender, including the circuit-breaker metrics: those are
+            registered by the appender's own binder (MetricsBindings),
+            which mirrors resilience4j-micrometer's metric names and adds
+            a per-appender tag - so resilience4j-micrometer itself is no
+            longer needed.
 
-            Both are <optional>true</optional>: consumers that do not want
-            metrics get a smaller dependency tree, and the appender does
-            not pull in a transitively-managed Micrometer version that
-            might conflict with the application's own Spring Boot BOM.
+            <optional>true</optional>: consumers that do not want metrics
+            get a smaller dependency tree, and the appender does not pull
+            in a transitively-managed Micrometer version that might
+            conflict with the application's own Spring Boot BOM.
         -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-micrometer</artifactId>
             <optional>true</optional>
         </dependency>
         <!--

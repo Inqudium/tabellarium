@@ -525,21 +525,23 @@ Cardinality budget per appender instance: ~35 time series.
 At 100 microservices in a shared Prometheus this is ~3 500 series —
 well within the default cardinality budget.
 
-### Optional bindings
+### Additional bindings
 
 When `bindMeterRegistry()` is called, two additional metric sources
-are bound if their library is on the classpath:
+are bound:
 
-- **`resilience4j-micrometer`** publishes circuit-breaker state and
-  per-state call counts (`resilience4j.circuitbreaker.*`). Without
-  this dependency, the appender's own counters still work — only the
-  breaker state gauges are unavailable.
+- **Circuit-breaker metrics** (`resilience4j.circuitbreaker.*`) are
+  published by the appender's own binder — no `resilience4j-micrometer`
+  needed. Metric names and tags mirror `TaggedCircuitBreakerMetrics`,
+  plus the same `appender` tag the appender's own meters carry, so
+  multiple appender instances on one registry never collide.
 - **Micrometer Kafka binder** (part of `micrometer-core` for older
   versions, `micrometer-binders-kafka` for newer) publishes the
-  underlying Kafka producer's internal metrics (`kafka.producer.*`).
-  One binding per active topic class, tagged with `topic.class`.
+  underlying Kafka producer's internal metrics (`kafka.producer.*`)
+  if it is on the classpath. One binding per active topic class,
+  tagged with `topic.class` and `appender`.
 
-Missing classpath libraries are silently skipped — the binding is
+A missing Kafka binder is silently skipped — that binding is
 best-effort, not fail-fast.
 
 ### Wiring up: Spring applications

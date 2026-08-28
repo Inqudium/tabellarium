@@ -90,17 +90,19 @@ Diese erscheinen dann zusätzlich zu den per-Metrik-Tags an allen oben genannten
 
 Multipliziert mit dem `appender`-Tag (im Default-Fall 1 Wert) und der Common-Tags-Cardinality (typisch 1, weil pro Service konstant).
 
-## Resilience4j-Bridge (wenn `resilience4j-micrometer` im Classpath)
+## Circuit-Breaker-Metriken
 
-Wird automatisch via Reflection-basiertes Binding aktiviert, wenn `TaggedCircuitBreakerMetrics` verfügbar ist:
+Werden vom appender-eigenen Binder registriert (kein `resilience4j-micrometer` nötig; `micrometer-core` genügt). Die Metriknamen und Tags entsprechen 1:1 denen von `TaggedCircuitBreakerMetrics`, ergänzt um den `appender`-Tag und die Common-Tags - dadurch kollidieren mehrere KafkaAppender-Instanzen an derselben Registry nicht mehr:
 
-| Metrik                                       | Tags            | Typ                                                          |
-| -------------------------------------------- | --------------- | ------------------------------------------------------------ |
-| `resilience4j.circuitbreaker.state`          | `name`, `state` | Gauge: 1 wenn Breaker in diesem State, sonst 0               |
-| `resilience4j.circuitbreaker.calls`          | `name`, `kind`  | Counter pro Call-Outcome (`successful`, `failed`, `ignored`, `not_permitted`) |
-| `resilience4j.circuitbreaker.buffered.calls` | `name`, `kind`  | Gauge: aktuell im Sliding-Window                             |
-| `resilience4j.circuitbreaker.failure.rate`   | `name`          | Gauge: aktuelle Failure-Rate in Prozent                      |
-| `resilience4j.circuitbreaker.slow.call.rate` | `name`          | Gauge: aktueller Slow-Call-Anteil in Prozent                 |
+| Metrik                                       | Tags                        | Typ                                                          |
+| -------------------------------------------- | --------------------------- | ------------------------------------------------------------ |
+| `resilience4j.circuitbreaker.state`          | `appender`, `name`, `state` | Gauge: 1 wenn Breaker in diesem State, sonst 0               |
+| `resilience4j.circuitbreaker.calls`          | `appender`, `name`, `kind`  | Timer pro Call-Outcome (`successful`, `failed`, `ignored`)   |
+| `resilience4j.circuitbreaker.not.permitted.calls` | `appender`, `name`, `kind` | Counter (`kind=not_permitted`): vom offenen Breaker abgewiesene Calls |
+| `resilience4j.circuitbreaker.buffered.calls` | `appender`, `name`, `kind`  | Gauge: aktuell im Sliding-Window                             |
+| `resilience4j.circuitbreaker.slow.calls`     | `appender`, `name`, `kind`  | Gauge: Slow Calls im Sliding-Window                          |
+| `resilience4j.circuitbreaker.failure.rate`   | `appender`, `name`          | Gauge: aktuelle Failure-Rate in Prozent                      |
+| `resilience4j.circuitbreaker.slow.call.rate` | `appender`, `name`          | Gauge: aktueller Slow-Call-Anteil in Prozent                 |
 
 **`name`-Werte** entsprechen den aktiven Topic-Klassen:
 

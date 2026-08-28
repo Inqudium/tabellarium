@@ -646,19 +646,19 @@ Tag values: `topic.class` ∈ {`audit`, `functional`, `technical`,
 `encoder.error`}; `outcome` ∈ {`success`, `error`}. Worst case ≈ 35 series
 per appender instance.
 
-### Optional extra bindings
+### Additional bindings
 
-`bindMeterRegistry` additionally attempts two best-effort bindings, each
-gated by a `Class.forName` probe so the appender works without the dependency
-on the classpath:
+`bindMeterRegistry` additionally attempts two best-effort bindings:
 
-- **Resilience4j circuit-breaker metrics** — needs
-  `io.github.resilience4j:resilience4j-micrometer` (binds
-  `TaggedCircuitBreakerMetrics` for the per-class breakers).
+- **Resilience4j circuit-breaker metrics** — registered by the appender's
+  own binder (no `resilience4j-micrometer` needed); mirrors
+  `TaggedCircuitBreakerMetrics`' metric names for the per-class breakers
+  and adds the `appender` tag, so several appender instances on one
+  registry never collide.
 - **Kafka client metrics** — needs `micrometer-core`'s `KafkaClientMetrics`
-  (binds each active producer's native client metrics).
-
-Both are silently skipped when the class is absent.
+  (binds each active producer's native client metrics, tagged with
+  `topic.class` and `appender`); gated by a `Class.forName` probe and
+  silently skipped when the class is absent.
 
 ---
 

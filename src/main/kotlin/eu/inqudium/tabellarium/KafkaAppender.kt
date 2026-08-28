@@ -568,12 +568,15 @@ class KafkaAppender :
      * and dropped events. See [MicrometerKafkaAppenderMetrics] for the
      * complete metric inventory.
      *
-     * **Optional bindings:** if `resilience4j-micrometer` is on the
-     * classpath, the circuit-breaker state and call-outcome metrics are
-     * additionally bound. If `micrometer-kafka` is on the classpath,
-     * the underlying Kafka producers' internal metrics are bound as
-     * well. Either binding failing (missing classpath, registry error)
-     * is non-fatal and reported via Logback's status manager.
+     * **Additional bindings:** the circuit-breaker state and
+     * call-outcome metrics are bound by the appender's own binder
+     * (mirroring `resilience4j-micrometer`'s metric names, with an
+     * additional `appender` tag so multiple appender instances on one
+     * registry never collide). If the Micrometer Kafka binder is on
+     * the classpath, the underlying Kafka producers' internal metrics
+     * are bound as well, carrying the same `appender` tag. A binding
+     * failing (missing classpath, registry error) is non-fatal and
+     * reported via Logback's status manager.
      *
      * **When to call:** typically from a Spring `@PostConstruct` or
      * an `ApplicationReadyEvent` handler, after the application's
