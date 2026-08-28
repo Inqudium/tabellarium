@@ -631,6 +631,13 @@ mvn -Dtest='*MessageEnricher*' test             # pattern-match
 The module has no Maven plugins beyond the Kotlin compiler and Surefire.
 Java 21 and Kotlin 2.4.10.
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
+the build setup, code-style expectations, and pull-request process.
+Security vulnerabilities should be reported privately as described in
+[SECURITY.md](SECURITY.md).
+
 ## License
 
-[Project's license here.]
+Licensed under the [Apache License, Version 2.0](LICENSE).

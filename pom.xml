@@ -24,6 +24,34 @@
         overrides seal audit-grade delivery (acks=all, idempotence), and a fallback
         appender catches what cannot be shipped.
     </description>
+    <url>https://github.com/Inqudium/tabellarium</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>dirkjink</id>
+            <name>dirkjink</name>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/Inqudium/tabellarium.git</connection>
+        <developerConnection>scm:git:git@github.com:Inqudium/tabellarium.git</developerConnection>
+        <url>https://github.com/Inqudium/tabellarium</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/Inqudium/tabellarium/issues</url>
+    </issueManagement>
 
     <properties>
         <!-- CI-Friendly Version -->

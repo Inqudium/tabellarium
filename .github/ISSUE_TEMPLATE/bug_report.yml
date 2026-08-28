@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a defect in the appender
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Logback configuration
+      description: >
+        The relevant <appender> block from your logback(-spring).xml.
+        Redact credentials (SSL passwords, bootstrap servers) before posting.
+      render: xml
+    validations:
+      required: false
+  - type: textarea
+    id: status-output
+    attributes:
+      label: Logback status output
+      description: >
+        Output from the Logback status manager (e.g. via
+        OnConsoleStatusListener), if available.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Tabellarium version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: JVM version, Kafka client/broker version, Spring Boot version if applicable.
+    validations:
+      required: false
