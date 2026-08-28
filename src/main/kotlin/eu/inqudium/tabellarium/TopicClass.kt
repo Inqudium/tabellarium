@@ -44,6 +44,20 @@ enum class TopicClass(
      * metrics hot path needs no per-event `name.lowercase()` call.
      */
     internal val tag: String,
+    /**
+     * Upper bound for `max.block.ms`, enforced as a **cap** by
+     * [ProducerPropertiesBuilder]: an operator may configure a lower
+     * value, but a higher (or unparseable) value is clamped to this
+     * ceiling and recorded as a [MandatoryOverrideViolation].
+     *
+     * The cap exists because `producer.send` runs on the logging
+     * caller's thread and may block up to `max.block.ms` waiting for
+     * topic metadata or free buffer space. The appender's central
+     * design promise - a bounded worst-case block per `send()` even
+     * when the cluster is unreachable - only holds if this value
+     * cannot be raised through configuration.
+     */
+    internal val maxBlockMsCap: Long,
 ) {
     /**
      * Audit and compliance logs. Non-negotiable durability and idempotence;
@@ -64,6 +78,7 @@ enum class TopicClass(
                 ProducerConfig.RETRIES_CONFIG to "10",
             ),
         tag = "audit",
+        maxBlockMsCap = 500,
     ),
 
     /**
@@ -83,6 +98,7 @@ enum class TopicClass(
                 ProducerConfig.COMPRESSION_TYPE_CONFIG to "lz4",
             ),
         tag = "functional",
+        maxBlockMsCap = 500,
     ),
 
     /**
@@ -101,6 +117,7 @@ enum class TopicClass(
                 ProducerConfig.COMPRESSION_TYPE_CONFIG to "lz4",
             ),
         tag = "technical",
+        maxBlockMsCap = 500,
     ),
 
     /**
@@ -119,5 +136,6 @@ enum class TopicClass(
                 ProducerConfig.COMPRESSION_TYPE_CONFIG to "lz4",
             ),
         tag = "performance",
+        maxBlockMsCap = 200,
     ),
 }

@@ -197,33 +197,45 @@ class LogstashHttpMethodKeyValueIngestTest {
                 this.outputStream = out
                 start()
             }
-        val logger =
-            (context.getLogger("ingest-test.${methodValue?.javaClass?.simpleName ?: "null"}") as LogbackLogger).apply {
-                level = Level.INFO
-                isAdditive = false
-                addAppender(appender)
-            }
-        val statusesBefore = context.statusManager.copyOfStatusList.size
+        val logger = context.getLogger("ingest-test.${methodValue?.javaClass?.simpleName ?: "null"}") as LogbackLogger
+        // Snapshot the logger's prior state: the LoggerContext is the
+        // global one (LoggerFactory), so everything mutated here must be
+        // restored - otherwise a stopped appender and altered
+        // level/additivity leak into every later test that touches a
+        // logger of the same name.
+        val previousLevel = logger.level
+        val previousAdditive = logger.isAdditive
+        try {
+            logger.level = Level.INFO
+            logger.isAdditive = false
+            logger.addAppender(appender)
+            val statusesBefore = context.statusManager.copyOfStatusList.size
 
-        logger
-            .atError()
-            .setCause(RuntimeException("403 Forbidden"))
-            .setMessage("Adapter http exchange access-profiles GET /v5/access-profiles/by-involved-party/uuid -> 403")
-            .addKeyValue("lap.event.kind", "http-request")
-            .addKeyValue("lap.event.outcome", "failure")
-            .addKeyValue("lap.event.duration", 120_143_294L)
-            .addKeyValue("lap.service.target.name", "access-profiles")
-            .addKeyValue("lap.http.request.method", methodValue) // the value under test: HttpMethod vs String
-            .addKeyValue("lap.url.path", "/v5/access-profiles/by-involved-party/uuid")
-            .addKeyValue("lap.http.response.status_code", 403)
-            .log()
+            logger
+                .atError()
+                .setCause(RuntimeException("403 Forbidden"))
+                .setMessage("Adapter http exchange access-profiles GET /v5/access-profiles/by-involved-party/uuid -> 403")
+                .addKeyValue("lap.event.kind", "http-request")
+                .addKeyValue("lap.event.outcome", "failure")
+                .addKeyValue("lap.event.duration", 120_143_294L)
+                .addKeyValue("lap.service.target.name", "access-profiles")
+                .addKeyValue("lap.http.request.method", methodValue) // the value under test: HttpMethod vs String
+                .addKeyValue("lap.url.path", "/v5/access-profiles/by-involved-party/uuid")
+                .addKeyValue("lap.http.response.status_code", 403)
+                .log()
 
-        appender.stop() // flush the stream
-        val encodeErrors =
-            context.statusManager.copyOfStatusList
-                .drop(statusesBefore)
-                .count { it.level == Status.ERROR }
-        return Emitted(out.toString(StandardCharsets.UTF_8).trim(), encodeErrors)
+            appender.stop() // flush the stream
+            val encodeErrors =
+                context.statusManager.copyOfStatusList
+                    .drop(statusesBefore)
+                    .count { it.level == Status.ERROR }
+            return Emitted(out.toString(StandardCharsets.UTF_8).trim(), encodeErrors)
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = previousLevel
+            logger.isAdditive = previousAdditive
+            appender.stop() // idempotent; covers the exception path
+        }
     }
 
     /**

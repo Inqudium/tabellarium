@@ -6,6 +6,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Decouples invocation of the fallback [Appender] from caller threads -
@@ -78,6 +79,18 @@ internal class FallbackDispatcher(
     private val droppedCount = AtomicLong(0)
 
     /**
+     * The event the worker has taken off the queue but not yet finished
+     * delivering. Owned via compare-and-set: exactly one party accounts
+     * for it. The worker clears it on delivery success (nothing counted)
+     * or counts it as dropped when `doAppend` throws; a forced [close]
+     * claims and counts it when the worker did not finish in time.
+     * Without this, precisely the event in flight at a forced shutdown
+     * would vanish from the loss accounting - neither delivered nor
+     * counted as dropped.
+     */
+    private val inFlight = AtomicReference<ILoggingEvent>()
+
+    /**
      * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP];
      * the appender replaces it via [setMetrics] when a Micrometer
      * registry is bound. Volatile because the setter may be called
@@ -124,9 +137,10 @@ internal class FallbackDispatcher(
         }
 
     /**
-     * Number of events dropped because the queue was full when
-     * [enqueue] was called, or because [close] timed out before the
-     * queue drained. Read from any thread.
+     * Number of events lost by this dispatcher: the queue was full when
+     * [enqueue] was called, the fallback appender's `doAppend` threw,
+     * or [close] timed out before the queue - including the one event
+     * the worker had in flight - drained. Read from any thread.
      */
     val droppedEventCount: Long
         get() = droppedCount.get()
@@ -191,9 +205,20 @@ internal class FallbackDispatcher(
         // We give it up to GRACEFUL_DRAIN_WAIT_MS for this - long enough
         // for the typical case (fast appender, small queue), short
         // enough that a hung appender does not stretch shutdown.
+        //
+        // An interrupt of the closing thread (e.g. an expiring container
+        // shutdown budget) must not abort the teardown half-way: the
+        // joins are wrapped, the forced cleanup and the loss accounting
+        // below still run without further blocking waits, and the
+        // interrupt flag is restored before returning.
+        var interrupted = false
         val gracefulWait = GRACEFUL_DRAIN_WAIT_MS.coerceAtMost(shutdownTimeoutMs)
         val worker = checkNotNull(worker) { "a non-synchronous dispatcher always has a worker thread" }
-        worker.join(gracefulWait)
+        try {
+            worker.join(gracefulWait)
+        } catch (_: InterruptedException) {
+            interrupted = true
+        }
 
         if (worker.isAlive) {
             // Phase 2: forced exit.
@@ -204,20 +229,36 @@ internal class FallbackDispatcher(
             val remainingTimeout = shutdownTimeoutMs - gracefulWait
             // CAUTION: Thread.join(0) means "wait forever", not "do not
             // wait" - a Java API trap. Only join if we actually have
-            // remaining budget. If we don't, accept that the worker may
-            // outlive us; it is a daemon thread, so the JVM can still
-            // exit.
-            if (remainingTimeout > 0) {
-                worker.join(remainingTimeout)
+            // remaining budget and were not interrupted ourselves. If we
+            // don't, accept that the worker may outlive us; it is a
+            // daemon thread, so the JVM can still exit.
+            if (remainingTimeout > 0 && !interrupted) {
+                try {
+                    worker.join(remainingTimeout)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
             }
+        }
+        val m = metrics
+        // Claim the event the worker is still processing (or abandoned
+        // mid-delivery): from this point on it counts as dropped exactly
+        // once. Should the surviving worker still complete the delivery,
+        // its own compare-and-set fails and nothing is double-counted -
+        // the conservative direction for a loss metric.
+        inFlight.getAndSet(null)?.let {
+            droppedCount.incrementAndGet()
+            m.fallbackDispatcherDropped()
         }
         // Any remaining queued events are dropped on shutdown. Drain and
         // count in one pass (rather than reading queue.size) so the events
         // are actually released and cannot be re-counted by a later call.
-        val m = metrics
         while (queue.poll() != null) {
             droppedCount.incrementAndGet()
             m.fallbackDispatcherDropped()
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
         }
     }
 
@@ -238,25 +279,52 @@ internal class FallbackDispatcher(
                     return
                 } ?: continue
 
-            try {
-                fallbackAppender.doAppend(event)
-            } catch (_: Exception) {
-                // If the fallback throws, there is nothing meaningful
-                // left to do - surfacing this would itself be log-storm-
-                // prone, and the appender has no status manager from
-                // this internal class. Swallow.
+            deliver(event)
+            if (Thread.currentThread().isInterrupted) {
+                // Forced shutdown arrived while delivering. Stop here;
+                // close() drains and counts whatever remains queued.
+                return
             }
         }
         // running=false but no interrupt: graceful shutdown path.
         // Drain whatever remains in the queue using non-blocking poll;
-        // anything still in flight at close() time is counted as
-        // dropped by close() itself.
+        // anything still queued or in flight at close() time is counted
+        // as dropped by close() itself.
         while (true) {
             val event = queue.poll() ?: return
-            try {
-                fallbackAppender.doAppend(event)
-            } catch (_: Exception) {
-                // Same swallow policy.
+            deliver(event)
+            if (Thread.currentThread().isInterrupted) {
+                return
+            }
+        }
+    }
+
+    /**
+     * Delivers one event to the fallback appender, keeping the
+     * [inFlight] ownership protocol: on success the slot is cleared
+     * without counting; when `doAppend` throws, the event is lost and
+     * counted as dropped - unless a forced [close] already claimed and
+     * counted it, in which case the compare-and-set fails and the event
+     * is not double-counted.
+     */
+    private fun deliver(event: ILoggingEvent) {
+        inFlight.set(event)
+        try {
+            fallbackAppender.doAppend(event)
+            inFlight.compareAndSet(event, null)
+        } catch (e: Exception) {
+            // If the fallback throws, the event is gone - surfacing the
+            // exception itself would be log-storm-prone, and the appender
+            // has no status manager from this internal class. Account for
+            // the loss, then swallow.
+            if (inFlight.compareAndSet(event, null)) {
+                droppedCount.incrementAndGet()
+                metrics.fallbackDispatcherDropped()
+            }
+            if (e is InterruptedException) {
+                // Preserve the shutdown signal a blocking appender may
+                // have converted into an exception.
+                Thread.currentThread().interrupt()
             }
         }
     }

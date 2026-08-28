@@ -206,6 +206,24 @@ class KafkaAppender :
     private val metricsBindings = MetricsBindings(this)
 
     /**
+     * Per-thread reentry guard for [append]. Logback's
+     * `UnsynchronizedAppenderBase` ships only a no-op guard, so a log
+     * event emitted *synchronously from inside the append path itself*
+     * would re-enter [append] on the same thread. That is not
+     * hypothetical: the Kafka 4.x client logs `ApiException`s at DEBUG
+     * on the **caller's** thread in `KafkaProducer.doSend`'s synchronous
+     * failure path - before the send callback runs. With
+     * `org.apache.kafka` at DEBUG and the appender attached at the root
+     * logger, each such log would recursively invoke `producer.send`
+     * again (the network-thread-name guard below cannot catch it, the
+     * event carries the application thread's name), stacking up repeated
+     * `max.block.ms` waits and ultimately a `StackOverflowError`.
+     * Reentrant events are dropped entirely - same policy as the
+     * network-thread guard: no metrics, no fallback.
+     */
+    private val inAppend = ThreadLocal.withInitial { false }
+
+    /**
      * Guards the teardown in [stop] so a repeated stop (Logback may call
      * it more than once during context teardown) does not re-run the
      * close sequence - re-closing the dispatcher would double-count its
@@ -217,6 +235,14 @@ class KafkaAppender :
     // -- Lifecycle ------------------------------------------------------
 
     override fun start() {
+        if (isStarted) {
+            // Idempotence guard: a second start() would rebuild the whole
+            // pipeline and overwrite the references to the running one -
+            // orphaning producers (network threads, buffers, MBeans) and
+            // a fallback worker that no later stop() could ever reach.
+            addWarn("KafkaAppender is already started; ignoring repeated start().")
+            return
+        }
         if (!validateConfiguration()) {
             return // addError was already called for each failure
         }
@@ -367,8 +393,8 @@ class KafkaAppender :
     private fun buildViolationMessage(violation: MandatoryOverrideViolation): String =
         "Mandatory override applied for ${violation.topicClass}: " +
             "${violation.propertyKey} forced from '${violation.userValue}' to " +
-            "'${violation.enforcedValue}'. This is a compliance requirement; " +
-            "see TopicClass.${violation.topicClass} for rationale."
+            "'${violation.enforcedValue}'. This is a non-negotiable topic-class " +
+            "requirement; see TopicClass.${violation.topicClass} for rationale."
 
     private fun emitDebugDiagnostics() {
         addInfo(
@@ -407,6 +433,13 @@ class KafkaAppender :
     // -- Hot path -------------------------------------------------------
 
     override fun append(event: ILoggingEvent) {
+        // Reentry guard: a log event created synchronously from inside
+        // this very append path (most relevantly the Kafka client's
+        // caller-thread DEBUG logging in its synchronous send-failure
+        // path) must not recurse into the producer. See the field KDoc.
+        if (inAppend.get()) {
+            return
+        }
         // Self-logging guard: the Kafka client names its producer network
         // thread "kafka-producer-network-thread | <client.id>". Log events
         // from those threads are the producer's own logging; routing them
@@ -431,6 +464,7 @@ class KafkaAppender :
         // the catch with topicClass=null and we report the failure
         // without a class tag (rare; only on malformed marker input).
         var topicClassForFailure: TopicClass? = null
+        inAppend.set(true)
         try {
             // Non-null by the start() gate: append only runs on a started
             // appender, and start() refuses without an encoder.
@@ -467,6 +501,8 @@ class KafkaAppender :
             // blocking the caller thread (typically a Logback AsyncAppender
             // worker) on the fallback appender's downstream I/O.
             fallbackDispatcher?.enqueue(event)
+        } finally {
+            inAppend.set(false)
         }
     }
 

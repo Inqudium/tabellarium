@@ -1134,6 +1134,144 @@ class KafkaAppenderTest {
     }
 
     @Nested
+    inner class `Reentry guard` {
+        @Test
+        fun `should drop a reentrant event logged synchronously from inside the send path`() {
+            // What is to be tested? Whether a log event created on the
+            //   CALLER's thread from inside producer.send is dropped
+            //   instead of recursing into the appender. The Kafka 4.x
+            //   client logs ApiExceptions at DEBUG on the calling thread
+            //   in its synchronous doSend failure path - such an event
+            //   carries the application thread's name, so the
+            //   network-thread-name guard cannot catch it, and Logback's
+            //   UnsynchronizedAppenderBase ships only a no-op reentry
+            //   guard.
+            // How will the test case be deemed successful and why? Successful
+            //   if the producer receives exactly the application's own
+            //   event and the reentrant "Kafka internal" event reaches
+            //   neither the producer nor the fallback. Without the
+            //   ThreadLocal guard this test does not merely fail - it
+            //   dies in unbounded recursion (send -> log -> append ->
+            //   send -> ...) ending in a StackOverflowError.
+            // Why is it important to test this test case? With
+            //   org.apache.kafka at DEBUG - the very configuration an
+            //   operator turns on to diagnose broker trouble - every
+            //   synchronous send failure would otherwise feed itself,
+            //   holding the application thread through stacked
+            //   max.block.ms waits until the stack overflows.
+
+            // Given: a producer whose send() first emits a log event on
+            //   the calling thread (modelling Kafka's synchronous DEBUG
+            //   logging), then delegates to a MockProducer
+            val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+            var appenderRef: KafkaAppender? = null
+            val selfLoggingFactory =
+                ProducerFactory { _ ->
+                    object : Producer<ByteArray, ByteArray> by mock {
+                        override fun send(
+                            record: ProducerRecord<ByteArray, ByteArray>,
+                            callback: Callback?,
+                        ): Future<RecordMetadata> {
+                            checkNotNull(appenderRef).doAppend(
+                                newTestLoggingEvent(
+                                    message = "Kafka internal DEBUG on caller thread",
+                                    loggerName = "org.apache.kafka.clients.producer.KafkaProducer",
+                                    threadName = Thread.currentThread().name,
+                                ),
+                            )
+                            return mock.send(record, callback)
+                        }
+                    }
+                }
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = selfLoggingFactory,
+                    fallback = fallback,
+                )
+            appenderRef = appender
+            appender.start()
+
+            // When: the application logs one event
+            appender.doAppend(newTestLoggingEvent(message = "app event", threadName = "http-nio-8080-exec-1"))
+
+            // Then: only the application's event was sent; the reentrant
+            //   Kafka-internal event was dropped entirely - no recursion,
+            //   no second send, nothing in the fallback
+            assertThat(mock.history()).hasSize(1)
+            assertThat(fallback.events).isEmpty()
+        }
+
+        @Test
+        fun `should keep appending normally after a reentrant event was dropped`() {
+            // What is to be tested? Whether the reentry guard is released
+            //   after each top-level append - a guard that stuck in the
+            //   "inside" state would silently drop every later event on
+            //   that thread.
+            // How will the test case be deemed successful and why? Successful
+            //   if consecutive top-level events on the same thread all
+            //   reach the producer.
+            // Why is it important to test this test case? The guard is
+            //   ThreadLocal state manipulated in a finally block; a
+            //   regression here would turn one recursion incident into a
+            //   permanently silenced application thread.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.start()
+
+            // When: multiple sequential appends on this thread
+            repeat(3) { i ->
+                appender.doAppend(newTestLoggingEvent(message = "event-$i"))
+            }
+
+            // Then: all delivered
+            assertThat(factory.createdProducers[0].history()).hasSize(3)
+        }
+    }
+
+    @Nested
+    inner class `Repeated start` {
+        @Test
+        fun `should ignore a repeated start and keep the existing pipeline`() {
+            // What is to be tested? Whether start() is idempotent. A second
+            //   start() used to rebuild the whole pipeline and overwrite
+            //   the references to the running one - orphaning the previous
+            //   producers (network threads, buffers, MBeans), which no
+            //   later stop() could reach.
+            // How will the test case be deemed successful and why? Successful
+            //   if the second start() creates no additional producers and
+            //   stop() afterwards closes every producer that was ever
+            //   created - i.e. nothing is leaked.
+            // Why is it important to test this test case? Logback or Spring
+            //   lifecycle quirks can call start() more than once; each
+            //   duplicate call would leak a full set of Kafka producers
+            //   until process exit.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.start()
+            val producersAfterFirstStart = factory.createdProducers.size
+
+            // When: a second start on the already-started appender
+            appender.start()
+
+            // Then: no new pipeline was built, the duplicate is reported,
+            //   and stop() closes every producer ever created
+            assertThat(factory.createdProducers).hasSize(producersAfterFirstStart)
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("already started") }
+            appender.stop()
+            assertThat(factory.createdProducers).allSatisfy { producer ->
+                assertThat(producer.closed()).isTrue()
+            }
+        }
+    }
+
+    @Nested
     inner class `Hot path concurrency` {
         /**
          * Factory wrapping each MockProducer in a synchronizing delegate:

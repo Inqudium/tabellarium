@@ -31,8 +31,9 @@ configuration guide, metrics overview, and Grafana dashboards.
 - **The sender is never made to wait.** The hot path takes no lock
   (`UnsynchronizedAppenderBase`, atomics only), so it neither pins carrier
   threads on virtual threads nor stalls a Reactor event loop. `max.block.ms`
-  is capped at 500 ms per class, bounding the worst case even when the
-  producer buffer is full.
+  is capped per class (500 ms; 200 ms for `PERFORMANCE`) - operators may
+  tighten the bound but not raise it - bounding the worst case even when
+  the producer buffer is full.
 - **Undeliverable events take the side road, not the ditch.** An optional
   fallback appender receives what Kafka refuses, fed through a bounded
   queue and its own worker thread — the Kafka I/O thread is never blocked
@@ -287,8 +288,10 @@ counterproductive.
 already mitigates caller-thread blocking through three layered
 defenses:
 
-1. **`max.block.ms` is forced to 500 ms** per topic class. Worst-case
-   block per `send()` is now bounded at half a second.
+1. **`max.block.ms` is capped at 500 ms** per topic class (200 ms for
+   `PERFORMANCE`). The cap is enforced: a lower operator value wins, a
+   higher one is clamped with a startup warning. Worst-case block per
+   `send()` is bounded at half a second.
 2. **The circuit breaker trips after ~10 failures** (50% failure rate
    in a 20-call sliding window). Once open, subsequent events are
    routed to the fallback in O(1).

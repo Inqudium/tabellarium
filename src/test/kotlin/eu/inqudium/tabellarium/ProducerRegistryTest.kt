@@ -262,16 +262,22 @@ class ProducerRegistryTest {
         }
 
         @Test
-        fun `should continue closing the remaining producers when one of them throws on close`() {
+        fun `should close the remaining producers and rethrow an aggregate when one of them throws on close`() {
             // What is to be tested? Whether a single producer's close-failure
-            //   prevents the registry from closing the others.
+            //   prevents the registry from closing the others - and whether
+            //   the failure is surfaced instead of swallowed.
             // How will the test case be deemed successful and why? Successful
             //   if all healthy producers report closed even after one of them
-            //   threw during close. This confirms the per-producer try/catch.
+            //   threw during close, AND close() rethrows one aggregated
+            //   exception carrying the original cause as suppressed. The
+            //   caller (the appender's stop()) turns that into a status
+            //   warning; a silently-swallowed close failure would leave
+            //   operators without any diagnostic for leaked producers.
             // Why is it important to test this test case? On shutdown in a
             //   Kubernetes pod, the registry must do best-effort cleanup. A
             //   single misbehaving producer must not cascade into a complete
-            //   leak of the others.
+            //   leak of the others - but it must not vanish without a trace
+            //   either.
 
             // Given: a factory that creates one throwing-on-close producer first,
             //   then two healthy ones. Uses an explicit flag rather than checking
@@ -301,8 +307,17 @@ class ProducerRegistryTest {
                     producerFactory = throwingFactory,
                 )
 
-            // When: close the whole registry
-            registry.close()
+            // When: close the whole registry - the failure is aggregated
+            //   and rethrown after every producer's close was attempted
+            assertThatThrownBy { registry.close() }
+                .hasMessageContaining("1 of 3")
+                .hasMessageContaining("simulated close failure")
+                .satisfies({ aggregate ->
+                    assertThat(aggregate.suppressed)
+                        .anySatisfy { cause ->
+                            assertThat(cause).hasMessage("simulated close failure")
+                        }
+                })
 
             // Then: the two healthy producers were still closed
             assertThat(healthyProducers).hasSize(2)

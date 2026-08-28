@@ -3,10 +3,13 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.core.spi.ContextAware
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics
+import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Owns the Micrometer side of a [KafkaAppender]'s lifecycle: binding
@@ -32,11 +35,12 @@ import io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics
  *
  * [unbind] reverses everything a bind registered: it closes the
  * per-producer `KafkaClientMetrics` binders (they are [AutoCloseable]
- * and remove their meters on close), removes the circuit-breaker
- * meters for this appender's breaker names (the Resilience4j binder
- * offers no removal API, so the meters are found by name prefix plus
- * breaker-name tag - restricted to this appender's own breakers so an
- * operator's unrelated breakers on a shared registry are never
+ * and remove their meters on close), removes exactly the
+ * circuit-breaker meters this instance's bind added (the Resilience4j
+ * binder offers no removal API, so the meters are recorded as a
+ * registry diff around `bindTo` - identity-based, so neither an
+ * operator's unrelated breakers nor another KafkaAppender's
+ * identically-named breaker meters on a shared registry are ever
  * touched), and deregisters the appender's own meters. Without this,
  * every Logback reconfiguration cycle would leak meters and leave
  * gauges reporting a closed dispatcher's queue.
@@ -49,7 +53,16 @@ internal class MetricsBindings(
 ) {
     private var boundMetrics: MicrometerKafkaAppenderMetrics? = null
     private var boundRegistry: MeterRegistry? = null
-    private var boundBreakerNames: Set<String> = emptySet()
+
+    /**
+     * Exactly the meters the Resilience4j bind of THIS instance added to
+     * the registry (identity-compared: [Meter] does not override
+     * equals). Recorded as a before/after diff around `bindTo` so
+     * [unbind] can remove precisely these - and never a meter that
+     * another KafkaAppender instance registered under the same
+     * (per-topic-class, appender-agnostic) breaker names.
+     */
+    private var boundResilience4jMeters: List<Meter> = emptyList()
     private val producerMetricBindings = mutableListOf<AutoCloseable>()
 
     /**
@@ -69,10 +82,7 @@ internal class MetricsBindings(
         val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName)
         boundMetrics = impl
         boundRegistry = registry
-        boundBreakerNames =
-            producerRegistry.activeTopicClasses
-                .map { ResilientMessageSender.circuitBreakerName(it) }
-                .toSet()
+        warnOnBreakerMeterCollision(registry, producerRegistry)
         bindResilience4jMetrics(registry, circuitBreakerRegistry)
         bindKafkaProducerMetrics(registry, commonTags, producerRegistry)
         return impl
@@ -93,10 +103,11 @@ internal class MetricsBindings(
         }
         producerMetricBindings.clear()
         try {
-            removeResilience4jMeters(registry)
+            boundResilience4jMeters.forEach { registry.remove(it) }
         } catch (e: Exception) {
             status.addWarn("Error removing Resilience4j meters: ${e.message}", e)
         }
+        boundResilience4jMeters = emptyList()
         try {
             boundMetrics?.deregisterFrom(registry)
         } catch (e: Exception) {
@@ -104,7 +115,40 @@ internal class MetricsBindings(
         }
         boundMetrics = null
         boundRegistry = null
-        boundBreakerNames = emptySet()
+    }
+
+    /**
+     * The circuit-breaker names are derived from the topic class alone,
+     * so two KafkaAppender instances bound to the same MeterRegistry
+     * produce colliding Resilience4j meter IDs: state gauges then keep
+     * reporting whichever breaker registered first, and counters mix
+     * both instances. The binding itself stays best-effort - but the
+     * operator gets told that the breaker metrics are not trustworthy
+     * in this setup.
+     */
+    private fun warnOnBreakerMeterCollision(
+        registry: MeterRegistry,
+        producerRegistry: ProducerRegistry,
+    ) {
+        val breakerNames =
+            producerRegistry.activeTopicClasses
+                .map { ResilientMessageSender.circuitBreakerName(it) }
+                .toSet()
+        val colliding =
+            registry.meters
+                .filter { meter ->
+                    meter.id.name.startsWith("resilience4j.circuitbreaker") &&
+                        meter.id.getTag("name") in breakerNames
+                }.mapNotNull { it.id.getTag("name") }
+                .toSortedSet()
+        if (colliding.isEmpty()) return
+        status.addWarn(
+            "MeterRegistry already contains circuit-breaker meters for ${colliding.joinToString()} - " +
+                "most likely from another KafkaAppender instance bound to the same registry. " +
+                "The colliding breaker gauges/counters will not reflect this appender's state; " +
+                "bind each appender to its own registry (or distinct common tags) for " +
+                "trustworthy per-appender breaker metrics.",
+        )
     }
 
     /**
@@ -136,9 +180,15 @@ internal class MetricsBindings(
         registry: MeterRegistry,
         circuitBreakerRegistry: CircuitBreakerRegistry,
     ) {
+        // Diff the registry around bindTo to learn which meter objects
+        // THIS bind added; see boundResilience4jMeters for why removal
+        // must not go by name.
+        val before = Collections.newSetFromMap(IdentityHashMap<Meter, Boolean>())
+        before.addAll(registry.meters)
         TaggedCircuitBreakerMetrics
             .ofCircuitBreakerRegistry(circuitBreakerRegistry)
             .bindTo(registry)
+        boundResilience4jMeters = registry.meters.filter { it !in before }
     }
 
     /**
@@ -181,13 +231,5 @@ internal class MetricsBindings(
             binding.bindTo(registry)
             producerMetricBindings += binding
         }
-    }
-
-    private fun removeResilience4jMeters(registry: MeterRegistry) {
-        registry.meters
-            .filter { meter ->
-                meter.id.name.startsWith("resilience4j.circuitbreaker") &&
-                    meter.id.getTag("name") in boundBreakerNames
-            }.forEach { registry.remove(it) }
     }
 }

@@ -118,12 +118,28 @@ open class KafkaAppenderMetricsBinding(
         }
 
         val appenders = collectKafkaAppenders(loggerContext)
+        // Forget instances that are no longer part of the logger context
+        // (Logback reconfiguration replaces appender instances): the
+        // identity-set must not retain dead appenders for the bean's
+        // lifetime, and a same-identity re-appearance would be rebound.
+        bound.retainAll(appenders.toSet())
         if (appenders.isEmpty()) {
             log.debug("No KafkaAppender found in LoggerContext; nothing to bind.")
             return
         }
 
         for (appender in appenders) {
+            if (!appender.isStarted) {
+                // bindMeterRegistry on a stopped appender is a no-op.
+                // Deliberately NOT marked as bound: a later context
+                // refresh, by which time the appender may have started,
+                // must retry instead of skipping it forever.
+                log.debug(
+                    "KafkaAppender '{}' is not started; deferring metrics binding to a later refresh.",
+                    appender.name ?: "<unnamed>",
+                )
+                continue
+            }
             if (!bound.add(appender)) {
                 // Already bound on a previous refresh.
                 continue
@@ -135,6 +151,10 @@ open class KafkaAppenderMetricsBinding(
                     appender.name ?: "<unnamed>",
                 )
             } catch (e: Exception) {
+                // Release the slot so a transient failure (registry not
+                // ready, meter clash) is retried on the next refresh
+                // instead of leaving the appender unbound forever.
+                bound.remove(appender)
                 log.warn(
                     "Failed to bind KafkaAppender '{}' to MeterRegistry: {}",
                     appender.name ?: "<unnamed>",

@@ -391,6 +391,121 @@ class ProducerPropertiesBuilderTest {
     }
 
     @Nested
+    inner class `Max block cap` {
+        @Test
+        fun `should keep an operator value at or below the class cap`() {
+            // What is to be tested? Whether max.block.ms behaves as a CAP,
+            //   not a fixed mandate: an operator tightening the bound must
+            //   win.
+            // How will the test case be deemed successful and why? Successful
+            //   if a value below the 500 ms TECHNICAL ceiling survives
+            //   unchanged and produces no violation.
+            // Why is it important to test this test case? Latency-sensitive
+            //   deployments legitimately configure a lower block budget; a
+            //   mandate-style enforcement would overrule the safer choice.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_BLOCK_MS_CONFIG to "100"),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then
+            assertThat(result.properties).containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, "100")
+            assertThat(result.mandatoryOverrideViolations).isEmpty()
+        }
+
+        @Test
+        fun `should clamp an operator value above the class cap and record a violation`() {
+            // What is to be tested? Whether a max.block.ms above the class
+            //   ceiling is clamped and surfaced. producer.send blocks the
+            //   logging caller's thread for up to max.block.ms when
+            //   metadata is missing or the buffer is full; the appender's
+            //   documented worst-case caller latency only holds if this
+            //   bound cannot be raised through configuration.
+            // How will the test case be deemed successful and why? Successful
+            //   if the built properties carry the 500 ms ceiling instead of
+            //   the operator's 60000 and the overruled intent is recorded
+            //   as a violation for the startup warning.
+            // Why is it important to test this test case? Before the cap,
+            //   an operator could - with Kafka's own 60 s default in mind -
+            //   configure a value that lets every request thread hang for
+            //   a minute per log event during a broker outage.
+
+            // Given: Kafka's own default of 60 seconds
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_BLOCK_MS_CONFIG to "60000"),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then: clamped to the ceiling, conflict recorded
+            assertThat(result.properties).containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, "500")
+            assertThat(result.mandatoryOverrideViolations).anySatisfy { violation ->
+                assertThat(violation.propertyKey).isEqualTo(ProducerConfig.MAX_BLOCK_MS_CONFIG)
+                assertThat(violation.userValue).isEqualTo("60000")
+                assertThat(violation.enforcedValue).isEqualTo("500")
+            }
+        }
+
+        @Test
+        fun `should apply the tighter PERFORMANCE cap`() {
+            // Given: below the TECHNICAL cap but above PERFORMANCE's 200 ms
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_BLOCK_MS_CONFIG to "400"),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.PERFORMANCE)
+
+            // Then
+            assertThat(result.properties).containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, "200")
+            assertThat(result.mandatoryOverrideViolations)
+                .anySatisfy { violation ->
+                    assertThat(violation.propertyKey).isEqualTo(ProducerConfig.MAX_BLOCK_MS_CONFIG)
+                    assertThat(violation.enforcedValue).isEqualTo("200")
+                }
+        }
+
+        @Test
+        fun `should clamp an unparseable value and record a violation`() {
+            // What is to be tested? Whether garbage in max.block.ms falls
+            //   back to the safe ceiling instead of reaching the Kafka
+            //   client (which would refuse producer construction and take
+            //   the whole appender down with it).
+            // How will the test case be deemed successful and why? Successful
+            //   if the ceiling is enforced and the discarded operator value
+            //   appears in a violation, so the typo is visible at startup.
+            // Why is it important to test this test case? The property
+            //   arrives as free text from XML; a typo must degrade to a
+            //   safe default with a warning, not to a dead logging pipeline.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_BLOCK_MS_CONFIG to "half a second"),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then
+            assertThat(result.properties).containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, "500")
+            assertThat(result.mandatoryOverrideViolations)
+                .anySatisfy { violation ->
+                    assertThat(violation.propertyKey).isEqualTo(ProducerConfig.MAX_BLOCK_MS_CONFIG)
+                    assertThat(violation.userValue).isEqualTo("half a second")
+                }
+        }
+    }
+
+    @Nested
     inner class `Client id default` {
         @Test
         fun `should derive a per-class client id from the prefix`() {

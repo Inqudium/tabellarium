@@ -37,8 +37,16 @@ class FallbackDispatcherTest {
         fun eventCount(): Int = synchronized(events) { events.size }
     }
 
-    /** Appender that blocks on each append until released. */
-    private inner class BlockingAppender : AppenderBase<ILoggingEvent>() {
+    /**
+     * Appender that blocks on each append until released. With
+     * [interruptible] = false the block survives the worker interrupt
+     * that FallbackDispatcher.close() sends - modelling a fallback
+     * appender stuck in non-interruptible I/O, which is what pins the
+     * in-flight event across a forced shutdown.
+     */
+    private inner class BlockingAppender(
+        private val interruptible: Boolean = true,
+    ) : AppenderBase<ILoggingEvent>() {
         private val release = CountDownLatch(1)
         val appendCount = AtomicInteger(0)
 
@@ -57,7 +65,21 @@ class FallbackDispatcherTest {
         override fun append(event: ILoggingEvent) {
             inAppend.set(true)
             try {
-                release.await()
+                if (interruptible) {
+                    release.await()
+                } else {
+                    var wasInterrupted = false
+                    while (release.count > 0) {
+                        try {
+                            release.await()
+                        } catch (_: InterruptedException) {
+                            wasInterrupted = true
+                        }
+                    }
+                    if (wasInterrupted) {
+                        Thread.currentThread().interrupt()
+                    }
+                }
                 appendCount.incrementAndGet()
             } finally {
                 inAppend.set(false)
@@ -202,28 +224,30 @@ class FallbackDispatcherTest {
         }
 
         @Test
-        fun `should count remaining queued events as dropped if shutdown times out`() {
-            // What is to be tested? Whether shutdown with a hung worker
-            //   correctly attributes the remaining queued events to the
-            //   dropped count. This is the failure mode where close()
-            //   itself returns within its timeout but cannot drain
-            //   everything.
+        fun `should count the in-flight event and every queued event as dropped if shutdown times out`() {
+            // What is to be tested? The exact loss accounting of a forced
+            //   shutdown: the event the worker has already taken off the
+            //   queue and is stuck delivering (the in-flight event) plus
+            //   every event still queued must each be counted as dropped
+            //   exactly once.
             // How will the test case be deemed successful and why? Successful
-            //   if a dispatcher whose worker is blocked has at least one
-            //   queued event counted as dropped after close(). The exact
-            //   count varies with scheduling: the worker may have processed
-            //   one event before blocking, may have started a graceful
-            //   drain pass before the timeout, etc. The contract we pin
-            //   down is "blocked appender + queued events ⇒ dropped count
-            //   is positive", which is what operators need for diagnostics.
+            //   if a dispatcher whose worker is pinned in doAppend (an
+            //   uninterruptible block, surviving close()'s worker
+            //   interrupt) reports exactly 5 dropped events after close():
+            //   the in-flight trigger plus the 4 queued ones. The anchor
+            //   via inAppend makes the count deterministic - the worker
+            //   cannot take a second event while pinned. A >= 1 assertion
+            //   would let the in-flight event silently fall out of the
+            //   balance (only queue drops would satisfy it).
             // Why is it important to test this test case? A silent loss
             //   during shutdown would mean operators trust their fallback
             //   captures everything, while in fact a slow disk at shutdown
-            //   time silently discards events. Counting them allows the
-            //   appender's stop() to surface the loss as a warning.
+            //   time silently discards events - for audit or error logs
+            //   the in-flight one is typically the very event that
+            //   triggered the shutdown investigation.
 
-            // Given: blocking appender, short shutdown timeout
-            val blockingAppender = BlockingAppender()
+            // Given: an uninterruptibly blocking appender, short shutdown timeout
+            val blockingAppender = BlockingAppender(interruptible = false)
             val dispatcher =
                 FallbackDispatcher(
                     fallbackAppender = blockingAppender,
@@ -242,19 +266,58 @@ class FallbackDispatcherTest {
                 dispatcher.enqueue(newTestLoggingEvent(message = "stuck-$it"))
             }
 
-            // When: close (the worker is stuck on the trigger event)
+            // When: close (the worker is pinned on the trigger event and
+            //   ignores the interrupt, so it cannot drain anything)
             dispatcher.close()
 
-            // Then: at least one event was counted as dropped.
-            //   The exact count depends on whether the worker managed
-            //   to grab additional events during the graceful-drain
-            //   window of close(), which is intrinsically racy. The
-            //   guaranteed property is that the dispatcher does not
-            //   silently swallow events when its worker is hung.
-            assertThat(dispatcher.droppedEventCount).isGreaterThanOrEqualTo(1L)
+            // Then: exactly 5 events are accounted as dropped - the
+            //   in-flight trigger plus the 4 that were still queued.
+            assertThat(dispatcher.droppedEventCount).isEqualTo(5L)
 
-            // Cleanup: unblock so the worker thread can exit
+            // Cleanup: unblock so the worker thread can exit - and verify
+            // that the trigger event, although close() claimed it, is not
+            // double-counted when the worker finally finishes its append.
             blockingAppender.unblock()
+            pollUntil { blockingAppender.appendCount.get() == 1 }
+            assertThat(dispatcher.droppedEventCount).isEqualTo(5L)
+        }
+
+        @Test
+        fun `should count an event as dropped when the fallback appender throws`() {
+            // What is to be tested? Whether an event whose doAppend throws
+            //   is accounted as dropped instead of silently vanishing -
+            //   the dispatcher swallows the exception (log-storm safety),
+            //   but the loss itself must reach the operator's counter.
+            // How will the test case be deemed successful and why? Successful
+            //   if the dropped count reaches exactly 1 for one failed
+            //   event and the dispatcher keeps working afterwards.
+            // Why is it important to test this test case? Before this
+            //   contract existed, a fallback appender that throws (full
+            //   disk, closed stream) lost every event without any trace
+            //   in droppedEventCount - the loss metric lied precisely in
+            //   the scenario it exists for.
+
+            // Given: an appender whose doAppend always throws. It overrides
+            //   doAppend directly because AppenderBase.doAppend would
+            //   swallow exceptions from append() before the dispatcher
+            //   could see them.
+            val throwingAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("simulated fallback failure")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }
+            val dispatcher = FallbackDispatcher(throwingAppender)
+            try {
+                // When
+                dispatcher.enqueue(newTestLoggingEvent(message = "doomed"))
+
+                // Then: the failed delivery is counted as a drop
+                pollUntil { dispatcher.droppedEventCount == 1L }
+            } finally {
+                dispatcher.close()
+            }
+            assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
         }
 
         @Test

@@ -29,6 +29,11 @@ import org.apache.kafka.clients.producer.ProducerConfig
  *    value differs from the enforced value, the conflict is recorded as
  *    a [MandatoryOverrideViolation] in the result; the enforced value
  *    still wins in the produced properties.
+ * 4. **The `max.block.ms` cap** - a ceiling, not a fixed value: caller
+ *    values at or below [TopicClass.maxBlockMsCap] are kept, higher or
+ *    unparseable values are clamped to the ceiling and recorded as a
+ *    [MandatoryOverrideViolation]. See [capMaxBlockMs] for why the
+ *    bound is non-negotiable.
  *
  * The recorded violations are not warnings logged here - the builder has
  * no logging side effects. Callers (typically the appender's `start()`
@@ -103,6 +108,8 @@ class ProducerPropertiesBuilder(
             merged[key] = enforcedValue
         }
 
+        capMaxBlockMs(merged, topicClass, violations)
+
         validateIdempotenceCompatibility(merged, topicClass)
 
         return TopicClassProperties(
@@ -110,6 +117,42 @@ class ProducerPropertiesBuilder(
             properties = java.util.Map.copyOf(merged),
             mandatoryOverrideViolations = violations.toList(),
         )
+    }
+
+    /**
+     * Enforces the class-specific `max.block.ms` **cap** ([TopicClass.maxBlockMsCap]).
+     *
+     * `producer.send` runs synchronously on the logging caller's thread
+     * and may block up to `max.block.ms` waiting for topic metadata or
+     * free buffer space. The appender's documented worst-case caller
+     * latency per `send()` therefore only holds if this value cannot be
+     * raised through `<kafkaProducerProperties>`. Unlike a mandatory
+     * override, the cap keeps operator values that *tighten* the bound:
+     * a lower value wins, a higher (or unparseable) value is clamped to
+     * the ceiling and recorded as a [MandatoryOverrideViolation] so the
+     * overruled intent is visible at startup.
+     */
+    private fun capMaxBlockMs(
+        merged: LinkedHashMap<String, String>,
+        topicClass: TopicClass,
+        violations: MutableList<MandatoryOverrideViolation>,
+    ) {
+        val cap = topicClass.maxBlockMsCap
+        // Non-null: every class carries a max.block.ms default override,
+        // so the defaults layer has filled the key if the caller did not.
+        val currentValue = merged.getValue(ProducerConfig.MAX_BLOCK_MS_CONFIG)
+        val currentMs = currentValue.toLongOrNull()
+        if (currentMs != null && currentMs in 0..cap) return
+        if (currentValue != cap.toString()) {
+            violations +=
+                MandatoryOverrideViolation(
+                    topicClass = topicClass,
+                    propertyKey = ProducerConfig.MAX_BLOCK_MS_CONFIG,
+                    userValue = currentValue,
+                    enforcedValue = cap.toString(),
+                )
+        }
+        merged[ProducerConfig.MAX_BLOCK_MS_CONFIG] = cap.toString()
     }
 
     /**

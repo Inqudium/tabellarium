@@ -22,9 +22,10 @@ import java.time.Duration
  *    registry is never partially initialized.
  * 2. **Operation**: [producerFor] returns the producer for a topic class.
  *    Looking up an inactive class is a programming error and throws.
- * 3. **Shutdown** via [close]: all producers are closed with the
- *    configured [closeTimeout]. Per-producer close failures are swallowed
- *    so they do not prevent the others from being shut down.
+ * 3. **Shutdown** via [close]: all producers are closed in parallel
+ *    within the configured [closeTimeout] budget. Per-producer close
+ *    failures do not prevent the others from being shut down; they are
+ *    aggregated and rethrown after every close was attempted.
  *
  * [mandatoryOverrideViolations] aggregates the
  * [MandatoryOverrideViolation]s reported by [ProducerPropertiesBuilder]
@@ -73,23 +74,70 @@ class ProducerRegistry private constructor(
             ?: error("Topic class $topicClass is not active in this registry")
 
     /**
-     * Closes all producers using the configured [closeTimeout].
+     * Closes all producers **in parallel**, bounded by the configured
+     * [closeTimeout] as an overall budget rather than a per-producer one.
      *
-     * If a single producer fails to close cleanly, the registry still
-     * attempts to close the remaining producers. This is the right
-     * behavior for shutdown paths in Kubernetes: partial cleanup is
-     * strictly better than no cleanup. The worst-case total close time
-     * is `N * closeTimeout` where N is the number of active classes;
-     * callers with strict grace-period budgets should pass a tighter
-     * timeout via [create].
+     * Sequential closing would stack the timeouts (`N * closeTimeout` -
+     * up to 40 seconds with four active classes), easily exceeding a
+     * Kubernetes `terminationGracePeriodSeconds: 30` and getting the
+     * later producers plus the fallback drain killed mid-flight. Each
+     * producer therefore gets its own closer thread with the full
+     * [closeTimeout]; this method waits for all of them within the same
+     * budget (plus a small join margin).
+     *
+     * If any producer fails to close cleanly, the others are still
+     * closed - partial cleanup is strictly better than no cleanup. The
+     * failures are collected and, after every close was attempted,
+     * rethrown as one aggregated exception (individual causes attached
+     * as suppressed exceptions) so the caller's warn path can surface
+     * them instead of losing them silently.
+     *
+     * An interrupt while waiting stops the wait early, restores the
+     * interrupt flag, and leaves the daemon closer threads to finish on
+     * their own.
      */
     override fun close() {
-        producersByClass.values.forEach { producer ->
-            try {
-                producer.close(closeTimeout)
-            } catch (_: Exception) {
-                // Swallow: closing one producer must not block closing the others.
+        val failures = java.util.concurrent.ConcurrentLinkedQueue<Pair<TopicClass, Exception>>()
+        val closers =
+            producersByClass.map { (topicClass, producer) ->
+                Thread({
+                    try {
+                        producer.close(closeTimeout)
+                    } catch (e: Exception) {
+                        failures += topicClass to e
+                    }
+                }, "tabellarium-producer-close-${topicClass.name.lowercase()}").apply {
+                    isDaemon = true
+                    start()
+                }
             }
+        var interrupted = false
+        val deadlineNanos = System.nanoTime() + closeTimeout.toNanos() + JOIN_MARGIN.toNanos()
+        for (closer in closers) {
+            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+            if (remainingMs <= 0) break
+            try {
+                closer.join(remainingMs)
+            } catch (_: InterruptedException) {
+                interrupted = true
+                break
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
+        }
+        if (failures.isNotEmpty()) {
+            val summary =
+                failures.joinToString(separator = "; ") { (topicClass, cause) ->
+                    "$topicClass: ${cause.message ?: cause.javaClass.simpleName}"
+                }
+            val aggregate =
+                RuntimeException(
+                    "${failures.size} of ${producersByClass.size} Kafka producer(s) " +
+                        "failed to close cleanly ($summary)",
+                )
+            failures.forEach { (_, cause) -> aggregate.addSuppressed(cause) }
+            throw aggregate
         }
     }
 
@@ -100,10 +148,9 @@ class ProducerRegistry private constructor(
          * Ten seconds is a deliberate compromise:
          *
          * - **Short enough** to fit comfortably in the standard Kubernetes
-         *   default `terminationGracePeriodSeconds: 30`, even when multiple
-         *   producers close sequentially (worst case: N classes × this
-         *   timeout - for a typical deployment with 1-2 active classes,
-         *   well under the grace period).
+         *   default `terminationGracePeriodSeconds: 30`: producers close
+         *   in parallel, so this value is the overall budget regardless
+         *   of how many topic classes are active.
          * - **Long enough** to give the Kafka producer's internal retry
          *   loop time to flush partially-buffered records on flaky
          *   networks. A shorter value (e.g. 5 seconds) tends to drop
@@ -127,6 +174,14 @@ class ProducerRegistry private constructor(
          * not abandon records that "would have made it" eventually.
          */
         val DEFAULT_CLOSE_TIMEOUT: Duration = Duration.ofSeconds(10)
+
+        /**
+         * Extra wait beyond [close]'s overall [closeTimeout] budget when
+         * joining the parallel closer threads, absorbing thread startup
+         * and scheduling jitter so a producer that used its full timeout
+         * is not misreported as hung.
+         */
+        private val JOIN_MARGIN: Duration = Duration.ofMillis(500)
 
         /**
          * Timeout used when rolling back partially-initialized state after
