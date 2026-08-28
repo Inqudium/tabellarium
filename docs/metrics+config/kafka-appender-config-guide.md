@@ -523,8 +523,6 @@ application threads from Kafka producer back-pressure:
 provide its own async layer so operators tune queue size and discard policy
 to their environment. The metrics binding recurses through the
 `AsyncAppender`, so the wrapped `KafkaAppender` is still discovered and bound.
-(For gap-free sequence numbering across the async boundary, see the
-`sequencing` package and its docs.)
 
 ---
 
