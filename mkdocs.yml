@@ -30,6 +30,10 @@ theme:
     - content.code.copy
     - content.action.edit
 
+# Dokka module documentation, rendered into the API reference — not a site page.
+exclude_docs: |
+  api-module.md
+
 nav:
   - Home: index.md
   - Configuration guide: config/kafka-appender-config-guide.md

@@ -330,6 +330,10 @@
                 <configuration>
                     <moduleName>tabellarium</moduleName>
                     <outputDir>${project.build.directory}/dokka</outputDir>
+                    <!-- Rendered on the module index page of the API reference. -->
+                    <includes>
+                        <include>${project.basedir}/docs/api-module.md</include>
+                    </includes>
                     <sourceLinks>
                         <link>
                             <path>src/main/kotlin</path>
