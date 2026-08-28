@@ -64,6 +64,20 @@ configuration guide, metrics overview, and Grafana dashboards.
   their own topic and class; one producer, breaker and `client.id` per
   active class, and none for dormant ones.
 
+### Traceability
+
+- **Every record says where it came from.** `meta.component`,
+  `meta.cmdbId`, `meta.environment` and `meta.agent.*` ride on every
+  record as headers, encoded once at startup rather than per event — so
+  a consumer can filter by service, instance or stage without parsing
+  the payload.
+- **Trace affinity, attributable producers.** The record key is the MDC
+  trace id, so the records of one trace share a partition and keep their
+  relative order; each producer announces itself to the broker as
+  `tabellarium-<component>-<class>`, so connections, quotas and
+  `kafka.producer.*` metrics name the service and its service level
+  instead of a generic `producer-N`.
+
 ### Operations
 
 - **Misconfiguration fails at startup, not per event.** Blank identity
