@@ -64,6 +64,7 @@ class JoranXmlConfigurationTest {
                 </kafkaProducerProperties>
                 <topicMapping>
                     <defaultTopic>  default.topic  </defaultTopic>
+                    <defaultTopicClass>functional</defaultTopicClass>
                     <mapping>
                         <marker>SECURITY</marker>
                         <topic>audit.security</topic>
@@ -107,6 +108,7 @@ class JoranXmlConfigurationTest {
             // Then: started, with every element bound
             assertThat(appender.isStarted).isTrue()
             assertThat(appender.topicMapping.defaultTopic).isEqualTo("default.topic")
+            assertThat(appender.topicMapping.defaultTopicClass).isEqualTo("functional")
             assertThat(appender.topicMapping.mappings).hasSize(1)
             val mapping = appender.topicMapping.mappings.single()
             assertThat(mapping.marker).isEqualTo("SECURITY")

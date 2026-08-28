@@ -399,6 +399,46 @@ class KafkaAppenderTest {
         }
 
         @Test
+        fun `should apply the mandatory overrides of a defaultTopicClass to the single producer`() {
+            // What is to be tested? Whether <defaultTopicClass>AUDIT
+            //   upgrades the default stream itself: one producer, AUDIT
+            //   client id, mandatory overrides enforced, violation warned.
+            // How will the test case be deemed successful and why? Successful
+            //   if exactly one producer exists, its client.id carries the
+            //   -audit suffix, acks was forced to all despite the operator's
+            //   acks=1, and the override warning reached the status manager.
+            // Why is it important to test this test case? This is the direct
+            //   path for compliance-grading the default stream - previously
+            //   only reachable via a synthetic marker mapping that left a
+            //   dormant TECHNICAL producer running.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender =
+                newAppender(
+                    producerFactory = factory,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.ACKS_CONFIG}=1
+                        """.trimIndent(),
+                )
+            appender.topicMapping.defaultTopicClass = "AUDIT"
+
+            // When
+            appender.start()
+
+            // Then: single AUDIT producer with enforced overrides
+            assertThat(appender.isStarted).isTrue()
+            assertThat(factory.createdProducers).hasSize(1)
+            assertThat(factory.createdWithProperties.single())
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "tabellarium-test-service-audit")
+                .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Mandatory override applied") && it.contains("'all'") }
+        }
+
+        @Test
         fun `should instantiate one producer per class activated by mappings`() {
             // What is to be tested? Whether a <mapping> with a non-default
             //   topic class activates a second producer next to the

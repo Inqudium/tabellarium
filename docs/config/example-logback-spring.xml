@@ -116,6 +116,12 @@
              guide, section "Topic routing". -->
         <topicMapping>
             <defaultTopic>my-application.logs</defaultTopic>
+            <!-- Optional: class of the default topic itself (and of any
+                 unmapped topic). Default is TECHNICAL; set e.g. AUDIT to
+                 apply that class's producer tuning and mandatory
+                 overrides to the default stream without a marker mapping.
+            <defaultTopicClass>FUNCTIONAL</defaultTopicClass>
+            -->
             <!--
             <mapping>
                 <marker>SECURITY</marker>

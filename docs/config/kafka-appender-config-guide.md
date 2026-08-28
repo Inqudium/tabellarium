@@ -61,7 +61,7 @@ Joran binds each to a setter of the matching name on the appender.
 | --------------------------- | :------: | -------------------------------------- | ----- |
 | `<encoder>`                 |   yes    | `Encoder<ILoggingEvent>`               | Standard Logback encoder. `LogstashEncoder` recommended for JSON. Started by the appender at `start()`. |
 | `<kafkaProducerProperties>` |   yes¹   | raw multi-line text                    | `.properties`-style Kafka producer config. See [§3](#3-kafka-producer-properties). |
-| `<topicMapping>`            |   yes    | nested `TopicMappingConfig`            | Contains `<defaultTopic>` and any number of `<mapping>` elements. See [§5](#5-topic-routing). |
+| `<topicMapping>`            |   yes    | nested `TopicMappingConfig`            | Contains `<defaultTopic>`, an optional `<defaultTopicClass>`, and any number of `<mapping>` elements. See [§5](#5-topic-routing). |
 | `<environment>`             |   yes    | `String` (trimmed, non-blank)          | Deployment environment (`prod`, `staging`, …). Emitted as the `meta.environment` header. |
 | `<component>`               |   yes    | `String` (trimmed, non-blank)          | Service component id (e.g. `spring.application.name`). Emitted as the `meta.component` header. |
 | `<cmdbId>`                  |   yes    | `String` (trimmed, non-blank)          | CMDB identifier of the deploying instance. Emitted as the `meta.cmdbId` header. |
@@ -306,13 +306,15 @@ overrides. (For a topic mapped to `AUDIT`, the same `acks=1` is forced to
 ## 5. Topic routing
 
 Routing is configured through `<topicMapping>`: a mandatory
-`<defaultTopic>` plus any number of `<mapping>` elements, each routing one
-SLF4J marker to a topic and assigning that topic its
+`<defaultTopic>`, an optional `<defaultTopicClass>`, plus any number of
+`<mapping>` elements, each routing one SLF4J marker to a topic and
+assigning that topic its
 [topic class](#appendix-a-the-four-class-topic-model):
 
 ```xml
 <topicMapping>
     <defaultTopic>ichp-de.customerproducts.out</defaultTopic>
+    <defaultTopicClass>FUNCTIONAL</defaultTopicClass>  <!-- optional; default TECHNICAL -->
     <mapping>
         <marker>SECURITY</marker>
         <topic>audit.security</topic>
@@ -337,9 +339,13 @@ SLF4J marker to a topic and assigning that topic its
 
 The resolved topic is then classified: topics named in a `<mapping>` carry
 their `<topicClass>`; every other topic — including `<defaultTopic>` — falls
-back to `TECHNICAL` (the most neutral class: no compliance mandate,
-tolerable performance defaults), so a routing typo never crashes the log
-pipeline.
+back to the class named by `<defaultTopicClass>`, which defaults to
+`TECHNICAL` (the most neutral class: no compliance mandate, tolerable
+performance defaults), so a routing typo never crashes the log pipeline.
+Set `<defaultTopicClass>` when the default stream itself carries a
+compliance grade — e.g. `AUDIT` applies that class's producer tuning and
+mandatory overrides (`acks=all`, idempotence) to the default topic without
+any marker mapping, and no dormant `TECHNICAL` producer is created.
 
 **Validation at `start()`** — all of the following abort startup with a
 named error instead of surfacing per event:
@@ -348,11 +354,12 @@ named error instead of surfacing per event:
   `.` or `..`, at most 249 characters) for `<defaultTopic>` and every
   `<mapping>`;
 - a blank `<marker>`;
-- a `<topicClass>` that is not one of `AUDIT`, `FUNCTIONAL`, `TECHNICAL`,
-  `PERFORMANCE` (case-insensitive);
+- a `<topicClass>` or `<defaultTopicClass>` that is not one of `AUDIT`,
+  `FUNCTIONAL`, `TECHNICAL`, `PERFORMANCE` (case-insensitive);
 - the same marker mapped twice;
 - the same topic assigned two different classes (several markers may share
-  one topic *with the same class*).
+  one topic *with the same class*) — including a `<mapping>` that names
+  `<defaultTopic>` with a class conflicting with `<defaultTopicClass>`.
 
 All values are whitespace-trimmed on assignment. Multiple mappings to
 distinct classes activate one producer (and circuit breaker) per class —
@@ -641,7 +648,7 @@ to their environment. The metrics binding recurses through the
 | Fallback (`<appender-ref>`)                  | none → silent drop               | XML |
 | Forced serializers                           | `ByteArraySerializer` (key+value)| always |
 | `client.id` (unless set by operator)         | `tabellarium-<component>-<topicclass>` | code |
-| Fallback class for unmapped topics           | `TECHNICAL`                      | code |
+| Fallback class for unmapped topics           | `TECHNICAL`                      | XML (`<defaultTopicClass>`) |
 | Partitioning key MDC source                  | `traceId`                        | code |
 | Circuit breaker: failure-rate threshold      | `50%`                            | code |
 | Circuit breaker: sliding window / min calls  | `20` / `10`                      | code |
@@ -707,8 +714,9 @@ class is built once at startup by merging your base properties with that
 class's overrides ([A.4](#a4-property-overrides-per-class)). Only classes that
 some topic actually resolves to are *active* — the appender creates a
 producer, breaker, and I/O thread only for those, never for dormant classes.
-(Without `<mapping>` elements no topic resolves to anything but `TECHNICAL`,
-which is then the only active class.)
+(Without `<mapping>` elements everything resolves to the
+`<defaultTopicClass>` — `TECHNICAL` unless configured otherwise — which is
+then the only active class.)
 
 ### A.3 The four classes
 

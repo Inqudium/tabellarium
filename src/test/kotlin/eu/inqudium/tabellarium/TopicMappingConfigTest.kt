@@ -291,6 +291,111 @@ class TopicMappingConfigTest {
         }
 
         @Test
+        fun `should classify the default topic via defaultTopicClass`() {
+            // What is to be tested? Whether <defaultTopicClass> changes the
+            //   class of the default topic (and thereby of every unmapped
+            //   topic) without requiring a synthetic marker mapping.
+            // How will the test case be deemed successful and why? Successful
+            //   if with defaultTopicClass=AUDIT the table classifies the
+            //   default topic as AUDIT, the fallback class is AUDIT, and -
+            //   with no mappings - AUDIT is the only active class (no
+            //   dormant TECHNICAL producer). This pins the direct
+            //   configuration path for default-stream compliance grades.
+            // Why is it important to test this test case? Before this
+            //   element, upgrading the default stream to AUDIT required a
+            //   synthetic marker mapping naming the same topic - and left
+            //   an unused TECHNICAL producer running.
+
+            // Given
+            val config =
+                TopicMappingConfig().apply {
+                    defaultTopic = "audit.trail"
+                    defaultTopicClass = "audit"
+                }
+
+            // When
+            val table = config.toTopicTable()
+
+            // Then
+            assertThat(table.fallbackClass).isEqualTo(TopicClass.AUDIT)
+            assertThat(table.classFor("audit.trail")).isEqualTo(TopicClass.AUDIT)
+            assertThat(table.activeTopicClasses).containsExactly(TopicClass.AUDIT)
+        }
+
+        @Test
+        fun `should reject an unknown defaultTopicClass with a named error`() {
+            // Given
+            val config =
+                TopicMappingConfig().apply {
+                    defaultTopic = "default.topic"
+                    defaultTopicClass = "IMPORTANT"
+                }
+
+            // When / Then
+            assertThatThrownBy { config.toTopicTable() }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("<defaultTopicClass>")
+                .hasMessageContaining("IMPORTANT")
+                .hasMessageContaining("AUDIT, FUNCTIONAL, TECHNICAL, PERFORMANCE")
+        }
+
+        @Test
+        fun `should reject a mapping that assigns the default topic a conflicting class`() {
+            // What is to be tested? Whether a <mapping> naming the default
+            //   topic with a class contradicting <defaultTopicClass> fails
+            //   at startup.
+            // How will the test case be deemed successful and why? Successful
+            //   if toTopicTable throws and names both classes. Marker-less
+            //   events and mapped events landing on the same topic must
+            //   never diverge in delivery guarantees.
+            // Why is it important to test this test case? Silently letting
+            //   one side win would give part of the default stream weaker
+            //   (or different) guarantees than the operator declared -
+            //   a compliance discrepancy invisible at runtime.
+
+            // Given: default topic TECHNICAL (implicit), mapping says AUDIT
+            val config =
+                TopicMappingConfig().apply {
+                    defaultTopic = "shared.topic"
+                    addMapping(
+                        TopicMappingEntry().apply {
+                            marker = "SECURITY"
+                            topic = "shared.topic"
+                            topicClass = "AUDIT"
+                        },
+                    )
+                }
+
+            // When / Then
+            assertThatThrownBy { config.toTopicTable() }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("'shared.topic'")
+                .hasMessageContaining("TECHNICAL")
+                .hasMessageContaining("AUDIT")
+        }
+
+        @Test
+        fun `should accept a mapping that names the default topic with the same class`() {
+            // Given: defaultTopicClass and the mapping agree on AUDIT
+            val config =
+                TopicMappingConfig().apply {
+                    defaultTopic = "audit.trail"
+                    defaultTopicClass = "AUDIT"
+                    addMapping(
+                        TopicMappingEntry().apply {
+                            marker = "SECURITY"
+                            topic = "audit.trail"
+                            topicClass = "AUDIT"
+                        },
+                    )
+                }
+
+            // When / Then: consistent - accepted
+            val table = config.toTopicTable()
+            assertThat(table.classFor("audit.trail")).isEqualTo(TopicClass.AUDIT)
+        }
+
+        @Test
         fun `should accept two markers sharing one topic with the same class`() {
             // Given: a legal fan-in - both markers route to one AUDIT topic
             val config =

@@ -8,6 +8,7 @@ package eu.inqudium.tabellarium
  * ```xml
  * <topicMapping>
  *   <defaultTopic>my-application.logs</defaultTopic>
+ *   <defaultTopicClass>FUNCTIONAL</defaultTopicClass>  <!-- optional -->
  *   <mapping>
  *     <marker>SECURITY</marker>
  *     <topic>audit.security</topic>
@@ -31,8 +32,9 @@ package eu.inqudium.tabellarium
  * shape - no attribute or body-text special cases.
  *
  * Events whose markers match no `<mapping>` (and events without
- * markers) route to [defaultTopic], which is classified as
- * [TopicClass.TECHNICAL] via the table fallback.
+ * markers) route to [defaultTopic], which is classified via the
+ * table's fallback class - [TopicClass.TECHNICAL] unless the optional
+ * `<defaultTopicClass>` says otherwise ([defaultTopicClass]).
  *
  * ## Validation
  *
@@ -42,10 +44,12 @@ package eu.inqudium.tabellarium
  *
  * - blank marker/topic names and Kafka-invalid topic names (via
  *   [TopicRouter]'s validation),
- * - an unknown `<topicClass>` value (must be one of the [TopicClass]
- *   constants, case-insensitive),
+ * - an unknown `<topicClass>` or `<defaultTopicClass>` value (must be
+ *   one of the [TopicClass] constants, case-insensitive),
  * - the same marker mapped twice,
- * - the same topic mapped to two different classes.
+ * - the same topic mapped to two different classes - including a
+ *   `<mapping>` that names [defaultTopic] with a class conflicting
+ *   with [defaultTopicClass].
  */
 class TopicMappingConfig {
     /**
@@ -54,6 +58,21 @@ class TopicMappingConfig {
      * content; whitespace is trimmed automatically.
      */
     var defaultTopic: String = ""
+        set(value) {
+            field = value.trim()
+        }
+
+    /**
+     * Name of the [TopicClass] governing [defaultTopic] - and thereby
+     * every event whose markers match no `<mapping>`. Optional; the
+     * default `TECHNICAL` is the deliberately neutral choice (no
+     * compliance mandate, tolerable performance defaults). Set it to
+     * `AUDIT`/`FUNCTIONAL`/`PERFORMANCE` (case-insensitive) when the
+     * default stream itself carries that grade - the class's producer
+     * tuning and mandatory overrides then apply to the default topic
+     * without a synthetic marker mapping.
+     */
+    var defaultTopicClass: String = TopicClass.TECHNICAL.name
         set(value) {
             field = value.trim()
         }
@@ -104,14 +123,21 @@ class TopicMappingConfig {
     /**
      * Builds the [TopicTable] from the current configuration. Topics
      * without an explicit `<mapping>` - including [defaultTopic] -
-     * resolve to the [TopicClass.TECHNICAL] fallback.
+     * resolve to the fallback class configured via
+     * `<defaultTopicClass>` ([TopicClass.TECHNICAL] by default).
      *
-     * @throws IllegalArgumentException when a `<topicClass>` value is
+     * @throws IllegalArgumentException when a `<topicClass>` or
+     *                                  `<defaultTopicClass>` value is
      *                                  not a [TopicClass] constant, or
      *                                  when the same topic is assigned
-     *                                  two different classes.
+     *                                  two different classes (including
+     *                                  a `<mapping>` naming
+     *                                  [defaultTopic] with a class that
+     *                                  conflicts with
+     *                                  [defaultTopicClass]).
      */
     fun toTopicTable(): TopicTable {
+        val fallbackClass = resolvedDefaultTopicClass()
         val byTopic = mutableMappings.groupBy({ it.topic }, { it.resolvedTopicClass() })
         val conflicting = byTopic.filterValues { it.toSet().size > 1 }
         require(conflicting.isEmpty()) {
@@ -120,11 +146,29 @@ class TopicMappingConfig {
                     "'$topic' -> ${classes.toSet().joinToString()}"
                 }
         }
+        // A <mapping> may name the default topic (e.g. to route a marker
+        // there explicitly), but not with a class contradicting
+        // <defaultTopicClass> - marker-less events and mapped events on
+        // the same topic must never diverge in delivery guarantees.
+        byTopic[defaultTopic]?.first()?.let { mappedClass ->
+            require(mappedClass == fallbackClass) {
+                "Topic '$defaultTopic' is the default topic (class $fallbackClass via " +
+                    "<defaultTopicClass>) but a <mapping> assigns it $mappedClass; " +
+                    "the two must agree"
+            }
+        }
         return TopicTable(
             topicsByName = byTopic.mapValues { (_, classes) -> classes.first() },
-            fallbackClass = TopicClass.TECHNICAL,
+            fallbackClass = fallbackClass,
         )
     }
+
+    private fun resolvedDefaultTopicClass(): TopicClass =
+        TopicClass.entries.firstOrNull { it.name.equals(defaultTopicClass, ignoreCase = true) }
+            ?: throw IllegalArgumentException(
+                "Unknown <defaultTopicClass> '$defaultTopicClass'; " +
+                    "must be one of ${TopicClass.entries.joinToString()}",
+            )
 }
 
 /**

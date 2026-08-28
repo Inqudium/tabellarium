@@ -140,12 +140,14 @@ mapped topic:
 ```
 
 Events whose markers match no `<mapping>` (including marker-less
-events) go to `<defaultTopic>`, which is classified TECHNICAL. Each
-class named by a mapping activates its own producer and circuit
-breaker with the class's overrides. Misconfiguration — unknown
-`<topicClass>`, a marker mapped twice, one topic with two classes,
-Kafka-invalid topic names — aborts `start()` with a named error. Full
-resolution rules and validation live in the
+events) go to `<defaultTopic>`, classified via the optional
+`<defaultTopicClass>` (default: TECHNICAL) — set it to `AUDIT` etc.
+when the default stream itself carries that compliance grade. Each
+active class gets its own producer and circuit breaker with the
+class's overrides. Misconfiguration — unknown class names, a marker
+mapped twice, one topic with two classes, Kafka-invalid topic names —
+aborts `start()` with a named error. Full resolution rules and
+validation live in the
 [configuration guide](docs/config/kafka-appender-config-guide.md).
 
 ## Resilience

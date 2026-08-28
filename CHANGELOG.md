@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   topicClass), activating the four-class compliance model through
   configuration; duplicate markers, conflicting classes, and unknown
   class names are rejected at startup.
+- Optional `<defaultTopicClass>` element: classifies the default topic
+  (and any unmapped topic) directly, so the default stream can carry a
+  compliance grade without a synthetic marker mapping; conflicts with
+  a `<mapping>` naming the default topic are rejected at startup.
 - Joran round-trip tests: the declarative XML surface (including
   `<mapping>` and `<appender-ref>`) is exercised end-to-end through
   `JoranConfigurator`, offline against a real Kafka producer.
