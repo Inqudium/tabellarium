@@ -90,6 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI hardening: explicit least-privilege `permissions` on the CI
   workflow, and all GitHub Actions pinned to commit SHAs instead of
   mutable tags.
+- CodeQL static analysis of the library sources (`java-kotlin`) and of
+  the workflow definitions (`actions`), on every change and weekly,
+  reporting into the repository's code-scanning view.
 - CI now scans the resolved dependency graph against the OSV database
   (CycloneDX SBOM via `cyclonedx-maven-plugin` + OSV-Scanner) on every
   push and pull request and weekly, failing the build on any known

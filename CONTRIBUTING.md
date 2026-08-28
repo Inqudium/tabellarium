@@ -43,6 +43,16 @@ is genuinely unfixable *and* provably not exploitable here, record it in
 an `osv-scanner.toml` with the reason and the date it was assessed — do
 not remove the gate.
 
+### Static analysis (CodeQL)
+
+The dependency scan covers *published advisories in dependencies*; the
+`CodeQL` workflow covers the complementary half — this project's own
+code (`java-kotlin`) and the workflow definitions themselves
+(`actions`). It runs on every push and pull request and weekly, and
+results land in the repository's **Security → Code scanning** tab
+rather than in the build log. A finding there is triaged like a review
+comment: fix it, or dismiss it in the UI with a written reason.
+
 ## Code style
 
 - Kotlin sources follow the default ktlint rule set; the build fails on

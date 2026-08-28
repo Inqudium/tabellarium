@@ -1,0 +1,72 @@
+name: CodeQL
+
+# Static analysis of THIS project's own code - the gap the dependency scan
+# in ci.yml explicitly does not cover (that one matches published
+# advisories in dependencies). Kept as its own workflow because it needs
+# security-events: write to upload results, which ci.yml deliberately does
+# not grant, and because a CodeQL run is minutes rather than seconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Weekly: the query packs improve over time, so unchanged code is worth
+  # re-analysing.
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF results to the repository's Security tab.
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The shipped library. Kotlin is extracted by hooking the Kotlin
+          # compiler, so a real build is required - autobuild is replaced by
+          # an explicit compile to keep it deterministic and fast.
+          - language: java-kotlin
+            build-mode: manual
+          # The workflows themselves (token permissions, script injection,
+          # untrusted checkout patterns). No build needed.
+          - language: actions
+            build-mode: none
+    steps:
+      # Pinned to commit SHAs, not mutable tags - see ci.yml for the
+      # rationale; this workflow additionally holds security-events: write.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK 21
+        if: matrix.build-mode == 'manual'
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Main sources only: tests do not ship, and skipping them keeps the
+      # extraction to the code an attacker could actually reach.
+      - name: Compile (CodeQL extraction)
+        if: matrix.build-mode == 'manual'
+        run: mvn --batch-mode --no-transfer-progress -DskipTests compile
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:${{ matrix.language }}"

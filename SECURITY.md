@@ -47,6 +47,9 @@ Measures already in place, so you know what is expected behaviour:
   of the resolved graph and fails on any advisory known to OSV — on
   every change and weekly, so newly published advisories surface without
   a commit. Dependabot proposes the version bumps.
+- **The code itself is statically analysed.** A CodeQL workflow analyses
+  the library sources and the CI workflow definitions on every change
+  and weekly; results appear under Security → Code scanning.
 
 Things outside this library's control, which the consuming application
 owns: what it puts into MDC and log messages, its TLS configuration, and
