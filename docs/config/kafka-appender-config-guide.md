@@ -83,13 +83,70 @@ the appender emits the active topic classes, the fallback configuration,
 and any mandatory-override conflicts to Logback's status manager. It has
 no per-event effect. Leave it unset or `false` in new deployments.
 
+### Placeholder resolution (where the values come from)
+
+The appender performs **no placeholder substitution of its own** — Joran
+hands it fully resolved strings. Every `${…}` in the examples of this guide
+(`${STAGE}`, `${ARTIFACT_ID}`, keystore passwords in
+`<kafkaProducerProperties>`) is resolved *before* the appender sees the
+value, by one of four mechanisms:
+
+1. **Logback's own variable substitution** (always active). While parsing
+   the XML, Joran resolves `${NAME}` in this order: local
+   `<property>`/`<variable>` definitions → Logback context properties →
+   Java system properties (`-DSTAGE=prod`) → **OS environment variables**.
+   `<environment>${STAGE}</environment>` therefore works out of the box
+   when the container sets an env var `STAGE` (in Kubernetes, typically
+   from the Deployment manifest). Defaults use the `:-` syntax:
+   `${STAGE:-dev}`.
+
+2. **Spring properties via `<springProperty>`** (only in
+   `logback-spring.xml`). `spring.application.name` is *not* a system
+   property — a literal `${spring.application.name}` would NOT be resolved
+   by Logback alone. Bridge it from the Spring `Environment`:
+
+   ```xml
+   <springProperty scope="context" name="appName" source="spring.application.name"/>
+   ...
+   <component>${appName}</component>
+   ```
+
+   This pulls the value from `application.yml`/config server. (Recent
+   Spring Boot versions also expose the application name as a predefined
+   logging property, but `<springProperty>` is the robust,
+   version-independent mechanism.)
+
+3. **Deployment templating.** Helm/Kustomize render values into the file
+   at deploy time (`{{ .Values.stage }}`), before Logback ever parses it.
+   This is the usual channel for `<cmdbId>` and for credentials in
+   `<kafkaProducerProperties>`.
+
+4. **Build-time resource filtering.** Placeholders like `${ARTIFACT_ID}`
+   can be filled by Maven resource filtering when the logback XML lives in
+   `src/main/resources`. Note that under the Spring Boot parent, filtering
+   uses `@…@` delimiters (`@project.artifactId@`), not `${…}` — the
+   default delimiters are disabled precisely so Spring/Logback
+   placeholders survive the build.
+
+**Safety net and one caveat:** if substitution yields an empty string
+(e.g. a forgotten env var resolving to nothing), the non-blank validation
+of `<component>`/`<cmdbId>`/`<environment>` aborts startup with a named
+error ([§10](#10-startup-validation-and-failure-behavior)). If Logback
+cannot resolve a placeholder *at all*, however, the literal text
+(`${STAGE}`) is kept as the value — that is not blank, passes validation,
+and surfaces only later as an odd `meta.environment` header on every
+record. When a header value looks like an unresolved placeholder in your
+log sink, check the substitution chain above.
+
 ---
 
 ## 3. Kafka producer properties
 
 `<kafkaProducerProperties>` carries the raw Kafka producer configuration as
 `.properties`-style text, one `key=value` per line. Helm/Spring placeholder
-substitution happens **before** the appender parses the text.
+substitution happens **before** the appender parses the text — see
+[Placeholder resolution](#placeholder-resolution-where-the-values-come-from)
+for the resolution chain.
 
 ```xml
 <kafkaProducerProperties>
@@ -315,7 +372,12 @@ at startup and shared across all events (zero per-event allocation):
 | `meta.cmdbId`        | `<cmdbId>`                            |
 | `meta.environment`   | `<environment>`                       |
 | `meta.agent.name`    | fixed: `logback-kafka-appender`       |
-| `meta.agent.version` | fixed: `1.0.0`                        |
+| `meta.agent.version` | the library version, read from a build-time-filtered resource (`unknown` if missing) |
+
+The three `<…>` values are whatever placeholder resolution produced at
+startup — see
+[Placeholder resolution](#placeholder-resolution-where-the-values-come-from)
+for where they come from and for the unresolved-placeholder caveat.
 
 The **partitioning key** (the Kafka record key) is derived per event. The
 default extractor reads the MDC entry `traceId` and uses it if non-blank;
