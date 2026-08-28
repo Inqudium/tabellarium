@@ -119,18 +119,18 @@ class KafkaAppenderTest {
                 }
             this.debug = debug
             this.producerFactory = producerFactory
-            // Synchronous fallback dispatch so tests can assert on the
-            // RecordingAppender without polling. Production path is async;
-            // see KafkaAppender KDoc on the synchronous-flag test hook.
-            this.useSynchronousFallbackForTests = true
-            // Synchronous send dispatch for the same reason: most tests
-            // assert producer history right after doAppend. The tests of
-            // the asynchronous path itself override this to false.
-            this.useSynchronousSendForTests = true
             // The fallback slot is filled via addAppender (the same path
             // Joran's AppenderRefAction takes for <appender-ref>).
             fallback?.let { addAppender(it) }
         }
+
+    // Send and fallback dispatch are asynchronous (the production path).
+    // Tests therefore either stop() the appender before asserting - the
+    // stop sequence drains the send dispatchers through the still-open
+    // producers and then the fallback dispatcher, and the thread joins
+    // in close() establish the happens-before edge for reading the
+    // MockProducer history - or poll with pollUntil where the appender
+    // must keep running across the assertion.
 
     private fun KafkaAppender.statusMessages(): List<String> = context.statusManager.copyOfStatusList.map { it.message }
 
@@ -814,6 +814,8 @@ class KafkaAppenderTest {
             )
 
             // Then: fully ignored - not encoded, not sent, not in fallback
+            // (stop() drains the pipeline, so the emptiness is conclusive)
+            appender.stop()
             assertThat(encoder.encodedEvents).isEmpty()
             assertThat(factory.createdProducers[0].history()).isEmpty()
             assertThat(fallback.events).isEmpty()
@@ -830,6 +832,7 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(threadName = "http-nio-8080-exec-3"))
 
             // Then
+            appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(1)
         }
 
@@ -871,7 +874,9 @@ class KafkaAppenderTest {
             )
 
             // Then: the application thread's event was delivered; the
-            //   producer thread's event was suppressed
+            //   producer thread's event was suppressed (it never entered
+            //   the pipeline, so the drained history is conclusive)
+            appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(1)
         }
 
@@ -905,6 +910,7 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(threadName = "main"))
 
             // Then
+            appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(1)
         }
     }
@@ -924,6 +930,7 @@ class KafkaAppenderTest {
             appender.doAppend(event)
 
             // Then
+            appender.stop()
             assertThat(encoder.encodedEvents).hasSize(1)
             assertThat(factory.createdProducers[0].history()).hasSize(1)
             assertThat(factory.createdProducers[0].history()[0].topic())
@@ -940,7 +947,8 @@ class KafkaAppenderTest {
             // When
             appender.doAppend(newTestLoggingEvent())
 
-            // Then
+            // Then: the drained pipeline delivered to Kafka, not the fallback
+            appender.stop()
             assertThat(fallback.events).isEmpty()
         }
 
@@ -992,6 +1000,7 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "encoder will throw"))
 
             // Then
+            appender.stop()
             assertThat(fallback.events).hasSize(1)
             assertThat(fallback.events[0].message).isEqualTo("encoder will throw")
         }
@@ -1027,6 +1036,7 @@ class KafkaAppenderTest {
             }
 
             // Then: all 100 events reached the fallback
+            appender.stop()
             assertThat(fallback.events).hasSize(100)
             // But only one error was logged
             assertThat(appender.statusMessages().filter { it.contains("Hot path error") })
@@ -1088,8 +1098,9 @@ class KafkaAppenderTest {
             // When
             appender.doAppend(newTestLoggingEvent(message = "encoder will throw"))
 
-            // Then: the event reached the fallback and both counters moved
-            assertThat(fallback.events).hasSize(1)
+            // Then: the event reached the fallback (async worker; the
+            // counters must be read before stop() unbinds the meters)
+            pollUntil { fallback.events.size == 1 }
             val accepted =
                 registry
                     .find("kafka.appender.events.accepted")
@@ -1333,7 +1344,10 @@ class KafkaAppenderTest {
 
             // Then: only the application's event was sent; the reentrant
             //   Kafka-internal event was dropped entirely - no recursion,
-            //   no second send, nothing in the fallback
+            //   no second send, nothing in the fallback. (The reentrant
+            //   doAppend now happens on the send worker, which carries
+            //   the reentry guard for its entire lifetime.)
+            appender.stop()
             assertThat(mock.history()).hasSize(1)
             assertThat(fallback.events).isEmpty()
         }
@@ -1363,6 +1377,7 @@ class KafkaAppenderTest {
             }
 
             // Then: all delivered
+            appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(3)
         }
     }
@@ -1471,15 +1486,13 @@ class KafkaAppenderTest {
             //   test used an auto-completing MockProducer that never
             //   blocks, so a synchronous send path stayed green.
 
-            // Given: an appender in PRODUCTION dispatch mode with a
-            //   producer that parks every send
+            // Given: an appender with a producer that parks every send
             val factory = BlockingProducerFactory()
             val appender =
                 newAppender(
                     encoder = StatelessEncoder(),
                     producerFactory = factory,
                 )
-            appender.useSynchronousSendForTests = false
             appender.start()
             try {
                 // When: the first event parks the worker in the send
@@ -1520,7 +1533,6 @@ class KafkaAppenderTest {
                     encoder = StatelessEncoder(),
                     producerFactory = factory,
                 )
-            appender.useSynchronousSendForTests = false
             appender.topicMapping.addMapping(
                 TopicMappingEntry().apply {
                     marker = "SECURITY"
@@ -1573,7 +1585,6 @@ class KafkaAppenderTest {
                     producerFactory = factory,
                     fallback = fallback,
                 )
-            appender.useSynchronousSendForTests = false
             appender.sendQueueCapacity = 1
             appender.start()
             try {
@@ -1586,6 +1597,7 @@ class KafkaAppenderTest {
                 appender.doAppend(newTestLoggingEvent(message = "overflow-2"))
 
                 // Then: the overflow events reached the fallback
+                pollUntil { fallback.events.size == 2 }
                 assertThat(fallback.events.map { it.formattedMessage })
                     .containsExactly("overflow-1", "overflow-2")
             } finally {
@@ -1650,7 +1662,6 @@ class KafkaAppenderTest {
                     producerFactory = throwingBlockedFactory,
                     fallback = fallback,
                 )
-            appender.useSynchronousSendForTests = false
             appender.start()
             appender.doAppend(newTestLoggingEvent(message = "pinned"))
             assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
@@ -1697,20 +1708,24 @@ class KafkaAppenderTest {
         @Test
         fun `should deliver every event when many threads append concurrently`() {
             // What is to be tested? Whether the unsynchronized hot path
-            //   (append -> route -> classify -> enrich -> send, plus the
-            //   breaker/throttle gates) is actually safe under real
+            //   (append -> route -> classify -> enrich -> dispatch, plus
+            //   the breaker/throttle gates) is actually safe under real
             //   contention - the central design claim behind extending
-            //   UnsynchronizedAppenderBase.
+            //   UnsynchronizedAppenderBase - including the hand-off:
+            //   many threads race into dispatch() while a single worker
+            //   drains, and the bounded queue offer plus the worker loop
+            //   must neither lose nor duplicate events.
             // How will the test case be deemed successful and why? Successful
-            //   if N threads x M events all reach the producer with no
+            //   if all N x M events eventually reach the producer with no
             //   exception escaping append and nothing diverted to the
-            //   fallback. Races that corrupt shared state would surface
-            //   as lost events, duplicate metric state, or exceptions.
-            // Why is it important to test this test case? The suite's only
-            //   true contention test used to cover HalfOpenThrottle alone;
-            //   a regression introducing shared mutable per-event state
-            //   into the hot path would have passed every other test and
-            //   failed only in production under load.
+            //   fallback. The queue capacity is raised above the total so
+            //   no legitimate overflow occurs; races that corrupt shared
+            //   state would surface as lost events, duplicates, or
+            //   exceptions.
+            // Why is it important to test this test case? A regression
+            //   introducing shared mutable per-event state into the hot
+            //   path or the queue hand-off would pass every sequential
+            //   test and fail only in production under load.
 
             // Given: a stateless encoder - the recording TestEncoder's
             //   plain ArrayList would race under concurrent appends and
@@ -1726,75 +1741,6 @@ class KafkaAppenderTest {
                     producerFactory = factory,
                     fallback = fallback,
                 )
-            appender.start()
-
-            val startLatch = CountDownLatch(1)
-            val doneLatch = CountDownLatch(threadCount)
-            val failures = AtomicInteger(0)
-            val executor = Executors.newFixedThreadPool(threadCount)
-            try {
-                // When: all threads hammer append simultaneously
-                repeat(threadCount) { t ->
-                    executor.submit {
-                        try {
-                            startLatch.await()
-                            repeat(eventsPerThread) { i ->
-                                appender.doAppend(
-                                    newTestLoggingEvent(
-                                        message = "t$t-e$i",
-                                        threadName = "worker-$t",
-                                    ),
-                                )
-                            }
-                        } catch (_: Throwable) {
-                            failures.incrementAndGet()
-                        } finally {
-                            doneLatch.countDown()
-                        }
-                    }
-                }
-                startLatch.countDown()
-                assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue()
-            } finally {
-                executor.shutdownNow()
-            }
-
-            // Then: no thread failed, every event reached the producer,
-            //   nothing was diverted
-            assertThat(failures.get()).isZero()
-            assertThat(factory.historySize()).isEqualTo(threadCount * eventsPerThread)
-            assertThat(fallback.events).isEmpty()
-        }
-
-        @Test
-        fun `should deliver every event when many threads append concurrently through the asynchronous dispatch`() {
-            // What is to be tested? The same contention guarantee as the
-            //   previous test, but through the PRODUCTION dispatch mode:
-            //   many threads race into dispatch() while a single worker
-            //   drains - the hand-off (bounded queue offer) and the
-            //   worker loop must neither lose nor duplicate events.
-            // How will the test case be deemed successful and why? Successful
-            //   if all N x M events eventually reach the producer and
-            //   nothing lands in the fallback. The queue capacity is
-            //   raised above the total so no legitimate overflow occurs.
-            // Why is it important to test this test case? The rest of the
-            //   suite runs the synchronous test mode by default; without
-            //   this test, the concurrency of the actual production path
-            //   (multi-producer queue, single consumer) would be
-            //   exercised nowhere.
-
-            // Given
-            val threadCount = 8
-            val eventsPerThread = 250
-            val factory = SynchronizedTestProducerFactory()
-            val fallback = RecordingAppender()
-            val appender =
-                newAppender(
-                    encoder = StatelessEncoder(),
-                    producerFactory = factory,
-                    fallback = fallback,
-                )
-            appender.useSynchronousSendForTests = false
             appender.sendQueueCapacity = threadCount * eventsPerThread + 1
             appender.start()
 
@@ -1841,27 +1787,25 @@ class KafkaAppenderTest {
     inner class `Asynchronous fallback dispatch` {
         @Test
         fun `should deliver fallback events through the real worker thread`() {
-            // What is to be tested? The production-representative
-            //   asynchronous appender -> dispatcher -> worker -> fallback
-            //   chain, which every other appender-level test bypasses via
-            //   the synchronous test hook.
+            // What is to be tested? The full asynchronous appender ->
+            //   dispatcher -> worker -> fallback chain while the
+            //   appender keeps running (no stop-drain shortcut).
             // How will the test case be deemed successful and why? Successful
             //   if events diverted by a failing encoder arrive at the
             //   fallback appender asynchronously (bounded polling) and a
             //   subsequent stop() completes cleanly, draining the queue.
             // Why is it important to test this test case? A regression in
             //   the dispatcher wiring (worker not started, stop-ordering
-            //   closing the dispatcher before the registry) would be
-            //   invisible to all synchronous-mode tests.
+            //   closing the dispatcher before the registry) must surface
+            //   in live delivery, not only after a drain.
 
-            // Given: async dispatcher (the production path)
+            // Given
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
                     encoder = ThrowingEncoder(),
                     fallback = fallback,
                 )
-            appender.useSynchronousFallbackForTests = false
             appender.start()
 
             // When: events fail in the hot path and divert to the fallback
@@ -1895,15 +1839,14 @@ class KafkaAppenderTest {
             //   is unavailable; late-mutated content there misleads
             //   incident diagnosis at the worst possible moment.
 
-            // Given: async fallback (the production path) behind an
-            // encoder that fails without touching the lazy state itself
+            // Given: an encoder that fails without touching the lazy
+            // state itself
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
                     encoder = ThrowingEncoder(),
                     fallback = fallback,
                 )
-            appender.useSynchronousFallbackForTests = false
             appender.start()
             val mutable = StringBuilder("original")
             val event =
@@ -2052,13 +1995,15 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "counted"))
 
             // Then: the successful-calls timer of THIS appender counted it
+            //   (the send - and with it the breaker outcome - completes on
+            //   the dispatcher worker, hence the bounded poll)
             val successTimer =
                 registry
                     .find("resilience4j.circuitbreaker.calls")
                     .tags("kind", "successful", "appender", "KAFKA_A")
                     .timer()
             assertThat(successTimer).isNotNull()
-            assertThat(successTimer!!.count()).isEqualTo(1L)
+            pollUntil { successTimer!!.count() == 1L }
             appender.stop()
         }
 
@@ -2177,7 +2122,7 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "fallback me"))
 
             // Then: the fallback received the event
-            assertThat(fallback.events).hasSize(1)
+            pollUntil { fallback.events.size == 1 }
             assertThat(appender.fallbackAppender).isSameAs(fallback)
         }
 

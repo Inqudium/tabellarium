@@ -47,10 +47,11 @@ class ResilientMessageSenderTest {
     /**
      * Test appender that records every event it receives. Started in its
      * init block because AppenderBase.doAppend() is a no-op for unstarted
-     * appenders.
+     * appenders. The list is synchronized: the fallback dispatcher's
+     * worker thread appends while the test thread polls.
      */
     private class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        val events = mutableListOf<ILoggingEvent>()
+        val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
 
         init {
             start()
@@ -135,11 +136,11 @@ class ResilientMessageSenderTest {
                 activeTopicClasses = activeClasses,
                 producerFactory = factory,
             )
-        // Wrap the fallback appender in a synchronous dispatcher: the
-        // synchronous flag bypasses the worker thread and the queue so
-        // tests can assert "the fallback received the event" without
-        // polling. See FallbackDispatcher KDoc.
-        val dispatcher = fallback?.let { FallbackDispatcher(it, synchronous = true) }
+        // Real (asynchronous) fallback dispatcher - the same wiring the
+        // appender uses in production. Assertions on the fallback
+        // recorder poll with pollUntil, since delivery happens on the
+        // dispatcher's worker thread.
+        val dispatcher = fallback?.let { FallbackDispatcher(it) }
         val sender =
             ResilientMessageSender(
                 producerRegistry = registry,
@@ -292,8 +293,8 @@ class ResilientMessageSenderTest {
 
             // Then: producer was not touched; event reached the fallback
             assertThat(ctx.factory.createdProducers[0].history()).isEmpty()
-            assertThat(ctx.fallback!!.events).hasSize(1)
-            assertThat(ctx.fallback.events[0].message).isEqualTo("lost event")
+            pollUntil { ctx.fallback!!.events.size == 1 }
+            assertThat(ctx.fallback!!.events[0].message).isEqualTo("lost event")
         }
 
         @Test
@@ -358,8 +359,8 @@ class ResilientMessageSenderTest {
             )
 
             // Then: fallback received the original event
-            assertThat(ctx.fallback.events).hasSize(1)
-            assertThat(ctx.fallback.events[0].message).isEqualTo("delivery will fail")
+            pollUntil { ctx.fallback!!.events.size == 1 }
+            assertThat(ctx.fallback!!.events[0].message).isEqualTo("delivery will fail")
         }
     }
 
@@ -383,8 +384,8 @@ class ResilientMessageSenderTest {
             )
 
             // Then: fallback received the original event
-            assertThat(ctx.fallback!!.events).hasSize(1)
-            assertThat(ctx.fallback.events[0].message).isEqualTo("sync failure")
+            pollUntil { ctx.fallback!!.events.size == 1 }
+            assertThat(ctx.fallback!!.events[0].message).isEqualTo("sync failure")
         }
 
         @Test
@@ -542,7 +543,7 @@ class ResilientMessageSenderTest {
 
             // Then: one probe reached the producer, four went to fallback
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(1)
-            assertThat(ctx.fallback!!.events).hasSize(4)
+            pollUntil { ctx.fallback!!.events.size == 4 }
         }
 
         @Test
@@ -678,7 +679,7 @@ class ResilientMessageSenderTest {
 
             // Then: breaker still CLOSED, and every event went to fallback
             assertThat(breaker.state).isEqualTo(CircuitBreaker.State.CLOSED)
-            assertThat(ctx.fallback!!.events).hasSize(30)
+            pollUntil { ctx.fallback!!.events.size == 30 }
         }
 
         @Test

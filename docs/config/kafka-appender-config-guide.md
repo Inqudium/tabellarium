@@ -820,23 +820,34 @@ then the only active class.)
 
 ### A.3 The four classes
 
-| Class         | Durability   | Reorder cost | Volume    | Mandatory overrides                    |
-| ------------- | ------------ | ------------ | --------- | -------------------------------------- |
-| `AUDIT`       | Maximum      | Critical     | Low       | `acks=all`, `enable.idempotence=true`  |
-| `FUNCTIONAL`  | Maximum      | High         | Medium    | `acks=all`                             |
-| `TECHNICAL`   | Best-effort  | Acceptable   | High      | *(none)*                               |
-| `PERFORMANCE` | Best-effort  | Tolerated    | Very high | *(none)*                               |
+| Class         | Producer durability | Reorder cost | Volume    | Mandatory overrides                    |
+| ------------- | ------------------- | ------------ | --------- | -------------------------------------- |
+| `AUDIT`       | Strictest           | Critical     | Low       | `acks=all`, `enable.idempotence=true`  |
+| `FUNCTIONAL`  | Strict              | High         | Medium    | `acks=all`                             |
+| `TECHNICAL`   | Best-effort         | Acceptable   | High      | *(none)*                               |
+| `PERFORMANCE` | Best-effort         | Tolerated    | Very high | *(none)*                               |
 
 Each class carries two sets of producer-property overrides:
 
 - **Mandatory overrides** are applied unconditionally and **win over any
-  conflicting value you set**. They encode non-negotiable compliance
-  requirements (`acks=all` for audit trails in a regulated banking
-  environment). A conflict is not silently ignored — it is recorded and
-  logged to the status manager at startup ([A.4](#a4-property-overrides-per-class)).
+  conflicting value you set**. They encode non-negotiable topic-class
+  requirements (`acks=all` for audit-relevant streams in a regulated
+  banking environment). A conflict is not silently ignored — it is
+  recorded and logged to the status manager at startup
+  ([A.4](#a4-property-overrides-per-class)).
 - **Default overrides** are applied only when you did **not** set the property
   yourself (`putIfAbsent` semantics). They are reasonable defaults you remain
   free to tune.
+
+> **Scope of the guarantee.** A topic class governs the Kafka **producer
+> policy** — what happens to a record the producer has accepted. The
+> appender in front of the producer remains a best-effort transport
+> through bounded in-memory queues: overflow, an open breaker, an
+> expired shutdown budget, or a JVM crash can lose events (counted, and
+> routed to the fallback where one is configured). Even `AUDIT` does not
+> make the pipeline a durable, end-to-end audit trail; see the
+> [delivery guarantees](https://github.com/Inqudium/tabellarium#delivery-guarantees)
+> in the README.
 
 ### A.4 Property overrides per class
 
@@ -874,7 +885,7 @@ mandatory override, the appender logs a warning to Logback's status manager at
 
 ```
 Mandatory override applied for AUDIT: acks forced from '1' to 'all'.
-This is a compliance requirement; see TopicClass.AUDIT for rationale.
+This is a non-negotiable topic-class requirement; see TopicClass.AUDIT for rationale.
 ```
 
 The record is still delivered with the enforced value; the warning exists so

@@ -21,8 +21,11 @@
         Tabellarium is a resilient Logback appender that ships structured log events to
         Apache Kafka. Named after the Roman letter-carrier, it never blocks the sender:
         per-topic-class circuit breakers stop hammering a broken route, mandatory
-        overrides seal audit-grade delivery (acks=all, idempotence), and a fallback
-        appender catches what cannot be shipped.
+        overrides pin the strictest producer-side delivery settings for audit-class
+        topics (acks=all, idempotence), and a fallback appender catches what cannot
+        be shipped. Delivery is best-effort transport: events are handed off through
+        bounded in-memory queues, so a crash, overflow, or expired shutdown budget
+        can lose events - the appender is not, by itself, a durable audit trail.
     </description>
     <url>https://github.com/Inqudium/tabellarium</url>
 
@@ -70,6 +73,7 @@
         <!-- Third Party Dependencies (not managed by the Boot BOM) -->
         <resilience4j.version>2.4.0</resilience4j.version>
         <logstash-encoder.version>9.0</logstash-encoder.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
         <!-- Security pin; see the dependencyManagement entry for the rationale. -->
         <lz4-java.version>1.11.2</lz4-java.version>
 
@@ -79,8 +83,11 @@
             call-site contracts of consuming services) that exercise no
             tabellarium code; their failures would misdirect maintainers of
             THIS library. Run them deliberately with -Pexternal-contract.
+            The integration tag marks the Testcontainers-based broker tests,
+            which need a Docker daemon; the default loop stays offline and
+            fast. Run them deliberately with -Pintegration.
         -->
-        <surefire.excludedGroups>external-contract</surefire.excludedGroups>
+        <surefire.excludedGroups>external-contract,integration</surefire.excludedGroups>
 
         <!-- Plugin Versions -->
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
@@ -97,6 +104,16 @@
                 <groupId>io.github.resilience4j</groupId>
                 <artifactId>resilience4j-bom</artifactId>
                 <version>${resilience4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- Testcontainers is not managed by the Boot parent; the BOM keeps
+                 the test-only broker-integration modules lockstep-versioned. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -243,6 +260,21 @@
             <artifactId>spring-web</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+            Test scope: real-broker integration tests (tag "integration",
+            excluded from the default run - see surefire.excludedGroups).
+            Versions are managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -300,8 +332,9 @@
                 </executions>
             </plugin>
 
-            <!-- Kotlin Compiler: the spring compiler plugin (all-open) is load-bearing for
-                 KafkaAppenderMetricsBinding - without it the @Configuration class compiles final. -->
+            <!-- Kotlin Compiler. No all-open/spring compiler plugin: the only class
+                 Spring proxies or subclasses is KafkaAppenderMetricsBinding, and that
+                 class (plus its listener method) is explicitly declared open. -->
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>
@@ -310,17 +343,7 @@
                     <args>
                         <arg>-Xjsr305=strict</arg>
                     </args>
-                    <compilerPlugins>
-                        <plugin>spring</plugin>
-                    </compilerPlugins>
                 </configuration>
-                <dependencies>
-                    <dependency>
-                        <groupId>org.jetbrains.kotlin</groupId>
-                        <artifactId>kotlin-maven-allopen</artifactId>
-                        <version>${kotlin.version}</version>
-                    </dependency>
-                </dependencies>
                 <executions>
                     <execution>
                         <id>compile</id>
@@ -453,7 +476,18 @@
         <profile>
             <id>external-contract</id>
             <properties>
-                <surefire.excludedGroups/>
+                <surefire.excludedGroups>integration</surefire.excludedGroups>
+            </properties>
+        </profile>
+        <!--
+            Includes the Testcontainers-based real-broker integration tests
+            (tag "integration") in the test run. Needs a running Docker
+            daemon: mvn -Pintegration test
+        -->
+        <profile>
+            <id>integration</id>
+            <properties>
+                <surefire.excludedGroups>external-contract</surefire.excludedGroups>
             </properties>
         </profile>
     </profiles>

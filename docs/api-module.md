@@ -4,8 +4,10 @@
 
 Tabellarium is a resilient Logback appender that ships structured log
 events to Apache Kafka: per-topic-class circuit breakers, mandatory
-overrides for audit-grade delivery, and a fallback appender for what
-cannot be shipped.
+producer-side delivery overrides for audit-class topics, and a fallback
+appender for what cannot be shipped. Delivery is best-effort transport
+with visible loss; the topic classes harden the producer policy, not
+the end-to-end pipeline.
 
 This is the API reference of the public surface. The
 [configuration guide](https://inqudium.github.io/tabellarium/config/kafka-appender-config-guide/)

@@ -179,23 +179,6 @@ class KafkaAppender :
      */
     var sendQueueCapacity: Int = SendDispatcher.DEFAULT_QUEUE_CAPACITY
 
-    /**
-     * Test-only hook. When true, [FallbackDispatcher] runs in
-     * synchronous mode so test assertions on the fallback appender
-     * do not need to poll. Must remain false in production.
-     */
-    internal var useSynchronousFallbackForTests: Boolean = false
-
-    /**
-     * Test-only hook. When true, each [SendDispatcher] runs in
-     * synchronous mode - `producer.send` happens inline on the caller,
-     * as it did before the asynchronous dispatch existed - so tests can
-     * assert producer state right after `doAppend` without polling.
-     * Must remain false in production: synchronous mode re-introduces
-     * the caller-thread blocking the dispatcher exists to prevent.
-     */
-    internal var useSynchronousSendForTests: Boolean = false
-
     // -- Pipeline state, built in start() -------------------------------
 
     private lateinit var topicRouter: TopicRouter
@@ -416,7 +399,6 @@ class KafkaAppender :
                                 t,
                             )
                         },
-                        synchronous = useSynchronousFallbackForTests,
                     )
                 }
             val sender =
@@ -458,7 +440,6 @@ class KafkaAppender :
                                 t,
                             )
                         },
-                        synchronous = useSynchronousSendForTests,
                     )
             }
             producerRegistry = registry
@@ -489,9 +470,9 @@ class KafkaAppender :
      * overruled. Transport confidentiality is the operator's decision -
      * forcing TLS here would over-reach, and the appender has no way to
      * supply certificates - but staying silent about it would be
-     * inconsistent: audit-grade records traversing the network in the
-     * clear are readable and tamperable by anyone on the path. So the
-     * gap is closed with a signal, not with enforcement.
+     * inconsistent: compliance-graded records traversing the network in
+     * the clear are readable and tamperable by anyone on the path. So
+     * the gap is closed with a signal, not with enforcement.
      *
      * Kafka's own default for `security.protocol` is `PLAINTEXT`, so an
      * absent setting is treated exactly like an explicit one.

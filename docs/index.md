@@ -6,9 +6,12 @@
 Tabellarium is a resilient Logback appender that ships structured log
 events to Apache Kafka. Named after the Roman letter-carrier, it never
 blocks the sender: per-topic-class circuit breakers stop hammering a
-broken route, mandatory overrides seal audit-grade delivery
-(`acks=all`, idempotence), and a fallback appender catches what cannot
-be shipped.
+broken route, mandatory overrides pin the strictest producer-side
+delivery settings for audit-class topics (`acks=all`, idempotence),
+and a fallback appender catches what cannot be shipped. Delivery is
+best-effort transport with visible loss — see the
+[delivery guarantees](https://github.com/Inqudium/tabellarium#delivery-guarantees)
+for the exact scope.
 
 ## Features
 
@@ -42,12 +45,12 @@ be shipped.
 
 - **Quality of service per log stream.** Each topic class carries its
   own producer tuning and its own circuit breaker: `AUDIT` buys
-  durability (`acks=all`, idempotence, retries), `PERFORMANCE` buys
-  throughput (larger batches, longer linger, tighter block budget),
-  with `FUNCTIONAL` and `TECHNICAL` in between. Audit-grade classes
-  additionally enforce their guarantees over any conflicting operator
-  value — and report every override at startup instead of applying it
-  silently.
+  producer-side durability (`acks=all`, idempotence, retries),
+  `PERFORMANCE` buys throughput (larger batches, longer linger, tighter
+  block budget), with `FUNCTIONAL` and `TECHNICAL` in between.
+  Compliance-graded classes additionally enforce their producer settings
+  over any conflicting operator value — and report every override at
+  startup instead of applying it silently.
 - **Marker-based routing.** `<mapping>` elements route by SLF4J marker
   to their own topic and class; one producer, breaker and `client.id`
   per active class, and none for dormant ones.

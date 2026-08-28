@@ -24,16 +24,29 @@ import org.apache.kafka.clients.producer.ProducerConfig
  * `technical`, and `performance` in the `TopicMapping` configuration
  * structure. Their Kafka-side requirements differ substantially:
  *
- * | Class       | Durability | Reorder cost | Volume    |
- * | ----------- | ---------- | ------------ | --------- |
- * | AUDIT       | Maximum    | Critical     | Low       |
- * | FUNCTIONAL  | Maximum    | High         | Medium    |
- * | TECHNICAL   | Best-effort| Acceptable   | High      |
- * | PERFORMANCE | Best-effort| Tolerated    | Very high |
+ * | Class       | Producer durability | Reorder cost | Volume    |
+ * | ----------- | ------------------- | ------------ | --------- |
+ * | AUDIT       | Strictest           | Critical     | Low       |
+ * | FUNCTIONAL  | Strict              | High         | Medium    |
+ * | TECHNICAL   | Best-effort         | Acceptable   | High      |
+ * | PERFORMANCE | Best-effort         | Tolerated    | Very high |
  *
- * For AUDIT and FUNCTIONAL the durability is enforced via mandatory
- * `acks=all`; for AUDIT, idempotence is additionally mandatory. The other
- * classes fall back to default values that the caller can tune.
+ * For AUDIT and FUNCTIONAL the producer-side durability is enforced via
+ * mandatory `acks=all`; for AUDIT, idempotence is additionally mandatory.
+ * The other classes fall back to default values that the caller can tune.
+ *
+ * ## Scope of the guarantee
+ *
+ * A topic class governs the **Kafka producer policy** of a send that the
+ * broker path actually performs - nothing more. The appender in front of
+ * the producer is a best-effort transport: events travel through bounded
+ * in-memory queues on daemon workers, and a queue overflow, an open
+ * circuit breaker, a JVM crash, or an expired shutdown budget can lose
+ * events (visibly, via metrics and the optional fallback appender - but
+ * lose them). Even the strictest class therefore does not turn this
+ * appender into a durable, end-to-end audit trail; deployments with a
+ * hard completeness requirement need a durable record ahead of or beside
+ * the logging pipeline.
  */
 enum class TopicClass(
     internal val mandatoryOverrides: Map<String, String>,
@@ -50,19 +63,24 @@ enum class TopicClass(
      * value, but a higher (or unparseable) value is clamped to this
      * ceiling and recorded as a [MandatoryOverrideViolation].
      *
-     * The cap exists because `producer.send` runs on the logging
-     * caller's thread and may block up to `max.block.ms` waiting for
-     * topic metadata or free buffer space. The appender's central
-     * design promise - a bounded worst-case block per `send()` even
-     * when the cluster is unreachable - only holds if this value
-     * cannot be raised through configuration.
+     * The cap exists because `producer.send` may block up to
+     * `max.block.ms` waiting for topic metadata or free buffer space.
+     * Since the send runs on the class's single [SendDispatcher]
+     * worker (never on the logging caller), the cap bounds how long
+     * that worker can stall per event - which in turn bounds queue
+     * drain time during an outage and keeps the shutdown drain budget
+     * meaningful. Those bounds only hold if this value cannot be
+     * raised through configuration.
      */
     internal val maxBlockMsCap: Long,
 ) {
     /**
-     * Audit and compliance logs. Non-negotiable durability and idempotence;
-     * cannot be tuned for throughput at the expense of safety. Suited for
-     * BaFin/MaRisk-relevant audit trails.
+     * Audit and compliance logs. Non-negotiable producer-side durability
+     * and idempotence; cannot be tuned for throughput at the expense of
+     * safety. Designed for audit-relevant log streams (e.g. in
+     * BaFin/MaRisk-regulated environments) - but note the guarantee
+     * scope above: the class hardens the producer policy, it does not
+     * make the appender's best-effort transport a complete audit trail.
      */
     AUDIT(
         mandatoryOverrides =

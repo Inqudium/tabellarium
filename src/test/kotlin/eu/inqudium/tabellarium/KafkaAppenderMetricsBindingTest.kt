@@ -251,23 +251,28 @@ class KafkaAppenderMetricsBindingTest {
     }
 
     // -- Spring test configurations -------------------------------------
+    // Explicitly open (class and @Bean methods): Spring subclasses
+    // @Configuration classes via CGLIB, and the build deliberately does
+    // not use the Kotlin all-open/spring compiler plugin - the only
+    // classes Spring ever proxies in this project are these fixtures
+    // and the (equally explicit) KafkaAppenderMetricsBinding.
 
     @Configuration
-    class MeterRegistryConfig {
+    open class MeterRegistryConfig {
         @Bean
-        fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()
+        open fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()
     }
 
     @Configuration
-    class BindingConfig {
+    open class BindingConfig {
         @Bean
-        fun kafkaAppenderMetricsBinding(registry: MeterRegistry) = KafkaAppenderMetricsBinding(registry)
+        open fun kafkaAppenderMetricsBinding(registry: MeterRegistry) = KafkaAppenderMetricsBinding(registry)
     }
 
     @Configuration
-    class BindingWithTagsConfig {
+    open class BindingWithTagsConfig {
         @Bean
-        fun kafkaAppenderMetricsBinding(registry: MeterRegistry) =
+        open fun kafkaAppenderMetricsBinding(registry: MeterRegistry) =
             KafkaAppenderMetricsBinding(
                 registry,
                 Tags.of(

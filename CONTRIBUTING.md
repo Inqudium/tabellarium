@@ -70,11 +70,18 @@ comment: fix it, or dismiss it in the UI with a written reason.
   New configuration surface without a test will not be merged.
 - Test comments follow the existing four-question pattern (what is
   tested, how success is determined, why it matters).
-- Unit tests use `MockProducer` from `kafka-clients`; no test may require
-  a running Kafka broker or Docker.
+- Unit tests use `MockProducer` from `kafka-clients`; no test in the
+  **default run** may require a running Kafka broker or Docker.
+- Tests tagged `integration` (Testcontainers-based real-broker tests)
+  are excluded from the default run; execute them deliberately with
+  `mvn -Pintegration test` (needs a Docker daemon).
 - Tests tagged `external-contract` (characterization tests of third-party
   behavior that exercise no tabellarium code) are excluded from the
   default run; execute them deliberately with `mvn -Pexternal-contract test`.
+- Appender-level tests run the real asynchronous dispatch (there is no
+  synchronous test mode in production code): either `stop()` the appender
+  before asserting - the stop sequence drains the queues - or poll with
+  the shared `pollUntil` helper.
 
 ## Pull requests
 

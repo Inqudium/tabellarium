@@ -18,8 +18,10 @@
 Tabellarium is a resilient Logback appender that ships structured log events to
 Apache Kafka. Named after the Roman letter-carrier, it never blocks the sender:
 per-topic-class circuit breakers stop hammering a broken route, mandatory
-overrides seal audit-grade delivery (acks=all, idempotence), and a fallback
-appender catches what cannot be shipped.
+overrides pin the strictest producer-side delivery settings for audit-class
+topics (acks=all, idempotence), and a fallback appender catches what cannot
+be shipped. Delivery is best-effort transport with visible loss - see
+[Delivery guarantees](#delivery-guarantees) for the exact scope.
 
 **Documentation:** [inqudium.github.io/tabellarium](https://inqudium.github.io/tabellarium/) —
 configuration guide, metrics overview, and Grafana dashboards.
@@ -58,13 +60,13 @@ configuration guide, metrics overview, and Grafana dashboards.
 ### Routing & service levels
 
 - **Quality of service per log stream.** Each topic class carries its own
-  producer tuning and its own circuit breaker: `AUDIT` buys durability
-  (`acks=all`, idempotence, retries), `PERFORMANCE` buys throughput
-  (larger batches, longer linger, tighter block budget), with
-  `FUNCTIONAL` and `TECHNICAL` in between. Audit-grade classes
-  additionally enforce their guarantees over any conflicting operator
-  value — and report every override at startup instead of applying it
-  silently.
+  producer tuning and its own circuit breaker: `AUDIT` buys producer-side
+  durability (`acks=all`, idempotence, retries), `PERFORMANCE` buys
+  throughput (larger batches, longer linger, tighter block budget), with
+  `FUNCTIONAL` and `TECHNICAL` in between. Compliance-graded classes
+  additionally enforce their producer settings over any conflicting
+  operator value — and report every override at startup instead of
+  applying it silently.
 - **Marker-based routing.** `<mapping>` elements route by SLF4J marker to
   their own topic and class; one producer, breaker and `client.id` per
   active class, and none for dormant ones.
@@ -169,22 +171,46 @@ Missing or blank values for the five required elements cause the
 appender to refuse startup with an explicit `addError` on Logback's
 status manager. The error message identifies which element is missing.
 
-## Mandatory override policy (compliance)
+## Delivery guarantees
+
+Tabellarium is a **best-effort transport with visible loss**, not a
+durable audit store. The scope of every guarantee in this document:
+
+- **What the topic classes guarantee:** the Kafka **producer policy** of
+  a send that reaches the broker path. `AUDIT` enforces `acks=all` and
+  idempotence, so a record the producer has accepted is not silently
+  lost to a leader failover or duplicated by a retry.
+- **What they do not guarantee:** end-to-end completeness. Ahead of the
+  producer sit bounded in-memory queues drained by daemon workers. A
+  full send queue, an open circuit breaker, a send failure, an expired
+  shutdown budget, or a JVM crash loses events — counted and (except
+  for a crash) routed to the optional fallback appender, but lost to
+  Kafka nonetheless. The fallback path itself is again a bounded queue
+  that drops (counted) on overflow, and is optional.
+- **Consequence:** a deployment whose compliance requirement is "every
+  audit event is durably recorded" needs a durable record ahead of or
+  beside this pipeline (e.g. a transactional outbox in the emitting
+  service). Use `AUDIT` to make the *transport* as safe as a logging
+  pipeline can be — configure a fallback appender and alert on the
+  `kafka.appender.events.fallback` / `kafka.appender.fallback.dropped`
+  metrics to make the residual loss observable.
+
+## Mandatory override policy
 
 A single Kafka producer shared by every topic would mean an audit
 topic and a debug topic share the same `acks` value — and if the
-operator configured `acks=1` for throughput, audit records could
-silently be lost on a Kafka leader failover.
+operator configured `acks=1` for throughput, audit records accepted by
+the producer could silently be lost on a Kafka leader failover.
 
 This module classifies every topic into one of four classes and
 enforces per-class producer configuration:
 
-| Class       | Durability  | Mandatory overrides                              | Use case                          |
-|-------------|-------------|--------------------------------------------------|-----------------------------------|
-| AUDIT       | Maximum     | `acks=all`, `enable.idempotence=true`            | BaFin/MaRisk-relevant audit logs  |
-| FUNCTIONAL  | Maximum     | `acks=all`                                       | Operationally important logs      |
-| TECHNICAL   | Best-effort | (none — operator-tunable)                        | Debug and diagnostic logs         |
-| PERFORMANCE | Best-effort | (none — operator-tunable)                        | High-volume metric logs           |
+| Class       | Producer durability | Mandatory overrides                              | Use case                          |
+|-------------|---------------------|--------------------------------------------------|-----------------------------------|
+| AUDIT       | Strictest           | `acks=all`, `enable.idempotence=true`            | Audit-relevant log streams (e.g. BaFin/MaRisk contexts) |
+| FUNCTIONAL  | Strict              | `acks=all`                                       | Operationally important logs      |
+| TECHNICAL   | Best-effort         | (none — operator-tunable)                        | Debug and diagnostic logs         |
+| PERFORMANCE | Best-effort         | (none — operator-tunable)                        | High-volume metric logs           |
 
 A **mandatory override** is non-negotiable: if the operator's
 `<kafkaProducerProperties>` specifies `acks=1` for an audit topic, the
@@ -194,7 +220,7 @@ Auditors and operators see the override in the Logback startup log:
 
 ```
 WARN  Mandatory override applied for AUDIT: acks forced from '1' to 'all'.
-      This is a compliance requirement; see TopicClass.AUDIT for rationale.
+      This is a non-negotiable topic-class requirement; see TopicClass.AUDIT for rationale.
 ```
 
 With the minimal configuration (only `<defaultTopic>`) all topics are
@@ -363,10 +389,11 @@ If an existing `logback-spring.xml` wraps the Kafka appender in an
 
 ### When `AsyncAppender` is still justified
 
-Sub-100 ms hard latency SLAs that cannot tolerate the 500 ms
-worst-case spike before the breaker trips — typical of trading,
-real-time risk, or other latency-critical paths. In that case, use
-`AsyncAppender` with these non-default settings:
+The one cost that remains on the logging thread is the synchronous
+encoding/enrichment work in `append()`. Latency-critical paths with
+hard sub-millisecond budgets (trading, real-time risk) that cannot
+afford even that may still want to move it off the request thread.
+In that case, use `AsyncAppender` with these non-default settings:
 
 ```xml
 <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
@@ -395,17 +422,23 @@ only atomics and volatiles.
 Two reactive-specific concerns remain that are worth tuning per
 service.
 
-### `max.block.ms` is the one realistic block point
+### `max.block.ms` bounds the send worker, not the event loop
 
 `KafkaProducer.send()` is asynchronous per the Kafka spec, but it
 can synchronously block for up to `max.block.ms` when the producer
 buffer is full, metadata is stale, or buffer allocation contends
-with other producers. The class-default for AUDIT/FUNCTIONAL/
-TECHNICAL is `500 ms` — a reasonable value for traditional
-servlet-thread pools but **long for a Reactor event loop** where
-only a handful of event-loop threads serve all requests.
+with other producers. That block lands on the topic class's
+dedicated send worker — the event-loop (or virtual) thread that
+called `log.info()` only encodes and enqueues, and returns in
+microseconds regardless of this setting.
 
-For a reactive service, override the value in
+`max.block.ms` therefore no longer needs reactive-specific tuning
+for latency. What it still governs is **queue drain speed during
+broker trouble**: with the 500 ms class default, a stalled cluster
+lets each worker absorb at most ~10 × 500 ms before its breaker
+opens, during which the bounded send queue may fill and overflow to
+the fallback (reason `queue.full`). A service that prefers to shed
+to the fallback faster can lower the value in
 `<kafkaProducerProperties>`:
 
 ```xml
@@ -415,16 +448,15 @@ For a reactive service, override the value in
 </kafkaProducerProperties>
 ```
 
-Trade-off: with 50 ms the producer drops to the fallback earlier
-under transient buffer pressure (not a cluster outage, just a brief
-backlog). This is the intended use of the fallback. The circuit
-breaker still trips after roughly 10 failures, after which all
-further events route to the fallback in O(1) regardless of
-`max.block.ms`.
+Trade-off: with 50 ms the worker gives up earlier under transient
+buffer pressure (not a cluster outage, just a brief backlog) and
+those events divert to the fallback. This is the intended use of
+the fallback. The circuit breaker still trips after roughly 10
+failures, after which all further events route to the fallback in
+O(1) regardless of `max.block.ms`.
 
-This is the only setting that should typically differ between
-servlet and reactive services. Everything else (`acks`,
-`enable.idempotence`, `linger.ms`) is decided by topic class.
+Everything else (`acks`, `enable.idempotence`, `linger.ms`) is
+decided by topic class, for servlet and reactive services alike.
 
 ### BlockHound
 
@@ -716,24 +748,23 @@ a fault that affects the shared producer trips both circuit breakers
 together, partially defeating the isolation guarantee. Probably worth
 doing only if a concrete deployment hits the producer-count ceiling.
 
-### Embedded-Kafka integration test
-
-The unit tests use `MockProducer` from `kafka-clients`, which verifies
-the producer API contract but not the actual wire format or SSL
-configuration. A Testcontainers-based integration test that runs
-against a real Kafka broker would close this gap. Would live in a
-separate test module to avoid imposing a Docker dependency on the
-fast unit-test loop.
-
 ## Build
 
 Standard Maven module:
 
 ```bash
-mvn verify                                      # build + run all tests
+mvn verify                                      # build + run all offline tests
 mvn -Dtest=KafkaAppenderTest test               # run a single test class
 mvn -Dtest='*MessageEnricher*' test             # pattern-match
+mvn -Pintegration test                          # + real-broker tests (needs Docker)
 ```
+
+The default test run is offline and fast (`MockProducer`, no Docker).
+The `integration` profile adds the Testcontainers-based real-broker
+tests (`@Tag("integration")`), which verify a successful TECHNICAL and
+AUDIT record end-to-end against an Apache Kafka container — real
+serializers, compression, headers, and the AUDIT acks/idempotence
+handshake.
 
 The module has no Maven plugins beyond the Kotlin compiler and Surefire.
 Java 21 and Kotlin 2.4.10.

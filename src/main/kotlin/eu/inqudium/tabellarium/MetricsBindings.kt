@@ -24,18 +24,26 @@ import java.util.IdentityHashMap
  *
  * The circuit-breaker meters are registered by this class itself
  * rather than by `resilience4j-micrometer`'s
- * `TaggedCircuitBreakerMetrics`. The official binder derives the meter
- * ID from the metric name plus the breaker name alone - and tabellarium
- * breaker names are per topic class (`kafka-appender-audit`, ...), so
- * two KafkaAppender instances bound to the same MeterRegistry would
- * collide: state gauges keep reporting whichever instance registered
- * first, counters mix both. The own binder mirrors the official
- * binder's metric names and tags 1:1 and adds the same `appender` tag
- * the appender's own meters carry ([MicrometerKafkaAppenderMetrics]),
- * making every meter ID appender-unique. It needs only
- * `resilience4j-circuitbreaker` (a required dependency) plus
- * `micrometer-core`, so the previously optional
- * `resilience4j-micrometer` bridge is no longer used.
+ * `TaggedCircuitBreakerMetrics`. Tabellarium breaker names are per
+ * topic class (`kafka-appender-audit`, ...), so meter IDs need the
+ * extra `appender` tag to stay unique when two KafkaAppender instances
+ * bind to the same MeterRegistry. The official binder could carry that
+ * tag too (it propagates tags set on the `CircuitBreaker` at creation),
+ * so uniqueness alone would not justify an own binder. What the
+ * official binder does not offer is the lifecycle this appender needs:
+ * a symmetric [unbind] on Logback reconfiguration or [KafkaAppender]
+ * stop. `TaggedCircuitBreakerMetrics` removes its meters only when a
+ * breaker is deleted from a `CircuitBreakerRegistry` it observes; it
+ * has no teardown API of its own, so every reconfiguration cycle would
+ * leak the previous appender instance's meters into the shared
+ * MeterRegistry. The own binder mirrors the official binder's metric
+ * names and tags 1:1 (existing dashboards keep working), tracks every
+ * meter it registers, and removes exactly those in [unbind]. It also
+ * needs only `resilience4j-circuitbreaker` (a required dependency)
+ * plus `micrometer-core`, so the previously optional
+ * `resilience4j-micrometer` bridge is no longer used. The price is
+ * deliberate: resilience4j upgrades must be checked against this
+ * mirror (meter names, states, tags, event semantics).
  *
  * ## Lazy class-loading pattern for the optional Kafka binder
  *

@@ -66,21 +66,12 @@ import java.util.concurrent.atomic.AtomicReference
  *                      handled in place). The appender reports this to
  *                      the status manager so a dead worker does not
  *                      masquerade as a merely slow fallback appender.
- * @param synchronous Test-only hook. When true, [enqueue] invokes
- *                    [fallbackAppender.doAppend] directly on the
- *                    caller's thread and no worker thread is started.
- *                    This bypasses the entire reason this class exists
- *                    (decoupling from caller threads) and must NEVER
- *                    be used in production. The flag exists solely so
- *                    unit tests can assert "the fallback received the
- *                    event" without polling or sleeping.
  */
 internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
     private val onWorkerDeath: (Throwable) -> Unit = {},
-    private val synchronous: Boolean = false,
 ) : AutoCloseable {
     private val queue: LinkedBlockingQueue<ILoggingEvent> = LinkedBlockingQueue(queueCapacity)
     private val droppedCount = AtomicLong(0)
@@ -133,34 +124,30 @@ internal class FallbackDispatcher(
      */
     private val closeExecuted = AtomicBoolean(false)
 
-    private val worker: Thread? =
-        if (synchronous) {
-            null
-        } else {
-            Thread(::runWorker, "kafka-appender-fallback-dispatcher").apply {
-                isDaemon = true
-                // An Error escaping the delivery loop kills the worker.
-                // Leave the accepting state FIRST - with the worker gone,
-                // anything accepted would strand in a queue nothing ever
-                // drains - then count the event it was carrying plus
-                // everything queued as dropped, and surface the death -
-                // see onWorkerDeath. Later enqueue calls see
-                // running=false and count on the caller.
-                setUncaughtExceptionHandler { _, throwable ->
-                    running = false
-                    val m = metrics
-                    inFlight.getAndSet(null)?.let {
-                        droppedCount.incrementAndGet()
-                        m.fallbackDispatcherDropped()
-                    }
-                    while (queue.poll() != null) {
-                        droppedCount.incrementAndGet()
-                        m.fallbackDispatcherDropped()
-                    }
-                    onWorkerDeath(throwable)
+    private val worker: Thread =
+        Thread(::runWorker, "kafka-appender-fallback-dispatcher").apply {
+            isDaemon = true
+            // An Error escaping the delivery loop kills the worker.
+            // Leave the accepting state FIRST - with the worker gone,
+            // anything accepted would strand in a queue nothing ever
+            // drains - then count the event it was carrying plus
+            // everything queued as dropped, and surface the death -
+            // see onWorkerDeath. Later enqueue calls see
+            // running=false and count on the caller.
+            setUncaughtExceptionHandler { _, throwable ->
+                running = false
+                val m = metrics
+                inFlight.getAndSet(null)?.let {
+                    droppedCount.incrementAndGet()
+                    m.fallbackDispatcherDropped()
                 }
-                start()
+                while (queue.poll() != null) {
+                    droppedCount.incrementAndGet()
+                    m.fallbackDispatcherDropped()
+                }
+                onWorkerDeath(throwable)
             }
+            start()
         }
 
     /**
@@ -186,19 +173,6 @@ internal class FallbackDispatcher(
             droppedCount.incrementAndGet()
             metrics.fallbackDispatcherDropped()
             return false
-        }
-        if (synchronous) {
-            // Test mode: bypass the queue and the worker thread entirely.
-            try {
-                fallbackAppender.doAppend(event)
-            } catch (_: Exception) {
-                // Same swallow-and-account policy as the worker path,
-                // so tests observe the same loss accounting as
-                // production.
-                droppedCount.incrementAndGet()
-                metrics.fallbackDispatcherDropped()
-            }
-            return true
         }
         val accepted = queue.offer(event)
         if (!accepted) {
@@ -226,10 +200,6 @@ internal class FallbackDispatcher(
             return
         }
         running = false
-        if (synchronous) {
-            // No worker thread to wait for.
-            return
-        }
         // Phase 1: graceful drain attempt.
         // The worker's poll(100, MS) wakes up on its next timeout and
         // sees running=false; it then enters the drain-on-close loop
@@ -245,7 +215,6 @@ internal class FallbackDispatcher(
         // interrupt flag is restored before returning.
         var interrupted = false
         val gracefulWait = GRACEFUL_DRAIN_WAIT_MS.coerceAtMost(shutdownTimeoutMs)
-        val worker = checkNotNull(worker) { "a non-synchronous dispatcher always has a worker thread" }
         try {
             worker.join(gracefulWait)
         } catch (_: InterruptedException) {

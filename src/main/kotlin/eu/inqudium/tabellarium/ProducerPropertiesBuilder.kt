@@ -122,15 +122,18 @@ class ProducerPropertiesBuilder(
     /**
      * Enforces the class-specific `max.block.ms` **cap** ([TopicClass.maxBlockMsCap]).
      *
-     * `producer.send` runs synchronously on the logging caller's thread
-     * and may block up to `max.block.ms` waiting for topic metadata or
-     * free buffer space. The appender's documented worst-case caller
-     * latency per `send()` therefore only holds if this value cannot be
-     * raised through `<kafkaProducerProperties>`. Unlike a mandatory
-     * override, the cap keeps operator values that *tighten* the bound:
-     * a lower value wins, a higher (or unparseable) value is clamped to
-     * the ceiling and recorded as a [MandatoryOverrideViolation] so the
-     * overruled intent is visible at startup.
+     * `producer.send` may block up to `max.block.ms` waiting for topic
+     * metadata or free buffer space. The send runs on the class's
+     * dedicated `SendDispatcher` worker (never on the logging caller),
+     * so the cap bounds the worker's worst-case stall per event - the
+     * bound that keeps queue drain during an outage and the shutdown
+     * drain budget predictable. Those bounds only hold if this value
+     * cannot be raised through `<kafkaProducerProperties>`. Unlike a
+     * mandatory override, the cap keeps operator values that *tighten*
+     * the bound: a lower value wins, a higher (or unparseable) value is
+     * clamped to the ceiling and recorded as a
+     * [MandatoryOverrideViolation] so the overruled intent is visible
+     * at startup.
      */
     private fun capMaxBlockMs(
         merged: LinkedHashMap<String, String>,

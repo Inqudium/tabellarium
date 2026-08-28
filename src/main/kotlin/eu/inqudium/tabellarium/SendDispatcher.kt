@@ -100,12 +100,6 @@ import java.util.concurrent.atomic.AtomicReference
  *                      appender reports the death to the status
  *                      manager so it does not masquerade as a slow
  *                      broker.
- * @param synchronous Test-only hook, same pattern as
- *                    [FallbackDispatcher]: [dispatch] runs [sendAction]
- *                    inline on the caller and no worker is started, so
- *                    existing tests can assert producer state right
- *                    after `doAppend`. Must NEVER be used in
- *                    production - it re-introduces caller blocking.
  */
 internal class SendDispatcher(
     private val topicClass: TopicClass,
@@ -115,7 +109,6 @@ internal class SendDispatcher(
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val drainTimeoutMs: Long = DEFAULT_DRAIN_TIMEOUT_MS,
     private val onWorkerDeath: (Throwable) -> Unit = {},
-    private val synchronous: Boolean = false,
 ) : AutoCloseable {
     /**
      * The unit of work handed from the caller to the worker: everything
@@ -172,32 +165,28 @@ internal class SendDispatcher(
 
     private val closeExecuted = AtomicBoolean(false)
 
-    private val worker: Thread? =
-        if (synchronous) {
-            null
-        } else {
-            Thread(::runWorker, "kafka-appender-send-dispatcher-${topicClass.tag}").apply {
-                isDaemon = true
-                // An Error escaping the delivery loop kills the worker.
-                // Leave the accepting state FIRST - with the worker gone,
-                // anything accepted would strand in a queue nothing ever
-                // drains - then account for the in-flight item and divert
-                // everything already queued, and surface the death - see
-                // onWorkerDeath.
-                setUncaughtExceptionHandler { _, throwable ->
-                    workerDied = true
-                    running = false
-                    inFlight.getAndSet(null)?.let {
-                        divert(it, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
-                    }
-                    while (true) {
-                        val item = queue.poll() ?: break
-                        divert(item, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
-                    }
-                    onWorkerDeath(throwable)
+    private val worker: Thread =
+        Thread(::runWorker, "kafka-appender-send-dispatcher-${topicClass.tag}").apply {
+            isDaemon = true
+            // An Error escaping the delivery loop kills the worker.
+            // Leave the accepting state FIRST - with the worker gone,
+            // anything accepted would strand in a queue nothing ever
+            // drains - then account for the in-flight item and divert
+            // everything already queued, and surface the death - see
+            // onWorkerDeath.
+            setUncaughtExceptionHandler { _, throwable ->
+                workerDied = true
+                running = false
+                inFlight.getAndSet(null)?.let {
+                    divert(it, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                 }
-                start()
+                while (true) {
+                    val item = queue.poll() ?: break
+                    divert(item, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                }
+                onWorkerDeath(throwable)
             }
+            start()
         }
 
     /**
@@ -223,13 +212,6 @@ internal class SendDispatcher(
         val item = PendingSend(topicName, payload, enrichment, originalEvent)
         if (!running) {
             divert(item, terminalDiversionReason())
-            return
-        }
-        if (synchronous) {
-            // Test mode: the caller performs the send inline. The
-            // running check above applies first so the sync mode keeps
-            // the same after-close accounting as the worker path.
-            sendAction(item)
             return
         }
         if (!queue.offer(item)) {
@@ -263,9 +245,6 @@ internal class SendDispatcher(
             return
         }
         running = false
-        if (synchronous) {
-            return
-        }
         // Two-phase shutdown: the graceful drain (the worker keeps
         // SENDING - the producers are still open at this point) gets
         // the full budget; only then is the worker interrupted, with a
@@ -273,7 +252,6 @@ internal class SendDispatcher(
         // interrupt handling mirrors the M-6 fix: an interrupted closer
         // still runs the forced cleanup and restores its flag.
         var interrupted = false
-        val worker = checkNotNull(worker) { "a non-synchronous dispatcher always has a worker thread" }
         try {
             worker.join(drainTimeoutMs)
         } catch (_: InterruptedException) {

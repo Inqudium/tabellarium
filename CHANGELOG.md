@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `..`) and names over 249 characters are rejected eagerly.
 - `meta.agent.version` header is derived from the build (Maven-filtered
   resource) instead of a hardcoded constant.
+- Testcontainers-based real-broker integration test (tag `integration`,
+  `mvn -Pintegration test`): one successful TECHNICAL and one AUDIT
+  record end-to-end against an Apache Kafka container — real
+  serializers, LZ4 compression, headers, partitioning key, and the
+  AUDIT acks/idempotence handshake. The default test run stays offline.
 
 ### Fixed
 
@@ -115,5 +120,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run; run them with `mvn -Pexternal-contract test`.
 - Configuration guide, metrics overview, and Grafana dashboards under
   `docs/config/` and `docs/metrics/`.
+- Delivery guarantees are documented with their exact scope: the topic
+  classes harden the Kafka **producer policy** (`acks`, idempotence),
+  while the appender remains a best-effort transport through bounded
+  in-memory queues with visible loss. "Audit-grade delivery" wording in
+  POM, README, docs site, and KDoc was replaced accordingly, and the
+  README gained a dedicated "Delivery guarantees" section.
+- The test-only synchronous dispatch modes were removed from production
+  code (`SendDispatcher`, `FallbackDispatcher`, and the two internal
+  `KafkaAppender` hooks): appender-level tests now always exercise the
+  real asynchronous worker path and assert via stop-drain or bounded
+  polling.
+- The Kotlin all-open/spring compiler plugin was removed from the build;
+  the only Spring-proxied classes (`KafkaAppenderMetricsBinding` and
+  test fixtures) are explicitly `open`.
 
 [Unreleased]: https://github.com/Inqudium/tabellarium/commits/main

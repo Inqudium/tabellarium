@@ -18,7 +18,7 @@ class SendDispatcherTest {
 
     private val testContext = LoggerContext()
 
-    /** Fallback recorder; synchronous so assertions need no polling. */
+    /** Fallback recorder; the list is synchronized because the fallback worker writes while the test polls. */
     private inner class RecordingAppender : AppenderBase<ILoggingEvent>() {
         val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
 
@@ -57,7 +57,15 @@ class SendDispatcherTest {
 
     private fun pending(message: String) = newTestLoggingEvent(message = message)
 
-    private fun newFallback(recorder: RecordingAppender) = FallbackDispatcher(recorder, synchronous = true)
+    /**
+     * Real (asynchronous) fallback dispatcher, as in production.
+     * Assertions on the recorder poll with [pollUntil]; where a test
+     * must additionally prove that NO further event arrives, it closes
+     * the returned dispatcher first (close drains the queue, so
+     * everything enqueued up to that point is delivered before the
+     * assertion).
+     */
+    private fun newFallback(recorder: RecordingAppender) = FallbackDispatcher(recorder)
 
     // -- Tests ----------------------------------------------------------
 
@@ -215,6 +223,7 @@ class SendDispatcherTest {
 
                 // Then: the overflow events reached the fallback with the
                 //   queue-full reason; nothing blocked
+                pollUntil { recorder.events.size == 2 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactly("overflow-1", "overflow-2")
                 assertThat(metrics.fallbackReasons)
@@ -287,6 +296,7 @@ class SendDispatcherTest {
             val sendReturned = AtomicBoolean(false)
             val recorder = RecordingAppender()
             val metrics = RecordingMetrics()
+            val fallbackDispatcher = newFallback(recorder)
             val dispatcher =
                 SendDispatcher(
                     topicClass = TopicClass.TECHNICAL,
@@ -305,7 +315,7 @@ class SendDispatcherTest {
                         }
                         sendReturned.set(true)
                     },
-                    fallbackDispatcher = newFallback(recorder),
+                    fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
             dispatcher.setMetrics(metrics)
@@ -319,6 +329,7 @@ class SendDispatcherTest {
             dispatcher.close()
 
             // Then: in-flight + queued diverted exactly once each
+            pollUntil { recorder.events.size == 4 }
             assertThat(recorder.events.map { it.formattedMessage })
                 .containsExactlyInAnyOrder("in-flight", "queued-1", "queued-2", "queued-3")
             assertThat(metrics.fallbackReasons)
@@ -327,9 +338,12 @@ class SendDispatcherTest {
 
             // Cleanup: release the worker; the completed send must not
             // divert the in-flight event a second time (close() already
-            // claimed it - the worker's compare-and-set fails)
+            // claimed it - the worker's compare-and-set fails). Closing
+            // the fallback dispatcher drains it, so a duplicate would be
+            // visible in the recorder by the time the assertion runs.
             release.countDown()
             pollUntil { sendReturned.get() }
+            fallbackDispatcher.close()
             assertThat(recorder.events).hasSize(4)
         }
 
@@ -351,6 +365,7 @@ class SendDispatcherTest {
             dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("late"))
 
             // Then
+            pollUntil { recorder.events.size == 1 }
             assertThat(recorder.events.map { it.formattedMessage }).containsExactly("late")
             assertThat(metrics.fallbackReasons)
                 .containsExactly(KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
@@ -444,12 +459,13 @@ class SendDispatcherTest {
 
                 // Then: the death handler diverted both the in-flight and
                 // the queued item
+                pollUntil { recorder.events.size == 2 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactlyInAnyOrder("in-flight", "queued")
 
-                // And: a dispatch after the death diverts immediately on
-                // the caller (synchronous fallback needs no polling)
+                // And: a dispatch after the death diverts on the caller
                 dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("after-death"))
+                pollUntil { recorder.events.size == 3 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactlyInAnyOrder("in-flight", "queued", "after-death")
                 assertThat(metrics.fallbackReasons)
@@ -486,6 +502,7 @@ class SendDispatcherTest {
             val entered = CountDownLatch(1)
             val lateClaim = AtomicReference<Boolean?>()
             val recorder = RecordingAppender()
+            val fallbackDispatcher = newFallback(recorder)
             val dispatcher =
                 SendDispatcher(
                     topicClass = TopicClass.TECHNICAL,
@@ -506,7 +523,7 @@ class SendDispatcherTest {
                         // and ask for the claim first:
                         lateClaim.set(item.tryClaimDiversion())
                     },
-                    fallbackDispatcher = newFallback(recorder),
+                    fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
             dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("pinned"))
@@ -514,12 +531,16 @@ class SendDispatcherTest {
 
             // When: forced shutdown claims and diverts, then the send unblocks
             dispatcher.close()
+            pollUntil { recorder.events.size == 1 }
             assertThat(recorder.events.map { it.formattedMessage }).containsExactly("pinned")
             release.countDown()
             pollUntil { lateClaim.get() != null }
 
-            // Then: the late claim lost - no second diversion possible
+            // Then: the late claim lost - no second diversion possible.
+            // Closing the fallback dispatcher drains it, so a duplicate
+            // would be visible in the recorder by the assertion.
             assertThat(lateClaim.get()).isFalse()
+            fallbackDispatcher.close()
             assertThat(recorder.events).hasSize(1)
         }
     }
@@ -542,53 +563,6 @@ class SendDispatcherTest {
 
                 // Then
                 assertThat(metrics.registeredQueueClasses).containsExactly(TopicClass.AUDIT)
-            } finally {
-                dispatcher.close()
-            }
-        }
-    }
-
-    @Nested
-    inner class `Synchronous test mode` {
-        @Test
-        fun `should divert instead of sending when dispatching after close in synchronous mode`() {
-            // The sync test mode must keep the worker path's after-close
-            // accounting: a dispatch after close() diverts (reason
-            // shutdown) instead of still invoking the send action.
-            val sent = AtomicBoolean(false)
-            val recorder = RecordingAppender()
-            val dispatcher =
-                SendDispatcher(
-                    topicClass = TopicClass.TECHNICAL,
-                    sendAction = { sent.set(true) },
-                    fallbackDispatcher = newFallback(recorder),
-                    synchronous = true,
-                )
-            dispatcher.close()
-
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("late"))
-
-            assertThat(sent.get()).isFalse()
-            assertThat(recorder.events.map { it.formattedMessage }).containsExactly("late")
-        }
-
-        @Test
-        fun `should run the send action inline on the caller thread when synchronous`() {
-            // Given
-            val callerThread = AtomicReference<Thread?>()
-            val dispatcher =
-                SendDispatcher(
-                    topicClass = TopicClass.TECHNICAL,
-                    sendAction = { callerThread.set(Thread.currentThread()) },
-                    fallbackDispatcher = null,
-                    synchronous = true,
-                )
-            try {
-                // When
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("sync"))
-
-                // Then
-                assertThat(callerThread.get()).isEqualTo(Thread.currentThread())
             } finally {
                 dispatcher.close()
             }
