@@ -276,6 +276,32 @@ internal class MicrometerKafkaAppenderMetrics(
         }
     }
 
+    override fun registerSendQueueGauges(
+        topicClass: TopicClass,
+        queueSize: () -> Int,
+        capacity: Int,
+    ) {
+        safe {
+            // Unlike the fallback queue gauge (pre-registered with a
+            // supplier holder), the send dispatchers exist before the
+            // bind, so both gauges can be registered directly here.
+            track(
+                Gauge
+                    .builder(METRIC_SEND_QUEUE_SIZE) { queueSize().toDouble() }
+                    .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
+                    .description("Current number of events waiting in the SendDispatcher queue")
+                    .register(registry),
+            )
+            track(
+                Gauge
+                    .builder(METRIC_SEND_QUEUE_CAPACITY) { capacity.toDouble() }
+                    .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
+                    .description("Maximum number of events the SendDispatcher queue can hold")
+                    .register(registry),
+            )
+        }
+    }
+
     /**
      * Runs [block] and silently swallows any exception. A metrics
      * failure must never corrupt the logging pipeline.
@@ -301,6 +327,8 @@ internal class MicrometerKafkaAppenderMetrics(
         const val METRIC_FALLBACK_DROPPED: String = "kafka.appender.fallback.dropped"
         const val METRIC_FALLBACK_QUEUE_SIZE: String = "kafka.appender.fallback.queue.size"
         const val METRIC_FALLBACK_QUEUE_CAPACITY: String = "kafka.appender.fallback.queue.capacity"
+        const val METRIC_SEND_QUEUE_SIZE: String = "kafka.appender.send.queue.size"
+        const val METRIC_SEND_QUEUE_CAPACITY: String = "kafka.appender.send.queue.capacity"
 
         const val TAG_TOPIC_CLASS: String = "topic.class"
         const val TAG_REASON: String = "reason"

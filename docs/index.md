@@ -15,10 +15,12 @@ be shipped.
 ### Delivery
 
 - **The sender is never made to wait.** The hot path takes no lock
-  (`UnsynchronizedAppenderBase`, atomics only), so it neither pins
-  carrier threads on virtual threads nor stalls a Reactor event loop.
-  `max.block.ms` is capped at 500 ms per class, bounding the worst case
-  even when the producer buffer is full.
+  (`UnsynchronizedAppenderBase`, atomics only) and never calls
+  `producer.send` itself: the caller enqueues into a bounded
+  per-topic-class send queue in O(1), and a dedicated worker per class
+  performs the send. `max.block.ms` is additionally capped per class
+  (500 ms; 200 ms for `PERFORMANCE`), bounding each worker's worst
+  case.
 - **Undeliverable events take the side road, not the ditch.** An
   optional fallback appender receives what Kafka refuses, fed through a
   bounded queue and its own worker thread — the Kafka I/O thread is

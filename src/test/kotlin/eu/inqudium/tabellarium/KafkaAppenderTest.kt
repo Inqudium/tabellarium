@@ -2,6 +2,7 @@ package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.Appender
 import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
@@ -18,6 +19,7 @@ import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.slf4j.MarkerFactory
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -117,6 +119,10 @@ class KafkaAppenderTest {
             // RecordingAppender without polling. Production path is async;
             // see KafkaAppender KDoc on the synchronous-flag test hook.
             this.useSynchronousFallbackForTests = true
+            // Synchronous send dispatch for the same reason: most tests
+            // assert producer history right after doAppend. The tests of
+            // the asynchronous path itself override this to false.
+            this.useSynchronousSendForTests = true
             // The fallback slot is filled via addAppender (the same path
             // Joran's AppenderRefAction takes for <appender-ref>).
             fallback?.let { addAppender(it) }
@@ -1267,6 +1273,188 @@ class KafkaAppenderTest {
             appender.stop()
             assertThat(factory.createdProducers).allSatisfy { producer ->
                 assertThat(producer.closed()).isTrue()
+            }
+        }
+    }
+
+    @Nested
+    inner class `Asynchronous send dispatch` {
+        /**
+         * Factory whose producers park every send() on a latch until
+         * released - modelling producer.send blocked in max.block.ms.
+         * [blockedClasses] restricts the blocking to specific topic
+         * classes (matched via the derived client.id); other classes
+         * get plain auto-completing MockProducers.
+         */
+        private inner class BlockingProducerFactory(
+            private val blockedClasses: Set<String> = setOf("audit", "functional", "technical", "performance"),
+        ) : ProducerFactory {
+            val release = CountDownLatch(1)
+            val sendEntered = CountDownLatch(1)
+            val producersByClientId = mutableMapOf<String, MockProducer<ByteArray, ByteArray>>()
+
+            override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
+                val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                val clientId = properties[ProducerConfig.CLIENT_ID_CONFIG].orEmpty()
+                producersByClientId[clientId] = mock
+                val blocked = blockedClasses.any { clientId.endsWith("-$it") }
+                if (!blocked) {
+                    return mock
+                }
+                return object : Producer<ByteArray, ByteArray> by mock {
+                    override fun send(
+                        record: ProducerRecord<ByteArray, ByteArray>,
+                        callback: Callback?,
+                    ): Future<RecordMetadata> {
+                        sendEntered.countDown()
+                        release.await()
+                        return mock.send(record, callback)
+                    }
+                }
+            }
+        }
+
+        @Test
+        fun `should return from doAppend while producer send is blocked`() {
+            // What is to be tested? The end-to-end H-1 guarantee: with the
+            //   production (asynchronous) dispatch, doAppend returns
+            //   immediately even while producer.send is parked - the
+            //   situation a broker outage creates for up to max.block.ms
+            //   per send.
+            // How will the test case be deemed successful and why? Successful
+            //   if a doAppend issued while the dispatcher worker is
+            //   provably inside the blocked send completes in far less
+            //   than the block duration. The latch anchors the worker, so
+            //   the assertion is deterministic, not timing-lucky.
+            // Why is it important to test this test case? This is the
+            //   missing latency assertion from finding H-3: every prior
+            //   test used an auto-completing MockProducer that never
+            //   blocks, so a synchronous send path stayed green.
+
+            // Given: an appender in PRODUCTION dispatch mode with a
+            //   producer that parks every send
+            val factory = BlockingProducerFactory()
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = factory,
+                )
+            appender.useSynchronousSendForTests = false
+            appender.start()
+            try {
+                // When: the first event parks the worker in the send
+                appender.doAppend(newTestLoggingEvent(message = "first"))
+                assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // And: a second append while the send is parked
+                val startNanos = System.nanoTime()
+                appender.doAppend(newTestLoggingEvent(message = "second"))
+                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+
+                // Then: the caller was not made to wait
+                assertThat(elapsedMs).isLessThan(200)
+            } finally {
+                factory.release.countDown()
+                appender.stop()
+            }
+        }
+
+        @Test
+        fun `should keep delivering technical events while an audit send is blocked`() {
+            // What is to be tested? The per-class isolation of the send
+            //   dispatchers: a blocked AUDIT producer (stuck broker for
+            //   that class) must not delay TECHNICAL delivery - the same
+            //   isolation the per-class producers and breakers promise.
+            // How will the test case be deemed successful and why? Successful
+            //   if, while the AUDIT worker is provably parked in its send,
+            //   TECHNICAL events still reach their producer.
+            // Why is it important to test this test case? With a single
+            //   shared worker, one stuck class would stall all logging
+            //   until its breaker opens (~10 x max.block.ms); the
+            //   per-class split is what bounds the blast radius.
+
+            // Given: AUDIT blocked, TECHNICAL free
+            val factory = BlockingProducerFactory(blockedClasses = setOf("audit"))
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = factory,
+                )
+            appender.useSynchronousSendForTests = false
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
+            appender.start()
+            try {
+                // When: an AUDIT event parks its worker
+                appender.doAppend(
+                    (newTestLoggingEvent(message = "audit-event") as LoggingEvent)
+                        .apply { addMarker(MarkerFactory.getDetachedMarker("SECURITY")) },
+                )
+                assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // And: TECHNICAL events keep flowing
+                repeat(3) { i ->
+                    appender.doAppend(newTestLoggingEvent(message = "technical-$i"))
+                }
+
+                // Then: the technical producer received them all
+                val technicalProducer =
+                    factory.producersByClientId.entries
+                        .single { it.key.endsWith("-technical") }
+                        .value
+                pollUntil { technicalProducer.history().size == 3 }
+            } finally {
+                factory.release.countDown()
+                appender.stop()
+            }
+        }
+
+        @Test
+        fun `should divert overflowing events to the fallback instead of blocking the caller`() {
+            // What is to be tested? The overflow policy end-to-end: a full
+            //   send queue (worker parked, capacity exhausted) diverts
+            //   further events to the fallback appender instead of
+            //   blocking the logging thread.
+            // How will the test case be deemed successful and why? Successful
+            //   if with capacity 1 and a parked worker the surplus events
+            //   arrive in the (synchronous) fallback recorder while
+            //   doAppend keeps returning immediately.
+            // Why is it important to test this test case? The bounded
+            //   queue is what makes the never-blocking promise safe; the
+            //   fallback diversion is what keeps it loss-visible.
+
+            // Given
+            val factory = BlockingProducerFactory()
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = factory,
+                    fallback = fallback,
+                )
+            appender.useSynchronousSendForTests = false
+            appender.sendQueueCapacity = 1
+            appender.start()
+            try {
+                // When: first event parks the worker, second fills the
+                //   queue, the rest overflow
+                appender.doAppend(newTestLoggingEvent(message = "in-flight"))
+                assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+                appender.doAppend(newTestLoggingEvent(message = "queued"))
+                appender.doAppend(newTestLoggingEvent(message = "overflow-1"))
+                appender.doAppend(newTestLoggingEvent(message = "overflow-2"))
+
+                // Then: the overflow events reached the fallback
+                assertThat(fallback.events.map { it.formattedMessage })
+                    .containsExactly("overflow-1", "overflow-2")
+            } finally {
+                factory.release.countDown()
+                appender.stop()
             }
         }
     }

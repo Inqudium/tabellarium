@@ -111,6 +111,12 @@ class ResilientMessageSenderTest {
             capacity: Int,
         ) = Unit
 
+        override fun registerSendQueueGauges(
+            topicClass: TopicClass,
+            queueSize: () -> Int,
+            capacity: Int,
+        ) = Unit
+
         fun kinds(): List<String> = synchronized(events) { events.map { it.kind } }
     }
 

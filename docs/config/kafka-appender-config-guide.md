@@ -66,6 +66,7 @@ Joran binds each to a setter of the matching name on the appender.
 | `<component>`               |   yes    | `String` (trimmed, non-blank)          | Service component id (e.g. `spring.application.name`). Emitted as the `meta.component` header. |
 | `<cmdbId>`                  |   yes    | `String` (trimmed, non-blank)          | CMDB identifier of the deploying instance. Emitted as the `meta.cmdbId` header. |
 | `<debug>`                   |    no    | `Boolean` (default `false`)            | Startup diagnostics only — **no per-event effect**. See below. |
+| `<sendQueueCapacity>`       |    no    | `Int` (default `1024`, must be > 0)    | Capacity of each per-topic-class send queue — the bounded hand-off between logging threads and the worker that performs `producer.send`. Overflow diverts to the fallback (reason `queue.full`) instead of blocking. |
 | `<appender-ref ref="…"/>`   |    no    | fallback `Appender<ILoggingEvent>`     | Single fallback slot; first registration wins. See [§7](#7-resilience-circuit-breaker-throttle-fallback). |
 
 ¹ `<kafkaProducerProperties>` may technically be omitted, but a producer
@@ -567,11 +568,16 @@ producer fails to construct, the already-created ones are closed and the
 exception is rethrown — the registry is never partially initialized, and
 `start()` reports the failure via `addError`.
 
-At `stop()` every producer is closed with a **10 s** default timeout. A
-per-producer close failure does not prevent the others from closing (partial
-cleanup beats none). The worst-case total close time is `N × 10s` for `N`
-active classes — for the typical 1–2 active classes this fits comfortably
-inside the Kubernetes default `terminationGracePeriodSeconds: 30`.
+At `stop()` the send dispatchers are closed first: each drains its queue
+by still sending through the open producers (budget **1 s** per class);
+whatever cannot be sent in time diverts to the fallback appender with
+metric reason `shutdown`. Then every producer is closed **in parallel**
+within a **10 s** overall budget. A per-producer close failure does not
+prevent the others from closing (partial cleanup beats none); failures
+are aggregated and surfaced as a status warning. The parallel close
+keeps the total well inside the Kubernetes default
+`terminationGracePeriodSeconds: 30` regardless of how many classes are
+active.
 
 ### Interaction with `delivery.timeout.ms`
 
@@ -640,11 +646,13 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | `kafka.appender.fallback.dropped`          | Counter | —                         | Events dropped by the dispatcher (queue full / shutdown timeout). |
 | `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape). |
 | `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity. |
+| `kafka.appender.send.queue.size`           | Gauge   | `topic.class`             | Current send-dispatcher queue depth for the class. |
+| `kafka.appender.send.queue.capacity`       | Gauge   | `topic.class`             | Fixed send queue capacity. |
 
 Tag values: `topic.class` ∈ {`audit`, `functional`, `technical`,
 `performance`}; `reason` ∈ {`breaker.open`, `throttle`, `send.error`,
-`encoder.error`}; `outcome` ∈ {`success`, `error`}. Worst case ≈ 35 series
-per appender instance.
+`encoder.error`, `queue.full`, `shutdown`}; `outcome` ∈ {`success`,
+`error`}. Worst case ≈ 51 series per appender instance.
 
 ### Additional bindings
 
@@ -708,26 +716,25 @@ startup diagnostics.
 
 ## 11. Wrapping in an AsyncAppender
 
-In production, wrap the appender in a Logback `AsyncAppender` to decouple
-application threads from Kafka producer back-pressure:
+**Not needed.** The appender ships its own asynchronous layer: each
+topic class has a bounded send queue and a dedicated worker thread that
+performs `producer.send`, so the logging caller only routes, encodes and
+enqueues in O(1) — see `<sendQueueCapacity>` in [§2](#2-xml-element-reference)
+and the discussion in the README. Attach the `KafkaAppender` directly:
 
 ```xml
-<appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
-    <appender-ref ref="KAFKA"/>
-    <queueSize>1024</queueSize>
-    <discardingThreshold>0</discardingThreshold>
-    <neverBlock>true</neverBlock>
-</appender>
-
 <root level="INFO">
-    <appender-ref ref="ASYNC_KAFKA"/>
+    <appender-ref ref="KAFKA"/>
 </root>
 ```
 
-`AsyncAppender` is part of Logback core; this module deliberately does not
-provide its own async layer so operators tune queue size and discard policy
-to their environment. The metrics binding recurses through the
-`AsyncAppender`, so the wrapped `KafkaAppender` is still discovered and bound.
+Wrapping it in a `ch.qos.logback.classic.AsyncAppender` anyway adds an
+extra thread, an extra queue and — with the default
+`discardingThreshold` — silent INFO/DEBUG loss that bypasses the
+fallback appender and its loss accounting. If you do wrap it (e.g. for
+organisational conventions), the metrics binding still recurses through
+the `AsyncAppender`, so the wrapped `KafkaAppender` is discovered and
+bound.
 
 ---
 
@@ -746,6 +753,8 @@ to their environment. The metrics binding recurses through the
 | Circuit breaker: open-state wait             | `30s`                            | code |
 | Circuit breaker: half-open permitted calls   | `10`                             | code |
 | Half-open probe gap                          | `5 ms`                           | code |
+| Send dispatcher queue capacity (per class)   | `1024`                           | XML (`<sendQueueCapacity>`) |
+| Send dispatcher drain timeout on stop        | `1 s`                            | code |
 | Fallback dispatcher queue capacity           | `1024`                           | code |
 | Fallback dispatcher shutdown timeout         | `5 s`                            | code |
 | Producer close timeout                       | `10 s`                           | code |

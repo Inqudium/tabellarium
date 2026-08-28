@@ -19,8 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * This is the orchestrator: it wires together the individual components
  * ([TopicRouter], [TopicTable], [MessageEnricher], [ProducerRegistry],
- * [ResilientMessageSender]), exposes the XML configuration
- * surface to Joran, and runs the per-event hot path.
+ * [SendDispatcher], [ResilientMessageSender]), exposes the XML
+ * configuration surface to Joran, and runs the per-event hot path.
  *
  * ## Configuration surface
  *
@@ -55,17 +55,24 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   manager. Misconfiguration causes `addError` plus refusal to start;
  *   the appender stays `isStarted=false` and downstream `doAppend` calls
  *   are no-ops.
- * - **[append]** runs the hot path on the caller's thread (typically a
- *   Logback `AsyncAppender` worker, given how AppenderBase is normally
- *   used). No synchronization, no per-event allocation outside what
- *   the encoder and sender already require. Hot-path exceptions are
- *   logged **once** (via [AtomicBoolean]-guarded `addError`) and route
- *   to [fallbackAppender] if configured; subsequent errors are
+ * - **[append]** runs only CPU-bound work on the caller's thread:
+ *   routing, encoding, enrichment. The potentially-blocking
+ *   `producer.send` (up to the per-class `max.block.ms` cap while
+ *   Kafka metadata or buffer space is missing) happens on a
+ *   per-topic-class [SendDispatcher] worker - the caller enqueues in
+ *   O(1) and returns; a full queue diverts to the fallback instead of
+ *   blocking. No synchronization, no per-event allocation outside
+ *   what the encoder and sender already require. Hot-path exceptions
+ *   are logged **once** (via [AtomicBoolean]-guarded `addError`) and
+ *   route to [fallbackAppender] if configured; subsequent errors are
  *   suppressed to prevent log storms.
- * - **[stop]** closes the [ProducerRegistry] with its configured
- *   timeout, stops the encoder, and completes via `super.stop()`.
- *   Per-resource close failures are recorded as warnings but do not
- *   prevent the rest of the shutdown sequence.
+ * - **[stop]** first closes the [SendDispatcher]s (their drain still
+ *   sends through the open producers; the remainder diverts to the
+ *   fallback), then the [ProducerRegistry] with its configured
+ *   timeout, then the fallback dispatcher, stops the encoder, and
+ *   completes via `super.stop()`. Per-resource close failures are
+ *   recorded as warnings but do not prevent the rest of the shutdown
+ *   sequence.
  *
  * ## Why UnsynchronizedAppenderBase
  *
@@ -150,11 +157,31 @@ class KafkaAppender :
         ResilientMessageSender.defaultCircuitBreakerRegistry()
 
     /**
+     * Capacity of each per-topic-class [SendDispatcher] queue - the
+     * bounded hand-off between the logging caller and the worker that
+     * performs `producer.send`. Configurable via
+     * `<sendQueueCapacity>` in the XML. When the queue is full, events
+     * divert to the fallback (reason `queue.full`) instead of blocking
+     * the caller.
+     */
+    var sendQueueCapacity: Int = SendDispatcher.DEFAULT_QUEUE_CAPACITY
+
+    /**
      * Test-only hook. When true, [FallbackDispatcher] runs in
      * synchronous mode so test assertions on the fallback appender
      * do not need to poll. Must remain false in production.
      */
     internal var useSynchronousFallbackForTests: Boolean = false
+
+    /**
+     * Test-only hook. When true, each [SendDispatcher] runs in
+     * synchronous mode - `producer.send` happens inline on the caller,
+     * as it did before the asynchronous dispatch existed - so tests can
+     * assert producer state right after `doAppend` without polling.
+     * Must remain false in production: synchronous mode re-introduces
+     * the caller-thread blocking the dispatcher exists to prevent.
+     */
+    internal var useSynchronousSendForTests: Boolean = false
 
     // -- Pipeline state, built in start() -------------------------------
 
@@ -163,6 +190,14 @@ class KafkaAppender :
     private lateinit var messageEnricher: MessageEnricher
     private lateinit var producerRegistry: ProducerRegistry
     private lateinit var messageSender: ResilientMessageSender
+
+    /**
+     * One asynchronous send hand-off per active topic class - the
+     * component that keeps `producer.send` off the logging caller's
+     * thread. Built in [buildPipeline], closed FIRST in [stop] (before
+     * the producer registry, so the drain can still send).
+     */
+    private var sendDispatchers: Map<TopicClass, SendDispatcher> = emptyMap()
 
     /**
      * Asynchronous dispatcher between the Kafka callback / synchronous
@@ -307,6 +342,10 @@ class KafkaAppender :
             addError("<environment> must not be blank")
             ok = false
         }
+        if (sendQueueCapacity <= 0) {
+            addError("<sendQueueCapacity> must be positive (was $sendQueueCapacity)")
+            ok = false
+        }
         return ok
     }
 
@@ -344,6 +383,24 @@ class KafkaAppender :
                 circuitBreakerRegistry = circuitBreakerRegistry,
                 fallbackDispatcher = fallbackDispatcher,
             )
+        // One send dispatcher per active class: producer.send runs on
+        // the dispatcher's worker, never on the logging caller. The
+        // per-class split mirrors the producer/breaker isolation - a
+        // stalled AUDIT send cannot delay TECHNICAL delivery.
+        val sender = messageSender
+        sendDispatchers =
+            producerRegistry.activeTopicClasses.associateWith { topicClass ->
+                SendDispatcher(
+                    topicClass = topicClass,
+                    sendAction = { pending ->
+                        sender.send(topicClass, pending.topicName, pending.payload, pending.enrichment, pending.originalEvent)
+                    },
+                    fallbackDispatcher = fallbackDispatcher,
+                    reentryGuard = inAppend,
+                    queueCapacity = sendQueueCapacity,
+                    synchronous = useSynchronousSendForTests,
+                )
+            }
     }
 
     /**
@@ -475,7 +532,10 @@ class KafkaAppender :
             topicClassForFailure = topicClass
             m.eventAccepted(topicClass)
             val enrichment = messageEnricher.enrich(event)
-            messageSender.send(topicClass, topicName, payload, enrichment, event)
+            // Hand-off point: everything up to here was CPU-bound work
+            // on the caller; the potentially-blocking producer.send
+            // happens on the dispatcher's worker thread.
+            sendDispatchers.getValue(topicClass).dispatch(topicName, payload, enrichment, event)
         } catch (e: Exception) {
             // Hot-path failure (encoder bug, OOM, etc. - should be rare).
             // Log the first occurrence so operators notice, then suppress
@@ -516,6 +576,18 @@ class KafkaAppender :
         }
         metricsBindings.unbind()
         metrics = KafkaAppenderMetrics.NO_OP
+        // Close the send dispatchers BEFORE the producer registry: their
+        // graceful drain delivers the queued events through the still-
+        // open producers; whatever cannot be sent in time diverts to the
+        // fallback dispatcher (which closes later for exactly that
+        // reason).
+        sendDispatchers.values.forEach { dispatcher ->
+            try {
+                dispatcher.close()
+            } catch (e: Exception) {
+                addWarn("Error closing send dispatcher: ${e.message}", e)
+            }
+        }
         if (this::producerRegistry.isInitialized) {
             try {
                 producerRegistry.close()
@@ -613,6 +685,7 @@ class KafkaAppender :
             )
         metrics = impl
         messageSender.setMetrics(impl)
+        sendDispatchers.values.forEach { it.setMetrics(impl) }
         fallbackDispatcher?.setMetrics(impl)
     }
 

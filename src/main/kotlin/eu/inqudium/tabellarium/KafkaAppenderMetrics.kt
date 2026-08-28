@@ -97,6 +97,19 @@ interface KafkaAppenderMetrics {
     )
 
     /**
+     * Called once per active topic class when a [SendDispatcher] is
+     * wired to this metrics instance, to register gauges reporting the
+     * send queue's current depth and capacity. Same contract as
+     * [registerFallbackQueueGauges]: the [queueSize] supplier is read
+     * on each scrape and must be cheap and non-blocking.
+     */
+    fun registerSendQueueGauges(
+        topicClass: TopicClass,
+        queueSize: () -> Int,
+        capacity: Int,
+    )
+
+    /**
      * Reasons a single event was diverted from Kafka delivery (to the
      * fallback appender when configured, otherwise dropped).
      */
@@ -115,6 +128,12 @@ interface KafkaAppenderMetrics {
 
         /** Hot-path exception before send was even attempted (encoder, routing, OOM). */
         ENCODER_ERROR("encoder.error"),
+
+        /** The [SendDispatcher] queue was full - Kafka delivery is not keeping up. */
+        QUEUE_FULL("queue.full"),
+
+        /** Event was still queued or in flight in the [SendDispatcher] when the appender shut down. */
+        SHUTDOWN("shutdown"),
     }
 
     /** Outcome of a single producer.send() callback. */
@@ -162,6 +181,12 @@ private object NoOpKafkaAppenderMetrics : KafkaAppenderMetrics {
     override fun fallbackDispatcherDropped() = Unit
 
     override fun registerFallbackQueueGauges(
+        queueSize: () -> Int,
+        capacity: Int,
+    ) = Unit
+
+    override fun registerSendQueueGauges(
+        topicClass: TopicClass,
         queueSize: () -> Int,
         capacity: Int,
     ) = Unit

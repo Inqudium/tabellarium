@@ -19,10 +19,12 @@ Alle Metriken tragen den `appender`-Tag, der den Logback-Appender-Namen widerspi
 
 ### Gauges
 
-| Metrik                                   | Tags       | Was zeigt es                                                 |
-| ---------------------------------------- | ---------- | ------------------------------------------------------------ |
-| `kafka.appender.fallback.queue.size`     | `appender` | Aktuelle Tiefe der FallbackDispatcher-Queue (live pro Scrape) |
-| `kafka.appender.fallback.queue.capacity` | `appender` | Maximale Tiefe der Queue (konstant)                          |
+| Metrik                                   | Tags                      | Was zeigt es                                                 |
+| ---------------------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `kafka.appender.fallback.queue.size`     | `appender`                | Aktuelle Tiefe der FallbackDispatcher-Queue (live pro Scrape) |
+| `kafka.appender.fallback.queue.capacity` | `appender`                | Maximale Tiefe der Queue (konstant)                          |
+| `kafka.appender.send.queue.size`         | `appender`, `topic.class` | Aktuelle Tiefe der SendDispatcher-Queue der Klasse (live pro Scrape) |
+| `kafka.appender.send.queue.capacity`     | `appender`, `topic.class` | Maximale Tiefe der SendDispatcher-Queue (konstant)           |
 
 ## Tag-Werte
 
@@ -42,7 +44,7 @@ Alle Metriken tragen den `appender`-Tag, der den Logback-Appender-Namen widerspi
 | `technical`   | Events für `TopicClass.TECHNICAL` (Default für unklassifizierte Events) |
 | `performance` | Events für `TopicClass.PERFORMANCE`                          |
 
-### `reason` — 4 mögliche Werte (nur bei `events.fallback`)
+### `reason` — 6 mögliche Werte (nur bei `events.fallback`)
 
 | Wert            | Bedeutung                                                    |
 | --------------- | ------------------------------------------------------------ |
@@ -50,6 +52,8 @@ Alle Metriken tragen den `appender`-Tag, der den Logback-Appender-Namen widerspi
 | `throttle`      | Half-Open-Throttle: Probe-Gap noch nicht verstrichen         |
 | `send.error`    | `producer.send()` warf synchron oder Callback meldete Exception |
 | `encoder.error` | Hot-Path-Exception vor `send()` (Encoder, Routing, OOM)      |
+| `queue.full`    | SendDispatcher-Queue der Klasse war voll — Kafka-Delivery kommt nicht hinterher |
+| `shutdown`      | Event war beim Appender-Stop noch in der SendDispatcher-Queue oder in Zustellung |
 
 ### `outcome` — 2 mögliche Werte (nur bei `send.duration`)
 
@@ -81,12 +85,14 @@ Diese erscheinen dann zusätzlich zu den per-Metrik-Tags an allen oben genannten
 | ------------------------- | ------------------------------------- |
 | `events.accepted`         | 4 (eine pro `topic.class`)            |
 | `events.dispatched`       | 4                                     |
-| `events.fallback`         | 16 (4 × 4 = `topic.class` × `reason`) |
+| `events.fallback`         | 24 (4 × 6 = `topic.class` × `reason`) |
 | `send.duration`           | 8 (4 × 2 = `topic.class` × `outcome`) |
 | `fallback.dropped`        | 1                                     |
 | `fallback.queue.size`     | 1                                     |
 | `fallback.queue.capacity` | 1                                     |
-| **Gesamt**                | **35**                                |
+| `send.queue.size`         | 4 (eine pro aktiver `topic.class`)    |
+| `send.queue.capacity`     | 4                                     |
+| **Gesamt**                | **51**                                |
 
 Multipliziert mit dem `appender`-Tag (im Default-Fall 1 Wert) und der Common-Tags-Cardinality (typisch 1, weil pro Service konstant).
 

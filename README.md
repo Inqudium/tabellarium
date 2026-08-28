@@ -29,11 +29,14 @@ configuration guide, metrics overview, and Grafana dashboards.
 ### Delivery
 
 - **The sender is never made to wait.** The hot path takes no lock
-  (`UnsynchronizedAppenderBase`, atomics only), so it neither pins carrier
-  threads on virtual threads nor stalls a Reactor event loop. `max.block.ms`
-  is capped per class (500 ms; 200 ms for `PERFORMANCE`) - operators may
-  tighten the bound but not raise it - bounding the worst case even when
-  the producer buffer is full.
+  (`UnsynchronizedAppenderBase`, atomics only) and never calls
+  `producer.send` itself: the caller only routes, encodes and enriches,
+  then hands the record to a bounded per-topic-class send queue in O(1).
+  A dedicated worker per class performs the send, so a stalled broker
+  neither pins carrier threads on virtual threads nor stalls a Reactor
+  event loop - and a stuck `AUDIT` route never delays `TECHNICAL`
+  delivery. `max.block.ms` is additionally capped per class (500 ms;
+  200 ms for `PERFORMANCE`), bounding each worker's worst case.
 - **Undeliverable events take the side road, not the ditch.** An optional
   fallback appender receives what Kafka refuses, fed through a bounded
   queue and its own worker thread — the Kafka I/O thread is never blocked
@@ -285,25 +288,30 @@ counterproductive.
 ### Why it is not needed
 
 `AsyncAppender` exists to absorb caller-thread blocking. This module
-already mitigates caller-thread blocking through three layered
-defenses:
+eliminates caller-thread blocking through four layered defenses:
 
-1. **`max.block.ms` is capped at 500 ms** per topic class (200 ms for
+1. **`producer.send` never runs on the caller.** Each topic class has
+   its own bounded send queue and worker thread (`SendDispatcher`);
+   the logging thread only routes, encodes, enriches and enqueues in
+   O(1). A full queue diverts to the fallback (metric reason
+   `queue.full`) instead of blocking.
+2. **`max.block.ms` is capped at 500 ms** per topic class (200 ms for
    `PERFORMANCE`). The cap is enforced: a lower operator value wins, a
-   higher one is clamped with a startup warning. Worst-case block per
-   `send()` is bounded at half a second.
-2. **The circuit breaker trips after ~10 failures** (50% failure rate
+   higher one is clamped with a startup warning. It bounds how long a
+   send *worker* can be held per event.
+3. **The circuit breaker trips after ~10 failures** (50% failure rate
    in a 20-call sliding window). Once open, subsequent events are
    routed to the fallback in O(1).
-3. **The fallback uses an asynchronous `FallbackDispatcher`** — a
+4. **The fallback uses an asynchronous `FallbackDispatcher`** — a
    bounded queue with its own daemon worker, so the Kafka I/O thread
-   and the application threads are never held hostage by a slow
-   fallback appender (e.g. a `FileAppender` on saturated disk).
+   and the send workers are never held hostage by a slow fallback
+   appender (e.g. a `FileAppender` on saturated disk).
 
-Cumulative worst case for a service whose Kafka cluster has just gone
-down: ~10 events × 500 ms = 5 seconds of total caller-thread latency
-spread across however many threads are logging, after which the
-breaker is open and every event takes microseconds again.
+Worst case for a service whose Kafka cluster has just gone down:
+caller threads keep logging in microseconds; each class's send worker
+absorbs at most `max.block.ms` per event until its breaker opens
+(~10 × 500 ms = 5 s, on the worker, not on your request threads),
+and queue overflow flows to the fallback, counted.
 
 ### Why wrapping in `AsyncAppender` now hurts
 
@@ -514,14 +522,16 @@ Micrometer on the classpath and emits no metrics until
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost because the fallback dispatcher queue was full    |
 | `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue                |
 | `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue                |
+| `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     | Current depth of the class's send dispatcher queue            |
+| `kafka.appender.send.queue.capacity`     | Gauge   | `topic.class`                     | Maximum depth of the class's send dispatcher queue            |
 
 `reason` values: `breaker.open`, `throttle`, `send.error`,
-`encoder.error`.
+`encoder.error`, `queue.full`, `shutdown`.
 `outcome` values: `success`, `error`.
 `topic.class` values: `audit`, `functional`, `technical`,
 `performance`.
 
-Cardinality budget per appender instance: ~35 time series.
+Cardinality budget per appender instance: ~51 time series.
 At 100 microservices in a shared Prometheus this is ~3 500 series —
 well within the default cardinality budget.
 
