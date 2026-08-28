@@ -9,6 +9,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
+import org.apache.kafka.clients.CommonClientConfigs
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -224,13 +225,31 @@ class KafkaAppender :
         try {
             buildPipeline()
         } catch (e: Exception) {
-            addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
+            // The exception text originates in the Kafka client and is
+            // built from credential-bearing configuration. Kafka masks
+            // Password-typed values in its own output, but that text is
+            // not under this appender's control - so the default path
+            // reports only the exception type, and the message plus the
+            // stack trace stay behind <debug>. See SECURITY.md on
+            // credential leakage through status output.
+            if (debug) {
+                addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
+            } else {
+                addError(
+                    "Failed to build KafkaAppender pipeline (${e.javaClass.name}). " +
+                        "Set <debug>true</debug> to include the cause and stack trace; " +
+                        "the details are withheld here because they may echo producer " +
+                        "configuration values.",
+                )
+            }
             return
         }
 
         producerRegistry.mandatoryOverrideViolations.forEach { violation ->
             addWarn(buildViolationMessage(violation))
         }
+
+        warnOnCleartextTransportForGradedClasses()
 
         if (debug) {
             emitDebugDiagnostics()
@@ -307,6 +326,43 @@ class KafkaAppender :
      * unusable, so anything else in the component name is mapped to '-'.
      */
     private fun jmxSafe(value: String): String = value.replace(Regex("[^a-zA-Z0-9._-]"), "-")
+
+    /**
+     * Warns when a compliance-graded topic class ships over cleartext.
+     *
+     * The appender enforces durability for AUDIT/FUNCTIONAL through
+     * mandatory overrides and says so loudly when an operator value is
+     * overruled. Transport confidentiality is the operator's decision -
+     * forcing TLS here would over-reach, and the appender has no way to
+     * supply certificates - but staying silent about it would be
+     * inconsistent: audit-grade records traversing the network in the
+     * clear are readable and tamperable by anyone on the path. So the
+     * gap is closed with a signal, not with enforcement.
+     *
+     * Kafka's own default for `security.protocol` is `PLAINTEXT`, so an
+     * absent setting is treated exactly like an explicit one.
+     */
+    private fun warnOnCleartextTransportForGradedClasses() {
+        val gradedClasses =
+            producerRegistry.activeTopicClasses
+                .filter { it.mandatoryOverrides.isNotEmpty() }
+                .filter { topicClass ->
+                    val protocol =
+                        producerRegistry.effectiveProperties
+                            .getValue(topicClass)[CommonClientConfigs.SECURITY_PROTOCOL_CONFIG]
+                            ?.trim()
+                    protocol == null || protocol.equals(CLEARTEXT_SECURITY_PROTOCOL, ignoreCase = true)
+                }
+        if (gradedClasses.isEmpty()) return
+        addWarn(
+            "Compliance-graded topic class(es) ${gradedClasses.joinToString()} are configured " +
+                "for cleartext transport (${CommonClientConfigs.SECURITY_PROTOCOL_CONFIG} is unset " +
+                "or $CLEARTEXT_SECURITY_PROTOCOL). Their records are enforced to be durable " +
+                "(acks/idempotence) but travel unencrypted and unauthenticated - anyone on the " +
+                "network path can read or tamper with them. Configure SSL or SASL_SSL in " +
+                "<kafkaProducerProperties> unless the transport is secured below the application.",
+        )
+    }
 
     private fun buildViolationMessage(violation: MandatoryOverrideViolation): String =
         "Mandatory override applied for ${violation.topicClass}: " +
@@ -586,5 +642,8 @@ class KafkaAppender :
          * `org.apache.kafka.clients.producer.KafkaProducer` (NETWORK_THREAD_PREFIX).
          */
         private const val PRODUCER_NETWORK_THREAD_PREFIX = "kafka-producer-network-thread | "
+
+        /** Kafka's cleartext security protocol - also its default when unset. */
+        private const val CLEARTEXT_SECURITY_PROTOCOL = "PLAINTEXT"
     }
 }

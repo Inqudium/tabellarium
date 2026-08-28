@@ -252,6 +252,41 @@ class MessageEnricherTest {
         }
 
         @Test
+        fun `should treat an over-long traceId in the MDC as no key`() {
+            // What is to be tested? Whether a trace id beyond
+            //   MAX_PARTITIONING_KEY_LENGTH is treated as absent. The MDC is
+            //   attacker-influenced whenever the application bridges an
+            //   inbound header into it, and the value becomes the Kafka
+            //   record key verbatim.
+            // How will the test case be deemed successful and why? Successful
+            //   if a key of MAX+1 characters produces a null partitioning
+            //   key while one of exactly MAX passes through unchanged - the
+            //   boundary is asserted from both sides.
+            // Why is it important to test this test case? Without the bound,
+            //   an oversized inbound header inflates every record past
+            //   max.request.size; the resulting RecordTooLargeException is
+            //   deliberately ignored by the circuit breaker, so the breaker
+            //   never opens and every such event floods the fallback
+            //   appender indefinitely.
+
+            // Given
+            val enricher = newEnricher()
+            val atLimit = "a".repeat(MessageEnricher.MAX_PARTITIONING_KEY_LENGTH)
+            val overLimit = "a".repeat(MessageEnricher.MAX_PARTITIONING_KEY_LENGTH + 1)
+
+            // When / Then: at the limit the key is used
+            assertThat(
+                enricher.enrich(newTestLoggingEvent(mdc = mapOf("traceId" to atLimit))).partitioningKey,
+            ).isEqualTo(atLimit)
+
+            // And: one character beyond, it is dropped entirely (not truncated -
+            //   a truncated prefix would still be attacker-chosen)
+            assertThat(
+                enricher.enrich(newTestLoggingEvent(mdc = mapOf("traceId" to overLimit))).partitioningKey,
+            ).isNull()
+        }
+
+        @Test
         fun `should treat a blank traceId in the MDC as no key`() {
             // What is to be tested? Whether the default extractor distinguishes
             //   between a missing key and a present-but-blank key, and treats
@@ -299,6 +334,30 @@ class MessageEnricherTest {
 
             // When
             val result = enricher.enrich(event)
+
+            // Then
+            assertThat(result.partitioningKey).isNull()
+        }
+
+        @Test
+        fun `should treat an over-long key returned by the custom extractor as no key`() {
+            // What is to be tested? Whether the length bound is enforced
+            //   centrally in enrich(), so it also covers custom extractors -
+            //   not just the default MDC one.
+            // How will the test case be deemed successful and why? Successful
+            //   if an extractor returning MAX+1 characters yields a null
+            //   partitioning key. The bound has to sit at the central
+            //   normalization point; enforcing it only in the default
+            //   extractor would leave the custom path unbounded.
+            // Why is it important to test this test case? A custom extractor
+            //   reading, say, a user-supplied header is exactly the case
+            //   where the value is attacker-influenced.
+
+            // Given
+            val enricher = newEnricherWith { "x".repeat(MessageEnricher.MAX_PARTITIONING_KEY_LENGTH + 1) }
+
+            // When
+            val result = enricher.enrich(newTestLoggingEvent())
 
             // Then
             assertThat(result.partitioningKey).isNull()

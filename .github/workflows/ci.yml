@@ -6,14 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege, stated explicitly rather than inherited from the
+# repository default (which an admin setting could widen for a workflow
+# that also runs on fork pull requests).
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Actions are pinned to commit SHAs, not to mutable tags: a retagged
+      # or compromised release would otherwise execute here with the
+      # workflow token. Dependabot (github-actions ecosystem) proposes the
+      # bumps and keeps the trailing version comment in sync.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
         with:
           distribution: temurin
           java-version: 21

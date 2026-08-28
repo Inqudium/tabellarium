@@ -59,7 +59,7 @@ Joran binds each to a setter of the matching name on the appender.
 
 | Element                     | Required | Type / binding                         | Notes |
 | --------------------------- | :------: | -------------------------------------- | ----- |
-| `<encoder>`                 |   yes    | `Encoder<ILoggingEvent>`               | Standard Logback encoder. `LogstashEncoder` recommended for JSON. Started by the appender at `start()`. |
+| `<encoder>`                 |   yes    | `Encoder<ILoggingEvent>`               | Standard Logback encoder. `LogstashEncoder` recommended — for parseability **and** for log-forging resistance, see below. Started by the appender at `start()`. |
 | `<kafkaProducerProperties>` |   yes¹   | raw multi-line text                    | `.properties`-style Kafka producer config. See [§3](#3-kafka-producer-properties). |
 | `<topicMapping>`            |   yes    | nested `TopicMappingConfig`            | Contains `<defaultTopic>`, an optional `<defaultTopicClass>`, and any number of `<mapping>` elements. See [§5](#5-topic-routing). |
 | `<environment>`             |   yes    | `String` (trimmed, non-blank)          | Deployment environment (`prod`, `staging`, …). Emitted as the `meta.environment` header. |
@@ -93,8 +93,32 @@ linger.ms=50, max.block.ms=500
 
 Your own values are deliberately **not repeated** (a value you set
 yourself — including any credential — never appears in this output; the
-line is a diff against your base properties). The flag has no per-event
-effect. Leave it unset or `false` in new deployments.
+line is a diff against your base properties). The flag additionally
+unlocks the full cause and stack trace of a pipeline-construction failure,
+which is withheld by default
+([§10](#10-startup-validation-and-failure-behavior)). It has no per-event
+effect. Leave it unset or `false` in new deployments, and enable it
+temporarily when diagnosing a startup problem.
+
+### Why the encoder choice is a security decision
+
+The appender is encoder-agnostic: it ships the encoder's bytes verbatim as
+the record value and neither inspects nor neutralizes them. That makes the
+encoder the component which decides whether attacker-influenced message
+text can break out of its field:
+
+- With a **JSON encoder** (`LogstashEncoder`), message text, MDC values and
+  stack traces are JSON-escaped. A newline or a fabricated `"level":"INFO"`
+  inside a user-supplied string stays a *value* — it cannot become a
+  separate record or a forged field.
+- With a **line-oriented encoder** (`PatternLayoutEncoder`), a CRLF
+  sequence in attacker-influenced text produces what looks downstream like
+  additional log records (CWE-117, log forging), which poisons log
+  analysis, dashboards and alerting rules built on that topic.
+
+If a line-oriented encoder is unavoidable, neutralize the newlines at the
+encoder (Logback's `replace(…)` conversion word) rather than relying on
+callers to sanitize every log statement.
 
 ### Placeholder resolution (where the values come from)
 
@@ -400,12 +424,38 @@ startup — see
 for where they come from and for the unresolved-placeholder caveat.
 
 The **partitioning key** (the Kafka record key) is derived per event. The
-default extractor reads the MDC entry `traceId` and uses it if non-blank;
-otherwise the key is `null` and Kafka distributes the record via its
-configured partitioner (sticky-random by default). Using the trace id as the
-key keeps all records of one trace on the same partition, preserving their
-relative order. A custom extraction strategy (session id, account id, …) is
-supported at the API level but is not currently exposed through XML.
+default extractor reads the MDC entry `traceId` and uses it if non-blank
+**and at most 128 characters long**; otherwise the key is `null` and Kafka
+distributes the record via its configured partitioner (sticky-random by
+default). Using the trace id as the key keeps all records of one trace on
+the same partition, preserving their relative order. A custom extraction
+strategy (session id, account id, …) is supported at the API level but is
+not currently exposed through XML.
+
+### Why the key is length-bounded
+
+The key comes from the log event, and applications routinely bridge an
+inbound request header into the MDC — so the value can be
+attacker-influenced. Without a bound, an oversized header would inflate
+every record past `max.request.size`; the resulting
+`RecordTooLargeException` is deliberately **ignored** by the circuit
+breaker (it is a payload problem, not a broker-health problem —
+[§7](#7-resilience-circuit-breaker-throttle-fallback)), so the breaker
+would never open and every such event would be routed to the fallback
+appender indefinitely.
+
+An over-long key is therefore dropped entirely rather than truncated: a
+truncated prefix would still be attacker-chosen and would still steer the
+record onto a partition of their choosing. 128 characters is far above
+every established trace-id format (W3C `traceparent` and B3 trace ids are
+32 hex characters, a UUID is 36). The bound is applied centrally, so it
+covers custom extractors too.
+
+Note what the bound does **not** do: partition selection is key-driven by
+design, so an application that bridges unvalidated inbound values into the
+MDC can still influence distribution within the bound. Bounding the length
+is this appender's part; not trusting inbound headers is the
+application's.
 
 ---
 
@@ -616,10 +666,31 @@ appender **stopped** rather than throwing. Checked conditions:
 - Pipeline construction succeeds (`<kafkaProducerProperties>` parses,
   `<defaultTopic>` is a valid Kafka topic name, all producers construct).
 
-Mandatory-override conflicts are logged as warnings but do **not** stop the
-appender. In the hot path, an unexpected per-event failure (encoder bug, OOM)
-is logged **once** (subsequent occurrences suppressed to prevent log storms)
+Two conditions are reported as **warnings** and do *not* stop the appender:
+
+- **Mandatory-override conflicts** — a value of yours was overruled for a
+  compliance-graded class ([§4](#4-producer-property-composition)).
+- **Cleartext transport for a graded class** — a topic classified `AUDIT`
+  or `FUNCTIONAL` is served by a producer whose `security.protocol` is
+  unset or `PLAINTEXT`. Such records are enforced to be durable but travel
+  unencrypted and unauthenticated, so anyone on the network path can read
+  or tamper with them. The appender does not enforce TLS (it has no way to
+  supply certificates, and transport is the operator's decision) — it
+  signals, so the gap is a choice rather than an oversight. Configure
+  `security.protocol=SSL` or `SASL_SSL` in `<kafkaProducerProperties>`
+  unless the transport is secured below the application. Classes without
+  compliance mandates (`TECHNICAL`, `PERFORMANCE`) do not trigger this
+  warning.
+
+In the hot path, an unexpected per-event failure (encoder bug, OOM) is
+logged **once** (subsequent occurrences suppressed to prevent log storms)
 and the event is routed to the fallback.
+
+**Pipeline-construction failures report the exception type only.** The
+message and stack trace of a failing producer construction are authored by
+the Kafka client from credential-bearing configuration, so by default they
+are withheld from the status output; set `<debug>true</debug>` to include
+the full cause when diagnosing a startup problem.
 
 Inspect Logback's status output to confirm a clean start — for example add
 `<statusListener class="ch.qos.logback.core.status.OnConsoleStatusListener"/>`

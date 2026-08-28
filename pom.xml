@@ -185,11 +185,16 @@
             Used only by the tests to PARSE the encoder's emitted JSON, independent of which Jackson the
             encoder uses internally (logstash-logback-encoder 9.0 moved to Jackson 3 / tools.jackson and no
             longer exposes com.fasterxml.jackson transitively).
+
+            Deliberately test-scoped: the shipped code contains no Jackson reference at all, so putting
+            jackson-databind on consumers' runtime classpath would enlarge their attack surface (this is
+            the library with the JVM's longest deserialization-gadget CVE history) and could silently pin
+            or upgrade the Jackson version of applications that manage it themselves.
         -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <scope>compile</scope>
+            <scope>test</scope>
         </dependency>
 
         <!-- Test scope -->

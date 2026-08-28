@@ -70,6 +70,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kafka" (counted also when no fallback is configured and the event is
   dropped).
 
+### Security
+
+- The partitioning key is bounded at 128 characters; a longer value is
+  treated as absent. It originates in the MDC and can therefore be
+  attacker-influenced, and an unbounded key inflated records past
+  `max.request.size` — whose `RecordTooLargeException` the circuit
+  breaker deliberately ignores, so such events flooded the fallback
+  appender indefinitely instead of tripping the breaker.
+- A startup warning is emitted when a compliance-graded topic class
+  (`AUDIT`/`FUNCTIONAL`) is served by a producer configured for
+  cleartext transport (`security.protocol` unset or `PLAINTEXT`).
+- Pipeline-construction failures report the exception type only; the
+  Kafka-authored message and stack trace — built from credential-bearing
+  configuration — now require `<debug>true</debug>`.
+- `jackson-databind` moved to `test` scope: the shipped code contains no
+  Jackson reference, so consumers no longer inherit it on their runtime
+  classpath.
+- CI hardening: explicit least-privilege `permissions` on the CI
+  workflow, and all GitHub Actions pinned to commit SHAs instead of
+  mutable tags.
+
 ### Changed
 
 - The Micrometer bind/unbind lifecycle moved from the appender into the

@@ -40,8 +40,10 @@ import java.util.Properties
  * The default partitioning strategy is "use the MDC trace id", which fits the
  * Spring Boot + Sleuth/Micrometer Tracing setup. Callers that need a different
  * strategy (session id, user id, account id, etc.) pass a custom
- * [partitioningKeyExtractor]; the enricher applies the same blank-as-null
- * normalization to its output regardless of which extractor is configured.
+ * [partitioningKeyExtractor]; the enricher applies the same normalization
+ * to its output regardless of which extractor is configured - blank and
+ * over-long values (see [MAX_PARTITIONING_KEY_LENGTH]) both become "no
+ * key".
  *
  * @param component The service component identifier (e.g. `spring.application.name`).
  * @param cmdbId The CMDB identifier of the deploying instance.
@@ -101,12 +103,17 @@ class MessageEnricher(
      *
      * The [EnrichedRecord.headers] is the shared immutable header map computed
      * at construction time. The [EnrichedRecord.partitioningKey] is non-null
-     * only when the configured extractor returned a non-blank value.
+     * only when the configured extractor returned a non-blank value **of at
+     * most [MAX_PARTITIONING_KEY_LENGTH] characters** - see
+     * [MAX_PARTITIONING_KEY_LENGTH] for why an oversized key is treated as
+     * absent rather than truncated.
      *
      * This method does not modify [event] in any way.
      */
     fun enrich(event: ILoggingEvent): EnrichedRecord {
-        val key = partitioningKeyExtractor(event)?.takeIf { it.isNotBlank() }
+        val key =
+            partitioningKeyExtractor(event)
+                ?.takeIf { it.isNotBlank() && it.length <= MAX_PARTITIONING_KEY_LENGTH }
         return EnrichedRecord(
             partitioningKey = key,
             headers = staticHeaders,
@@ -156,6 +163,44 @@ class MessageEnricher(
 
         /** Default MDC key from which the trace id is read for partitioning. */
         const val TRACE_ID_MDC_KEY: String = "traceId"
+
+        /**
+         * Upper bound on the partitioning key, in characters. A longer
+         * value is treated as **absent** (no key), exactly like a blank
+         * one.
+         *
+         * ## Why a bound exists
+         *
+         * The key is taken from the log event (by default the MDC trace
+         * id) and becomes the Kafka record key verbatim. Applications
+         * routinely bridge an inbound request header into the MDC, so
+         * that value can be attacker-influenced. Without a bound, a
+         * multi-hundred-kilobyte header inflates every record past
+         * `max.request.size`; the resulting `RecordTooLargeException` is
+         * deliberately ignored by the circuit breaker (it is a payload
+         * problem, not a broker-health problem - see
+         * [ResilientMessageSender]), so the breaker never opens and every
+         * such event is routed to the fallback appender indefinitely.
+         *
+         * ## Why absent rather than truncated
+         *
+         * A truncated prefix would still be attacker-chosen, so it would
+         * still steer the record onto a partition of their choosing -
+         * truncation removes the inflation but keeps the steering. A
+         * missing key hands partition selection back to the producer's
+         * partitioner, which is the safe default. Note that a key within
+         * the bound is passed through unchanged: partition selection is
+         * key-driven by design, so an application that bridges
+         * unvalidated inbound values into the MDC can still influence
+         * distribution. Bounding the length is this component's part;
+         * not trusting inbound headers is the application's.
+         *
+         * 128 characters is far above every established trace-id format
+         * (W3C `traceparent` and B3 trace ids are 32 hex characters, a
+         * UUID is 36) and above any plausible session/account key used
+         * by a custom extractor.
+         */
+        const val MAX_PARTITIONING_KEY_LENGTH: Int = 128
 
         /**
          * Default partitioning key extractor: reads [TRACE_ID_MDC_KEY] from the

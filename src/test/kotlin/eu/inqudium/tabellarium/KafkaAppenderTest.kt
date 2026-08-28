@@ -7,6 +7,7 @@ import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
@@ -486,6 +487,149 @@ class KafkaAppenderTest {
             // Then
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("Mandatory override applied") }
+        }
+    }
+
+    @Nested
+    inner class `Transport security signalling` {
+        @Test
+        fun `should warn when a compliance-graded class ships over cleartext`() {
+            // What is to be tested? Whether an active AUDIT class combined
+            //   with an unset (i.e. PLAINTEXT) security.protocol produces a
+            //   startup warning.
+            // How will the test case be deemed successful and why? Successful
+            //   if a status warning names the graded class and the
+            //   security.protocol setting. The appender enforces durability
+            //   for graded classes and warns when overruling the operator;
+            //   staying silent about cleartext transport would be the one
+            //   compliance dimension without a signal.
+            // Why is it important to test this test case? Audit records that
+            //   travel unencrypted are readable and tamperable by anyone on
+            //   the network path - the operator has to learn that from the
+            //   startup log, since the appender deliberately does not (and
+            //   cannot) enforce TLS itself.
+
+            // Given: an AUDIT mapping, no security.protocol configured
+            val appender = newAppender()
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.statusMessages())
+                .anyMatch {
+                    it.contains("cleartext transport") &&
+                        it.contains("AUDIT") &&
+                        it.contains(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG)
+                }
+        }
+
+        @Test
+        fun `should not warn when the graded class is configured for SSL`() {
+            // Given: the same AUDIT mapping, but SSL configured
+            val appender =
+                newAppender(
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${CommonClientConfigs.SECURITY_PROTOCOL_CONFIG}=SSL
+                        """.trimIndent(),
+                )
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("cleartext transport") }
+        }
+
+        @Test
+        fun `should not warn for the minimal configuration without graded classes`() {
+            // What is to be tested? Whether the warning is scoped to classes
+            //   that actually carry compliance mandates. TECHNICAL has none,
+            //   so a plain default-topic deployment must stay quiet.
+            // How will the test case be deemed successful and why? Successful
+            //   if no cleartext warning appears for the minimal (TECHNICAL-
+            //   only) configuration, which is the common case.
+            // Why is it important to test this test case? A warning that
+            //   fires for every deployment would be trained away within a
+            //   week, and would be gone when it finally matters.
+
+            // Given: minimal configuration, no security.protocol
+            val appender = newAppender()
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("cleartext transport") }
+        }
+    }
+
+    @Nested
+    inner class `Pipeline failure reporting` {
+        @Test
+        fun `should withhold the cause and stack trace when debug is disabled`() {
+            // What is to be tested? Whether a producer-construction failure
+            //   reports only the exception type by default, keeping the
+            //   Kafka-authored message and the stack trace behind <debug>.
+            // How will the test case be deemed successful and why? Successful
+            //   if the error names the exception class and points at the
+            //   debug flag, while the exception's own message text does not
+            //   appear. That text is built by the Kafka client from
+            //   credential-bearing configuration and is not under this
+            //   appender's control.
+            // Why is it important to test this test case? SECURITY.md names
+            //   credential leakage through status output as an in-scope
+            //   concern for this appender; this is the one path where
+            //   foreign text reaches the status manager.
+
+            // Given: a factory that fails with a message standing in for
+            //   configuration-derived text
+            val failingFactory =
+                ProducerFactory { _ -> throw IllegalStateException("secret-bearing-detail") }
+            val appender = newAppender(producerFactory = failingFactory, debug = false)
+
+            // When
+            appender.start()
+
+            // Then: refused to start, type reported, cause withheld
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Failed to build KafkaAppender pipeline") && it.contains("IllegalStateException") }
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("secret-bearing-detail") }
+        }
+
+        @Test
+        fun `should include the cause when debug is enabled`() {
+            // Given
+            val failingFactory =
+                ProducerFactory { _ -> throw IllegalStateException("diagnostic-detail") }
+            val appender = newAppender(producerFactory = failingFactory, debug = true)
+
+            // When
+            appender.start()
+
+            // Then: operators who opt in get the full cause
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("diagnostic-detail") }
         }
     }
 

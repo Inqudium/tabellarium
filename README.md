@@ -77,7 +77,7 @@ Reference for every supported element:
 
 | Element                      | Required | Type    | Notes                                                                              |
 |------------------------------|----------|---------|------------------------------------------------------------------------------------|
-| `<encoder>`                  | Yes      | nested  | Standard Logback encoder. `LogstashEncoder` recommended.                           |
+| `<encoder>`                  | Yes      | nested  | Standard Logback encoder. `LogstashEncoder` recommended — JSON escaping also prevents log forging via attacker-influenced message text. |
 | `<kafkaProducerProperties>`  | Yes      | text    | Multi-line `key=value` Kafka producer config. Comments with `#` supported.         |
 | `<topicMapping>`             | Yes      | nested  | `<defaultTopic>` plus any number of `<mapping>` elements (marker → topic → topic class) — see [Topic routing](#topic-routing). |
 | `<environment>`              | Yes      | string  | Deployment environment (e.g. `prod`, `staging`).                                   |
@@ -376,6 +376,17 @@ at the moment of the `log.info(...)` call. Logback freezes the MDC
 into the `ILoggingEvent` at that moment, so the appender always sees
 a consistent snapshot — there is no risk of reading "the wrong
 thread's MDC" inside the appender.
+
+The key is **length-bounded at 128 characters**; a longer value is
+treated as no key at all. Applications commonly bridge an inbound
+request header into the MDC, so the value can be attacker-influenced,
+and an unbounded key would inflate every record past
+`max.request.size` — the resulting `RecordTooLargeException` is
+deliberately ignored by the circuit breaker, so those events would
+flood the fallback appender indefinitely. Note that the bound limits
+record size, not distribution control: an application that bridges
+unvalidated inbound values into the MDC can still influence which
+partition its records land on.
 
 The reactive concern is upstream: in Reactor code, the trace context
 typically lives in the Reactor `Context`, not in the MDC of the
