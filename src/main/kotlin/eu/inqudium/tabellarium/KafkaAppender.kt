@@ -249,7 +249,11 @@ class KafkaAppender :
             )
         producerRegistry =
             ProducerRegistry.create(
-                propertiesBuilder = ProducerPropertiesBuilder(baseProperties),
+                propertiesBuilder =
+                    ProducerPropertiesBuilder(
+                        baseProperties,
+                        defaultClientIdPrefix = "tabellarium-${jmxSafe(component)}",
+                    ),
                 activeTopicClasses = topicTable.activeTopicClasses,
                 producerFactory = producerFactory,
             )
@@ -267,6 +271,13 @@ class KafkaAppender :
                 fallbackDispatcher = fallbackDispatcher,
             )
     }
+
+    /**
+     * The client.id ends up in JMX object names and metric tags, where
+     * characters outside this set break registration or make tags
+     * unusable, so anything else in the component name is mapped to '-'.
+     */
+    private fun jmxSafe(value: String): String = value.replace(Regex("[^a-zA-Z0-9._-]"), "-")
 
     private fun buildViolationMessage(violation: MandatoryOverrideViolation): String =
         "Mandatory override applied for ${violation.topicClass}: " +

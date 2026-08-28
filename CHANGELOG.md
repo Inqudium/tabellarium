@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partitioning key.
 - Opt-in Micrometer metrics with Spring binding helper
   (`KafkaAppenderMetricsBinding`).
+- Per-class `client.id` default (`tabellarium-<component>-<topicclass>`)
+  so producers are attributable on the broker; an operator-supplied
+  `client.id` wins.
 - Configuration guide, metrics overview, and Grafana dashboards under
   `docs/config/` and `docs/metrics/`.
 

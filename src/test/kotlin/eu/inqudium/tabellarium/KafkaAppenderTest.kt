@@ -40,10 +40,12 @@ class KafkaAppenderTest {
 
     private class TestProducerFactory : ProducerFactory {
         val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
+        val createdWithProperties = mutableListOf<Map<String, String>>()
 
         override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
             val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
             createdProducers += mock
+            createdWithProperties += properties
             return mock
         }
     }
@@ -237,6 +239,81 @@ class KafkaAppenderTest {
 
             // Then
             assertThat(factory.createdProducers).hasSize(1)
+        }
+
+        @Test
+        fun `should give the producer a client id derived from the component`() {
+            // What is to be tested? Whether the appender wires a per-class
+            //   client.id default of tabellarium-<component>-<topicclass>
+            //   into the producer configuration.
+            // How will the test case be deemed successful and why? Successful
+            //   if the created producer's properties carry that client.id.
+            //   This pins down broker-side attributability: connections,
+            //   quotas, and kafka.producer metrics name the service instead
+            //   of Kafka's generic producer-N.
+            // Why is it important to test this test case? Without the
+            //   default, every producer in the JVM shows up as producer-N on
+            //   the broker, and operators cannot tell which service (or
+            //   which topic class) a connection belongs to.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory, component = "checkout-service")
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(factory.createdWithProperties.single())
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "tabellarium-checkout-service-technical")
+        }
+
+        @Test
+        fun `should sanitize the component for the client id`() {
+            // What is to be tested? Whether characters that are unsafe in JMX
+            //   object names and metric tags are replaced before the component
+            //   becomes part of the client.id.
+            // How will the test case be deemed successful and why? Successful
+            //   if a component with spaces and special characters yields a
+            //   client.id containing only [a-zA-Z0-9._-]. This pins down the
+            //   sanitization contract of the derived id.
+            // Why is it important to test this test case? An unsanitized
+            //   client.id breaks JMX MBean registration in the Kafka client,
+            //   which surfaces as confusing warnings at startup in every
+            //   deployment whose component name contains a space.
+
+            // Given
+            val factory = TestProducerFactory()
+            val appender = newAppender(producerFactory = factory, component = "My Service (prod)")
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(factory.createdWithProperties.single())
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "tabellarium-My-Service--prod--technical")
+        }
+
+        @Test
+        fun `should let an operator-supplied client id win`() {
+            // Given: the operator pins client.id in kafkaProducerProperties
+            val factory = TestProducerFactory()
+            val appender =
+                newAppender(
+                    producerFactory = factory,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.CLIENT_ID_CONFIG}=pinned-id
+                        """.trimIndent(),
+                )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(factory.createdWithProperties.single())
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "pinned-id")
         }
     }
 

@@ -324,4 +324,71 @@ class ProducerPropertiesBuilderTest {
             }.isInstanceOf(UnsupportedOperationException::class.java)
         }
     }
+
+    @Nested
+    inner class `Client id default` {
+        @Test
+        fun `should derive a per-class client id from the prefix`() {
+            // What is to be tested? Whether a configured defaultClientIdPrefix
+            //   yields a distinct client.id per topic class.
+            // How will the test case be deemed successful and why? Successful if
+            //   two classes built from the same builder carry
+            //   <prefix>-<lowercase class name> as their client.id. This pins
+            //   down the id scheme operators will see in broker logs, quotas,
+            //   and kafka.producer metrics.
+            // Why is it important to test this test case? If two classes shared
+            //   one client.id, their producers would collide on JMX MBean
+            //   registration in the same JVM and their per-client broker
+            //   metrics would be indistinguishable.
+
+            // Given
+            val builder = ProducerPropertiesBuilder(emptyMap(), defaultClientIdPrefix = "tabellarium-checkout")
+
+            // When
+            val audit = builder.buildFor(TopicClass.AUDIT)
+            val technical = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then
+            assertThat(audit.properties)
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "tabellarium-checkout-audit")
+            assertThat(technical.properties)
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "tabellarium-checkout-technical")
+        }
+
+        @Test
+        fun `should let an operator-supplied client id win over the default`() {
+            // What is to be tested? Whether an explicit client.id in the base
+            //   properties survives the per-class default.
+            // How will the test case be deemed successful and why? Successful if
+            //   the built properties carry the operator's value verbatim. This
+            //   pins down the putIfAbsent semantics of the default layer.
+            // Why is it important to test this test case? Operators may rely on
+            //   a fixed client.id for broker-side quotas or ACLs; silently
+            //   replacing it would change broker behavior on upgrade.
+
+            // Given
+            val base = mapOf(ProducerConfig.CLIENT_ID_CONFIG to "my-fixed-id")
+            val builder = ProducerPropertiesBuilder(base, defaultClientIdPrefix = "tabellarium-checkout")
+
+            // When
+            val result = builder.buildFor(TopicClass.AUDIT)
+
+            // Then
+            assertThat(result.properties)
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "my-fixed-id")
+            assertThat(result.mandatoryOverrideViolations).isEmpty()
+        }
+
+        @Test
+        fun `should set no client id when no prefix is configured`() {
+            // Given
+            val builder = ProducerPropertiesBuilder(emptyMap())
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then: Kafka's own auto-generated producer-N id applies
+            assertThat(result.properties).doesNotContainKey(ProducerConfig.CLIENT_ID_CONFIG)
+        }
+    }
 }

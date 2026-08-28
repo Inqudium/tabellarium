@@ -1,5 +1,7 @@
 package eu.inqudium.tabellarium
 
+import org.apache.kafka.clients.producer.ProducerConfig
+
 /**
  * Composes the Kafka producer configuration for a specific [TopicClass]
  * from caller-supplied base properties and the class-specific overrides
@@ -16,7 +18,13 @@ package eu.inqudium.tabellarium
  * 1. **Base properties** - the caller's configuration, typically parsed
  *    from the `<kafkaProducerProperties>` XML element.
  * 2. **Default overrides** - applied via `putIfAbsent`, so the caller's
- *    value wins where both are present.
+ *    value wins where both are present. When [defaultClientIdPrefix] is
+ *    set, a per-class `client.id` default of
+ *    `<defaultClientIdPrefix>-<topicclass>` belongs to this layer: it
+ *    gives each producer a distinct, attributable client id on the
+ *    broker (metrics, quotas, logs) instead of Kafka's generic
+ *    auto-generated `producer-N`, while an explicit operator-supplied
+ *    `client.id` still wins.
  * 3. **Mandatory overrides** - applied unconditionally. When the caller's
  *    value differs from the enforced value, the conflict is recorded as
  *    a [MandatoryOverrideViolation] in the result; the enforced value
@@ -40,9 +48,16 @@ package eu.inqudium.tabellarium
  * @param baseProperties User-supplied Kafka producer properties. The
  *                       builder copies these on construction; subsequent
  *                       mutations of the original map have no effect.
+ * @param defaultClientIdPrefix Prefix for the per-class `client.id`
+ *                              default (`<prefix>-<topicclass>`,
+ *                              lowercase class name). Null disables the
+ *                              default entirely: with no operator-set
+ *                              `client.id`, Kafka then auto-generates
+ *                              `producer-N` ids.
  */
 class ProducerPropertiesBuilder(
     baseProperties: Map<String, String>,
+    private val defaultClientIdPrefix: String? = null,
 ) {
     private val baseProperties: Map<String, String> = java.util.Map.copyOf(baseProperties)
 
@@ -61,6 +76,16 @@ class ProducerPropertiesBuilder(
         // Default overrides: only when the caller did not set the property
         topicClass.defaultOverrides.forEach { (key, value) ->
             merged.putIfAbsent(key, value)
+        }
+
+        // Per-class client.id default - same putIfAbsent semantics, so an
+        // operator-supplied client.id (shared across classes, their choice)
+        // is never overruled.
+        defaultClientIdPrefix?.let { prefix ->
+            merged.putIfAbsent(
+                ProducerConfig.CLIENT_ID_CONFIG,
+                "$prefix-${topicClass.name.lowercase()}",
+            )
         }
 
         // Mandatory overrides: always applied; record conflicts

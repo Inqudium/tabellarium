@@ -182,6 +182,17 @@ The built-in defaults filled in for the active `TECHNICAL` producer
 | `max.block.ms`     | `500`   |
 | `batch.size`       | `32768` |
 | `compression.type` | `lz4`   |
+| `client.id`        | `tabellarium-<component>-technical` |
+
+The `client.id` default makes the producer attributable on the broker
+(connection logs, quotas, `kafka.producer.*` metrics) instead of Kafka's
+auto-generated `producer-N`. The `<component>` part is the appender's
+`<component>` value with characters outside `[a-zA-Z0-9._-]` replaced by
+`-` (they would break JMX registration). Under the prepared four-class
+model each class gets its own suffix (`…-audit`, `…-functional`, …), so
+producers never collide on JMX names. An explicit `client.id` in
+`<kafkaProducerProperties>` wins — note that it is then shared by every
+active class.
 
 ### Worked example
 
@@ -210,6 +221,7 @@ filling the gaps and the serializers forced:
 | `acks`               | default (you set nothing)      | `1`                      |
 | `max.block.ms`       | default (you set nothing)      | `500`                    |
 | `batch.size`         | default (you set nothing)      | `32768`                  |
+| `client.id`          | default (you set nothing)      | `tabellarium-<component>-technical` |
 | `key.serializer`     | forced                         | `ByteArraySerializer`    |
 | `value.serializer`   | forced                         | `ByteArraySerializer`    |
 
@@ -526,6 +538,7 @@ to their environment. The metrics binding recurses through the
 | `<debug>`                                    | `false`                          | XML |
 | Fallback (`<appender-ref>`)                  | none → silent drop               | XML |
 | Forced serializers                           | `ByteArraySerializer` (key+value)| always |
+| `client.id` (unless set by operator)         | `tabellarium-<component>-<topicclass>` | code |
 | Fallback class for unmapped topics           | `TECHNICAL`                      | code |
 | Partitioning key MDC source                  | `traceId`                        | code |
 | Circuit breaker: failure-rate threshold      | `50%`                            | code |
