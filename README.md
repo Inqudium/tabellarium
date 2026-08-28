@@ -50,13 +50,16 @@ configuration guide, metrics overview, and Grafana dashboards.
   admits one probe per interval instead of letting a high-volume logger
   burn every permitted call in microseconds.
 
-### Compliance & routing
+### Routing & service levels
 
-- **Compliance grades that configuration cannot weaken.** Topics are
-  classified `AUDIT` / `FUNCTIONAL` / `TECHNICAL` / `PERFORMANCE`; the
-  first two enforce `acks=all` (and idempotence for `AUDIT`) over any
-  conflicting operator value, and every override is reported at startup
-  rather than applied silently.
+- **Quality of service per log stream.** Each topic class carries its own
+  producer tuning and its own circuit breaker: `AUDIT` buys durability
+  (`acks=all`, idempotence, retries), `PERFORMANCE` buys throughput
+  (larger batches, longer linger, tighter block budget), with
+  `FUNCTIONAL` and `TECHNICAL` in between. Audit-grade classes
+  additionally enforce their guarantees over any conflicting operator
+  value — and report every override at startup instead of applying it
+  silently.
 - **Marker-based routing.** `<mapping>` elements route by SLF4J marker to
   their own topic and class; one producer, breaker and `client.id` per
   active class, and none for dormant ones.
