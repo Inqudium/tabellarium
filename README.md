@@ -13,6 +13,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/Inqudium/tabellarium)](https://github.com/Inqudium/tabellarium/commits/main)
 [![Issues](https://img.shields.io/github/issues/Inqudium/tabellarium)](https://github.com/Inqudium/tabellarium/issues)
 [![Docs](https://img.shields.io/badge/docs-inqudium.github.io-8E2C21)](https://inqudium.github.io/tabellarium/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Inqudium/tabellarium/badge)](https://scorecard.dev/viewer/?uri=github.com/Inqudium/tabellarium)
 
 Tabellarium is a resilient Logback appender that ships structured log events to
 Apache Kafka. Named after the Roman letter-carrier, it never blocks the sender:

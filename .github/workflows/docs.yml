@@ -40,8 +40,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Installed from a fully resolved, hash-pinned requirements file:
+      # a compromised or yanked release cannot silently enter the docs
+      # build, and the published site is reproducible. Regenerate after
+      # changing the doc toolchain with:
+      #   pip-compile --generate-hashes --strip-extras \
+      #     --output-file=.github/docs-requirements.txt <(echo mkdocs-material)
+      # Dependabot keeps the pins current (pip ecosystem, /.github).
       - name: Install MkDocs Material
-        run: pip install mkdocs-material
+        run: pip install --require-hashes -r .github/docs-requirements.txt
 
       - name: Build site
         run: mkdocs build --strict
