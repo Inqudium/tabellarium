@@ -7,8 +7,10 @@ on:
       - docs/**
       - mkdocs.yml
       - src/main/kotlin/**
+      - src/test/kotlin/**
       - pom.xml
       - .github/workflows/docs.yml
+      - .github/scripts/**
 
 permissions:
   contents: read
@@ -50,6 +52,16 @@ jobs:
       - name: Install MkDocs Material
         run: pip install --require-hashes -r .github/docs-requirements.txt
 
+      # Runs the offline suite so the published test evidence and coverage
+      # always describe the commit being deployed - the site never shows
+      # numbers a human typed. A red suite blocks the docs deploy on
+      # purpose: stale docs beat docs that certify a broken build.
+      - name: Run the test suite (Surefire results + JaCoCo report)
+        run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: Generate the test-evidence page
+        run: python3 .github/scripts/generate-test-catalog.py
+
       - name: Build site
         run: mkdocs build --strict
 
@@ -58,6 +70,11 @@ jobs:
 
       - name: Add API reference to site
         run: cp -r target/dokka site/api
+
+      - name: Add coverage report and badge to site
+        run: |
+          cp -r target/site/jacoco site/coverage
+          python3 .github/scripts/generate-coverage-badge.py target/site/jacoco/jacoco.csv site/coverage/badge.svg
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

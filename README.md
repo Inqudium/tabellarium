@@ -7,6 +7,7 @@
 # Tabellarium
 
 [![CI](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml/badge.svg)](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml)
+[![Coverage](https://inqudium.github.io/tabellarium/coverage/badge.svg)](https://inqudium.github.io/tabellarium/coverage/)
 [![License](https://img.shields.io/github/license/Inqudium/tabellarium)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/projects/jdk/21/)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
@@ -751,6 +752,36 @@ circuit-breaker isolation: if AUDIT and FUNCTIONAL share a producer,
 a fault that affects the shared producer trips both circuit breakers
 together, partially defeating the isolation guarantee. Probably worth
 doing only if a concrete deployment hits the producer-count ceiling.
+
+## How it is tested
+
+The suite is layered so the fast loop stays offline and the expensive
+guarantees still get proven:
+
+- **Offline unit/component base** — the default `mvn verify` run needs
+  no broker and no Docker: `MockProducer`, hand-built fakes, injected
+  clocks, and latch-pinned concurrency scenarios cover routing,
+  property composition, breaker/throttle behavior, the asynchronous
+  dispatch and shutdown accounting, and the metrics lifecycle.
+  Appender-level tests exercise the real asynchronous worker path
+  (there is no synchronous test mode in production code).
+- **Declarative-contract layer** — Joran round-trip tests feed real XML
+  through `JoranConfigurator` and bind every documented element, so the
+  operator-facing configuration surface is executable, not asserted.
+- **Real-broker stage** — `mvn -Pintegration test` (Testcontainers,
+  needs Docker) proves a successful TECHNICAL and AUDIT record against
+  an Apache Kafka container: real serializers, LZ4, headers,
+  partitioning key, and the AUDIT acks/idempotence handshake.
+- **External-contract stage** — `mvn -Pexternal-contract test` runs
+  characterization tests of third-party behavior that are excluded from
+  the default loop on purpose.
+
+The full inventory — every test sentence plus the rationale block
+explaining what it pins and why — is generated from each build and
+published as [Test evidence](https://inqudium.github.io/tabellarium/tests/test-evidence/);
+the [coverage report](https://inqudium.github.io/tabellarium/coverage/)
+and the badge above come from the same run. Both are generated
+artifacts: no number in them is maintained by hand.
 
 ## Build
 

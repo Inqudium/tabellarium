@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   README element table; the Joran round-trip test now binds
   `<sendQueueCapacity>` and `<includeCallerData>` alongside the rest of
   the XML surface.
+- Test-suite visibility: JaCoCo runs with every `verify` and the Docs
+  workflow publishes the coverage report plus a self-hosted badge; a
+  generated "Test evidence" page lists every test sentence with its
+  three-question rationale, grouped by component; CI runs append a
+  per-class test summary to the workflow run page; the README gained a
+  "How it is tested" section. All visible numbers are generated from
+  the build - none are maintained by hand.
 
 ### Fixed
 

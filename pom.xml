@@ -94,6 +94,15 @@
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
         <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+
+        <!--
+            Default for the late-bound @{argLine} reference in the Surefire
+            configuration: JaCoCo's prepare-agent goal overwrites this
+            property with its -javaagent argument. The empty default keeps
+            Surefire working when JaCoCo is skipped (-Djacoco.skip=true).
+        -->
+        <argLine></argLine>
     </properties>
 
     <dependencyManagement>
@@ -372,11 +381,46 @@
                         <include>**/*Test.kt</include>
                     </includes>
                     <excludedGroups>${surefire.excludedGroups}</excludedGroups>
+                    <!-- @{argLine} is resolved LATE (after JaCoCo's prepare-agent
+                         set the property), so the coverage agent and the JVM flags
+                         combine instead of the literal argLine overriding the
+                         agent. -->
                     <argLine>
+                        @{argLine}
                         --add-opens java.base/java.lang=ALL-UNNAMED
                         -XX:+EnableDynamicAgentLoading
                     </argLine>
                 </configuration>
+            </plugin>
+
+            <!--
+                Test coverage, always on: the agent attaches via the argLine
+                property (merged with the JVM flags in the Surefire config -
+                see the @{argLine} note there) and the report is written at
+                verify to target/site/jacoco/ (HTML + XML + CSV). The Docs
+                workflow publishes the HTML report and derives the coverage
+                badge from the CSV, so the visible numbers are generated,
+                never hand-maintained. Skip locally with -Djacoco.skip=true.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>

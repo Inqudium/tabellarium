@@ -114,6 +114,11 @@ for the exact scope.
   resilience behavior, and startup validation.
 - **[Metrics overview](metrics/metrics-overview.md)** — the full
   Micrometer metric inventory with tags and dashboard guidance.
+- **[Test evidence](https://inqudium.github.io/tabellarium/tests/test-evidence/)** —
+  the generated inventory of the test suite: every test sentence plus
+  its rationale, grouped by component.
+- **[Coverage report](https://inqudium.github.io/tabellarium/coverage/)** —
+  the JaCoCo report of the run that built this site.
 - **[Example configuration](config/example-logback-spring.xml)** —
   a complete, annotated `logback-spring.xml`.
 - **Grafana dashboards** —

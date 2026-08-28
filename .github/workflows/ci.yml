@@ -37,6 +37,14 @@ jobs:
       - name: Build and test
         run: mvn --batch-mode --no-transfer-progress verify
 
+      # Repo-local script instead of a third-party reporting action (this
+      # workflow pins actions to SHAs; a summary needs no new supply-chain
+      # surface). Runs on failure too, so a red build still shows which
+      # classes failed without digging through the log.
+      - name: Publish test summary
+        if: always()
+        run: python3 .github/scripts/surefire-summary.py
+
   dependency-scan:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest
