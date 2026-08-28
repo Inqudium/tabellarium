@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  Example configuration for eu.inqudium.tabellarium.KafkaAppender.
+
+  This is a Drop-In replacement for the legacy
+  com.ing.log.logback.KafkaAppender v0.4.0. The configuration surface
+  is identical to the legacy XML, with two additions:
+
+    1. <appender-ref ref="..."/> inside <appender> attaches a fallback
+       appender for when Kafka delivery fails. Optional but strongly
+       recommended in production.
+
+    2. <debug>true</debug> is still accepted for backward compatibility
+       but now affects only startup diagnostics, not per-event behavior.
+       Consider removing it from new deployments.
+
+  See README.md for the full reference and the migration notes.
+-->
+
+<configuration>
+
+    <!-- =================================================================
+         Fallback file appender for when Kafka delivery is unavailable
+         (circuit breaker open, broker unreachable, etc.). Records that
+         cannot be shipped to Kafka are written here as a last resort.
+         ================================================================= -->
+    <appender name="KAFKA_FALLBACK_FILE" class="ch.qos.logback.core.FileAppender">
+        <file>/var/log/myapp/kafka-fallback.log</file>
+        <encoder>
+            <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+        <append>true</append>
+        <immediateFlush>true</immediateFlush>
+    </appender>
+
+    <!-- =================================================================
+         Main Kafka appender. See:
+         - https://github.com/.../README.md
+         - kafka-appender-code-analysis.md (audit report)
+         - kafka-appender-architecture-note.md (design rationale)
+         ================================================================= -->
+    <appender name="KAFKA" class="eu.inqudium.tabellarium.KafkaAppender">
+
+        <!-- Standard Logback encoder. LogstashEncoder is recommended for
+             JSON output that downstream ingestion tools (Splunk, ELK,
+             Loki) can parse directly. -->
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>TRACE_ID</includeMdcKeyName>
+            <includeMdcKeyName>REQUEST_ID</includeMdcKeyName>
+            <includeMdcKeyName>PROFILE_ID</includeMdcKeyName>
+            <customFields>{
+                "kubernetes": {
+                    "container_name": "${APPLICATION_NAME}",
+                    "host": "${NODE_NAME}",
+                    "labels": {
+                        "app": "${APPLICATION_NAME}"
+                    },
+                    "namespace_name": "${POD_NAMESPACE}",
+                    "pod_name": "${POD_NAME}"
+                }
+            }</customFields>
+        </encoder>
+
+        <!-- Multi-line "key=value" Kafka producer configuration. Helm /
+             Spring placeholder substitution happens before the appender
+             parses the text. Lines starting with '#' are treated as
+             comments. Whitespace around keys and values is trimmed. -->
+        <kafkaProducerProperties>
+            bootstrap.servers=${KAFKA_BOOTSTRAP_SERVERS:-kafka.example.com:9092}
+            security.protocol=SSL
+
+            ssl.keystore.location=/cert/identity.pkcs12
+            ssl.keystore.password=${KAFKA_KEYSTORE_PASSWORD}
+            ssl.keystore.type=PKCS12
+
+            ssl.truststore.type=JKS
+            ssl.truststore.location=/configs/http-trust.jks
+            ssl.truststore.password=${KAFKA_TRUSTSTORE_PASSWORD}
+
+            # The appender forces acks=all for AUDIT topics regardless of
+            # what is set here. Setting acks at this level applies to the
+            # TECHNICAL / PERFORMANCE classes (which have no compliance
+            # mandate). See README "Mandatory override policy".
+            # acks=1
+        </kafkaProducerProperties>
+
+        <!-- Topic routing configuration. With only <defaultTopic>, every
+             event goes to that one topic and is treated as TECHNICAL —
+             a single Kafka producer is instantiated.
+
+             Marker-based per-class routing is a planned extension. See
+             the KDoc on TopicMappingConfig and README "Extension points". -->
+        <topicMapping>
+            <defaultTopic>my-application.logs</defaultTopic>
+        </topicMapping>
+
+        <!-- Metadata attached to every Kafka record as headers
+             (meta.component, meta.cmdbId, meta.environment) and used by
+             the appender to validate that the deployment is identifiable. -->
+        <environment>${STAGE}</environment>
+        <component>${ARTIFACT_ID}</component>
+        <cmdbId>MyApplication</cmdbId>
+
+        <!-- Optional. When true, the appender emits extra startup info
+             (active topic classes, mandatory-override violations,
+             fallback configuration) to Logback's status manager. Has
+             NO per-event effect; legacy per-record debug output is gone.
+             Recommended: leave unset or set to false. -->
+        <!-- <debug>true</debug> -->
+
+        <!-- Fallback appender. When the Kafka circuit breaker is open or
+             a send fails, the event is delivered through this appender
+             instead. Without it, failed events are silently dropped. -->
+        <appender-ref ref="KAFKA_FALLBACK_FILE"/>
+
+    </appender>
+
+    <!-- =================================================================
+         Root logger configuration. In production, wrap the KafkaAppender
+         in an AsyncAppender to decouple application threads from Kafka
+         producer back-pressure:
+
+           <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
+             <appender-ref ref="KAFKA"/>
+             <queueSize>1024</queueSize>
+             <discardingThreshold>0</discardingThreshold>
+             <neverBlock>true</neverBlock>
+           </appender>
+
+         and then reference ASYNC_KAFKA from <root>. AsyncAppender is part
+         of Logback core; this module does not provide its own async layer
+         on purpose — operators tune queue size and discard policy to their
+         environment.
+         ================================================================= -->
+    <root level="INFO">
+        <appender-ref ref="KAFKA"/>
+    </root>
+
+</configuration>

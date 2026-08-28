@@ -1,0 +1,470 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
+    <groupId>eu.inqudium</groupId>
+    <artifactId>tabellarium</artifactId>
+    <version>${revision}</version>
+    <packaging>jar</packaging>
+
+    <name>tabellarium</name>
+    <description>
+        Tabellarium is a resilient Logback appender that ships structured log events to
+        Apache Kafka. Named after the Roman letter-carrier, it never blocks the sender:
+        per-topic-class circuit breakers stop hammering a broken route, mandatory
+        overrides seal audit-grade delivery (acks=all, idempotence), and a fallback
+        appender catches what cannot be shipped.
+    </description>
+
+    <properties>
+        <!-- CI-Friendly Version -->
+        <revision>1.0.0-SNAPSHOT</revision>
+
+        <!-- Encoding -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Java Version (Managed by Spring Boot Parent) -->
+        <java.version>21</java.version>
+
+        <!-- Kotlin Version (Override Spring Boot default) -->
+        <kotlin.version>2.4.10</kotlin.version>
+
+        <!-- Third Party Dependencies (not managed by the Boot BOM) -->
+        <resilience4j.version>2.4.0</resilience4j.version>
+        <!-- The encoder this module compiles and tests against: the Jackson 3 generation. -->
+        <logstash-encoder.version>9.0</logstash-encoder.version>
+        <!--
+            The encoder generation the jackson2/ sources are compiled against. It is NOT a dependency of
+            this module: a Maven module has one dependency list, and logstash-logback-encoder 9.x already
+            occupies the net.logstash.logback:logstash-logback-encoder slot. The jars below are fetched by
+            coordinate into a directory of their own and used as an ad-hoc javac classpath.
+        -->
+        <logstash-encoder.jackson2.version>8.0</logstash-encoder.jackson2.version>
+        <!-- The Jackson 2 that encoder 8.0 declares. -->
+        <jackson2.version>2.17.2</jackson2.version>
+        <jackson2.classpath.dir>${project.build.directory}/jackson2-classpath</jackson2.classpath.dir>
+        <jackson2.check.classes.dir>${project.build.directory}/jackson2-check-classes</jackson2.check.classes.dir>
+        <!-- Declared so that -DskipTests also skips the 8.x smoke check below. -->
+        <skipTests>false</skipTests>
+
+        <!-- Plugin Versions -->
+        <flatten-maven-plugin.version>1.6.0</flatten-maven-plugin.version>
+        <ktlint-maven-plugin.version>3.0.0</ktlint-maven-plugin.version>
+        <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
+        <maven-antrun-plugin.version>3.1.0</maven-antrun-plugin.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Resilience4j is not in the Boot BOM; the BOM keeps every resilience4j
+                 artifact lockstep-versioned. -->
+            <dependency>
+                <groupId>io.github.resilience4j</groupId>
+                <artifactId>resilience4j-bom</artifactId>
+                <version>${resilience4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-encoder.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <!-- Logback -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-core</artifactId>
+        </dependency>
+
+        <!-- SLF4J -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Kafka client (includes MockProducer for tests) -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+        </dependency>
+
+        <!-- Resilience4j: circuit breaker + Kotlin extensions -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-kotlin</artifactId>
+        </dependency>
+
+        <!--
+            Optional metrics integration.
+
+            micrometer-core enables the bindMeterRegistry() integration on
+            the appender. resilience4j-micrometer adds the circuit-breaker
+            state metrics; if absent, the appender silently skips the
+            Resilience4j binding (no failure, no warning).
+
+            Both are <optional>true</optional>: consumers that do not want
+            metrics get a smaller dependency tree, and the appender does
+            not pull in a transitively-managed Micrometer version that
+            might conflict with the application's own Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-micrometer</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!--
+            Optional Spring integration. Pulled in only by applications
+            that use KafkaAppenderMetricsBinding, the @Configuration
+            helper class that binds the appender to a MeterRegistry on
+            ContextRefreshedEvent. Non-Spring consumers do not pay this
+            cost; the class is in the jar but never instantiated.
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Kotlin stdlib -->
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+        </dependency>
+
+        <!--
+            Used only by the tests to PARSE the encoder's emitted JSON, independent of which Jackson the
+            encoder uses internally (logstash-logback-encoder 9.0 moved to Jackson 3 / tools.jackson and no
+            longer exposes com.fasterxml.jackson transitively).
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Test scope -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Test scope: ApplicationContextRunner for the Spring binding tests. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
+
+        <plugins>
+            <!-- Flatten Plugin (resolves the CI-friendly ${revision} for install/deploy) -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>${flatten-maven-plugin.version}</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                    <outputDirectory>${project.build.directory}</outputDirectory>
+                    <flattenedPomFilename>.flattened-pom.xml</flattenedPomFilename>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Kotlin Compiler: the spring compiler plugin (all-open) is load-bearing for
+                 KafkaAppenderMetricsBinding - without it the @Configuration class compiles final. -->
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <configuration>
+                    <jvmTarget>${java.version}</jvmTarget>
+                    <args>
+                        <arg>-Xjsr305=strict</arg>
+                    </args>
+                    <compilerPlugins>
+                        <plugin>spring</plugin>
+                    </compilerPlugins>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.jetbrains.kotlin</groupId>
+                        <artifactId>kotlin-maven-allopen</artifactId>
+                        <version>${kotlin.version}</version>
+                    </dependency>
+                </dependencies>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>test-compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Surefire: also pick up Kotlin test classes -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Test.kt</include>
+                    </includes>
+                    <argLine>
+                        --add-opens java.base/java.lang=ALL-UNNAMED
+                        -XX:+EnableDynamicAgentLoading
+                    </argLine>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>com.github.gantsign.maven</groupId>
+                <artifactId>ktlint-maven-plugin</artifactId>
+                <version>${ktlint-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <sourceRoots>
+                        <sourceRoot>${project.basedir}/src/main/kotlin</sourceRoot>
+                        <sourceRoot>${project.basedir}/src/test/kotlin</sourceRoot>
+                    </sourceRoots>
+                </configuration>
+            </plugin>
+
+            <!--
+                The sequencing providers exist twice, once per encoder generation: JsonProvider.writeTo
+                takes the encoder's own JsonGenerator, and that parameter type changed from
+                com.fasterxml.jackson.core (8.x) to tools.jackson.core (9.x). The types are unrelated, so
+                one class cannot implement both signatures - and a class carrying both overloads fails
+                every reflective lookup on itself once either Jackson is absent, which breaks Joran's
+                property binding before the first log event.
+
+                The module builds against 9.x, so the Kotlin sources are the Jackson 3 halves.
+                src/main/jackson2/java holds the 8.x halves, compiled here against the 8.0 jar and dropped
+                into the same target/classes. One artifact ships both; only the half matching the runtime
+                encoder is ever loaded.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>${maven-dependency-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>fetch-jackson2-compile-classpath</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <!--
+                                The runtime closure of encoder 8.0, listed rather than resolved: copy has no
+                                transitive mode, and the alternative - declaring the 8.x stack as project
+                                dependencies - is the very thing that does not fit into one module. Should a
+                                future 8.x add a dependency, the smoke check below fails loudly with
+                                NoClassDefFoundError rather than silently skipping.
+                            -->
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>net.logstash.logback</groupId>
+                                    <artifactId>logstash-logback-encoder</artifactId>
+                                    <version>${logstash-encoder.jackson2.version}</version>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>com.fasterxml.jackson.core</groupId>
+                                    <artifactId>jackson-core</artifactId>
+                                    <version>${jackson2.version}</version>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>com.fasterxml.jackson.core</groupId>
+                                    <artifactId>jackson-databind</artifactId>
+                                    <version>${jackson2.version}</version>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>com.fasterxml.jackson.core</groupId>
+                                    <artifactId>jackson-annotations</artifactId>
+                                    <version>${jackson2.version}</version>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${jackson2.classpath.dir}</outputDirectory>
+                            <stripVersion>true</stripVersion>
+                            <overWriteIfNewer>true</overWriteIfNewer>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!--
+                            The runtime classpath for the smoke check, minus Jackson 3, minus the 9.x encoder
+                            and minus this module's own Jackson 2 (the matching one is fetched above).
+                            Excluding Jackson 3 is not tidiness: with it present, a provider carrying both
+                            writeTo overloads would introspect fine and the check that guards exactly that
+                            regression would pass vacuously.
+                        -->
+                        <id>build-jackson2-runtime-classpath</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>build-classpath</goal>
+                        </goals>
+                        <configuration>
+                            <outputProperty>jackson2.runtime.classpath</outputProperty>
+                            <includeScope>runtime</includeScope>
+                            <excludeGroupIds>tools.jackson.core,com.fasterxml.jackson.core,net.logstash.logback</excludeGroupIds>
+                            <attach>false</attach>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>${maven-antrun-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>compile-jackson2-providers</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <!--
+                                    Classpath order carries the whole trick: the 8.0 jar comes first, so its
+                                    net.logstash.logback.composite.AbstractJsonProvider - the one whose
+                                    writeTo takes a com.fasterxml.jackson generator - shadows the 9.x copy
+                                    that the project classpath contributes under the very same name.
+                                -->
+                                <javac srcdir="${project.basedir}/src/main/jackson2/java"
+                                       destdir="${project.build.outputDirectory}"
+                                       release="${java.version}"
+                                       encoding="UTF-8"
+                                       debug="true"
+                                       includeantruntime="false"
+                                       failonerror="true">
+                                    <classpath>
+                                        <fileset dir="${jackson2.classpath.dir}" includes="*.jar"/>
+                                        <pathelement location="${project.build.outputDirectory}"/>
+                                        <path refid="maven.compile.classpath"/>
+                                    </classpath>
+                                </javac>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!--
+                            Surefire cannot reach the 8.x halves: it runs on the module classpath, which is
+                            the 9.x one. This execution compiles and runs the standalone smoke check against
+                            the 8.0 stack instead - same JVM entry as a deployment would have, no Jackson 3
+                            in sight. Bound to `test` so that the ordinary `mvn test` covers both generations.
+                        -->
+                        <id>verify-jackson2-providers</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                            <target>
+                                <mkdir dir="${jackson2.check.classes.dir}"/>
+                                <javac srcdir="${project.basedir}/src/test/jackson2/java"
+                                       destdir="${jackson2.check.classes.dir}"
+                                       release="${java.version}"
+                                       encoding="UTF-8"
+                                       debug="true"
+                                       includeantruntime="false"
+                                       failonerror="true">
+                                    <classpath>
+                                        <fileset dir="${jackson2.classpath.dir}" includes="*.jar"/>
+                                        <pathelement location="${project.build.outputDirectory}"/>
+                                        <pathelement path="${jackson2.runtime.classpath}"/>
+                                    </classpath>
+                                </javac>
+                                <java classname="eu.inqudium.tabellarium.sequencing.Jackson2ProviderSmokeCheck"
+                                      fork="true"
+                                      failonerror="true"
+                                      logError="true">
+                                    <classpath>
+                                        <pathelement location="${jackson2.check.classes.dir}"/>
+                                        <fileset dir="${jackson2.classpath.dir}" includes="*.jar"/>
+                                        <pathelement location="${project.build.outputDirectory}"/>
+                                        <pathelement path="${jackson2.runtime.classpath}"/>
+                                    </classpath>
+                                </java>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
