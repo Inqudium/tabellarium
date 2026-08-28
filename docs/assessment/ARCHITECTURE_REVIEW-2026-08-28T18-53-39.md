@@ -19,6 +19,17 @@
 
 ---
 
+> **Remediation status (addendum, 2026-08-28):** All 5 findings — including the systemic
+> pattern of section 6, resolved in the documented direction by shipping the marker-mapping
+> configuration surface — were fixed in commit
+> `53cbfb1d1541e6223be89c225b8f4eb702a85e56` ("Fix all findings from the 2026-08-28
+> architecture review") in a separate fix session following this analysis; the checkboxes
+> below are ticked accordingly. The analysis content above is otherwise unchanged and
+> describes the state at commit `62669fcf60e3d25825765ce4d7770dc36c8bba80` — this addendum
+> and the ticked checkboxes are the only post-analysis edits.
+
+---
+
 ## 1. Executive Summary
 
 Measured against its problem — a resilient, compliance-aware Logback→Kafka appender for a regulated (banking) environment — this codebase is **predominantly well-proportioned, with one deliberate and clearly bounded exception**. The load-bearing complexity is genuinely load-bearing: the per-class circuit breakers, the half-open probe throttle, the queue-decoupled fallback dispatcher, and the optional-dependency seams (metrics interface + no-op, `Class.forName` probes for Micrometer/Resilience4j binders) each answer a real, named force — lock-free hot path for virtual-thread/reactive callers, a documented probe-burst problem, the Kafka I/O-thread blocking hazard, and a deliberately small transitive dependency tree. There is no reactive stack without need, no premature distribution, no pattern decoration, and — remarkable for a library of this ambition — exactly **two** interfaces in production, both with multiple real implementations. Under-engineering is essentially absent: logic and I/O are cleanly separated (pure functions + side-effect wrappers), and every boundary the domain has is drawn in code.
@@ -82,14 +93,14 @@ Nothing to report in this section.
 
 ### 🟡 Medium
 
-- [ ] 1. [Topic-classification subsystem — `./src/main/kotlin/eu/inqudium/tabellarium/TopicClass.kt:38`, `TopicRouter.kt:52`, `TopicTable.kt:47`, `ProducerPropertiesBuilder.kt:57`, `ProducerRegistry.kt:131`] {Medium} {Confidence: high} {Speculative Generality / Consistency} Fully built four-class compliance machinery that no configuration can reach
+- [x] 1. [Topic-classification subsystem — `./src/main/kotlin/eu/inqudium/tabellarium/TopicClass.kt:38`, `TopicRouter.kt:52`, `TopicTable.kt:47`, `ProducerPropertiesBuilder.kt:57`, `ProducerRegistry.kt:131`] {Medium} {Confidence: high} {Speculative Generality / Consistency} Fully built four-class compliance machinery that no configuration can reach
   - Actual structure: three of four `TopicClass`es (AUDIT, FUNCTIONAL, PERFORMANCE) with per-class mandatory/default overrides, violation recording and operator warnings, idempotence pre-validation, marker-based routing including hierarchical marker resolution, a multi-producer registry with per-class breakers, throttles, and client-ids — all implemented, documented (a dedicated docs appendix), and tested (90 references to `TopicClass.AUDIT` alone across 6 test files), while the XML surface (`TopicMappingConfig`) deliberately exposes only `<defaultTopic>`, which activates exactly one class (TECHNICAL) with zero mandates.
   - Solved problem / justifying force: partially documented. The compliance model itself is a real, regulatory-shaped requirement, and README/guide state the deferral of the config surface explicitly ("no production deployment uses it yet … adding speculative Joran setters would mean speculative tests" — YAGNI, verbatim). The inconsistency is that this YAGNI rationale is applied to ~40 lines of setters but *not* to the several-hundred-line machinery behind them, which is precisely the "speculative tests" case the KDoc argues against.
   - Cost: every maintenance change must honor four classes and their interactions (observable in this repo's own history: the client-id feature, the idempotence validation, and the self-logging guard all carried per-class handling for classes nobody can activate); a full docs appendix exists solely to explain what does not run; a visible share of the suite (6 of 17 test files touch inert classes) safeguards unreachable paths; each new reader must first learn which half of the subsystem is live. A secondary cost has already materialized: `TopicMappingConfig` was made `open` purely so a test could reach the otherwise-inert violation-warning path — a test seam whose only purpose is to activate machinery the product cannot.
   - Simpler alternative: either finish the last mile (the collection setters are, by the project's own estimate, small) so the machinery earns its keep, or cut the inert classes down to the one active class and keep the *design* (not the code) in the appendix until a deployment needs it. Both directions resolve the inconsistency; carrying both halves indefinitely is the only losing option.
   - Reversibility: moderate in either direction — the subsystem is cohesive and behind stable seams, so activating is cheap and dismantling is mechanical; severity stays Medium precisely because leaving it standing costs steadily but not steeply, and the documented intent is a genuine (if partially inconsistent) force.
 
-- [ ] 2. [Declarative configuration boundary — `./src/main/kotlin/eu/inqudium/tabellarium/KafkaAppender.kt:80` (Joran-populated surface), suite-wide] {Medium} {Confidence: high} {Testability & Test Architecture} The product's actual contract — the Joran/XML surface — has no executable evidence
+- [x] 2. [Declarative configuration boundary — `./src/main/kotlin/eu/inqudium/tabellarium/KafkaAppender.kt:80` (Joran-populated surface), suite-wide] {Medium} {Confidence: high} {Testability & Test Architecture} The product's actual contract — the Joran/XML surface — has no executable evidence
   - Actual structure: every appender-level test wires the appender programmatically (direct setter calls, `addAppender`); no test feeds a real `logback.xml` through `JoranConfigurator`. The XML surface (element names, nested `TopicMappingConfig` binding, `<appender-ref>` action, text-content trimming) is what operators consume — it is the reason this library exists — yet its correctness rests on naming conventions Joran resolves reflectively at runtime.
   - Solved problem / justifying force: none documented. This is not a deliberate decision anywhere in README/CONTRIBUTING; the defect analysis had already listed it as a blind spot.
   - Cost: a rename/type change on any Joran-visible setter, or a regression in the `AppenderAttachable` wiring, passes the entire green suite and surfaces only as a broken operator configuration in production — the most expensive place to discover it. The cost is amplified by the library's own "every Joran setter must be tested" convention, which is currently honored in letter (setters are tested) but not in the binding that gives them meaning.
@@ -98,21 +109,21 @@ Nothing to report in this section.
 
 ### 🟢 Low
 
-- [ ] 3. [`./src/main/kotlin/eu/inqudium/tabellarium/KafkaAppender.kt:449`–`:640` (metrics binding/unbinding region)] {Low} {Confidence: medium} {Coupling & Cohesion} The composition root has absorbed a complete metrics-binding subsystem
+- [x] 3. [`./src/main/kotlin/eu/inqudium/tabellarium/KafkaAppender.kt:449`–`:640` (metrics binding/unbinding region)] {Low} {Confidence: medium} {Coupling & Cohesion} The composition root has absorbed a complete metrics-binding subsystem
   - Actual structure: ~190 of the orchestrator's ~700 lines are Micrometer wiring — bind, rebind, unbind, two `Class.forName` probe pairs, Resilience4j meter removal by tag-matching. Each piece is individually justified; collectively they give the appender a second responsibility with its own lifecycle.
   - Solved problem / justifying force: the *content* is forced (optional dependencies, deregistration on stop); its *location* is convenience — the appender is where the pipeline references live.
   - Cost: the class-level cognitive load of the central unit grows with every metrics concern; the recent meter-deregistration work had to be threaded through the appender's lifecycle rather than a dedicated binder's.
   - Simpler alternative: an internal `MetricsBindings` holder owning bind/unbind and the probes, constructed by the appender — one extraction, no new public surface.
   - Reversibility: cheap and low-risk (internal refactor behind existing tests) — which is also why this stays Low: it can be done opportunistically or not at all.
 
-- [ ] 4. [`./src/main/kotlin/eu/inqudium/tabellarium/MessageEnricher.kt:62`–`:96`] {Low} {Confidence: medium} {Premature Optimization} Shared pre-encoded header byte arrays trade an enforced invariant for a by-convention one — on an unmeasured saving
+- [x] 4. [`./src/main/kotlin/eu/inqudium/tabellarium/MessageEnricher.kt:62`–`:96`] {Low} {Confidence: medium} {Premature Optimization} Shared pre-encoded header byte arrays trade an enforced invariant for a by-convention one — on an unmeasured saving
   - Actual structure: header values are UTF-8-encoded once and the same mutable `ByteArray` instances are passed by reference into every Kafka record; three KDoc blocks warn that mutating them "would corrupt subsequent events".
   - Solved problem / justifying force: ~5 small allocations saved per log event in a hot path — plausible for high-volume logging, but not measured, and the project's own yardstick elsewhere (README removed per-event debug formatting *with* an audit-finding rationale) shows it normally demands a named force.
   - Cost: an immutability contract that exists only in comments, across three classes; any future header consumer must rediscover it.
   - Simpler alternative: encode per event (and measure whether it ever matters), or keep the sharing and accept the documented convention — the current state is defensible, which is why this is Low.
   - Reversibility: trivial in either direction.
 
-- [ ] 5. [`./src/test/kotlin/eu/inqudium/tabellarium/LogstashHttpMethodKeyValueIngestTest.kt:39`] {Low} {Confidence: high} {Boundaries & Responsibilities} An external-contract characterization test lives in the library whose code it does not exercise
+- [x] 5. [`./src/test/kotlin/eu/inqudium/tabellarium/LogstashHttpMethodKeyValueIngestTest.kt:39`] {Low} {Confidence: high} {Boundaries & Responsibilities} An external-contract characterization test lives in the library whose code it does not exercise
   - Actual structure: a well-built test pinning LogstashEncoder+Jackson behavior against an Elasticsearch mapping for an emitter call-site in *consuming services*; it imports no tabellarium type and is the sole reason for the `spring-web` test dependency. Since the defect-analysis remediation it is clearly marked (`@Tag("external-contract")`, KDoc banner), which caps the confusion cost.
   - Solved problem / justifying force: executable incident documentation — real value, wrong module.
   - Cost: a foreign dependency in the test classpath; upgrade failures of `logstash-logback-encoder` will fire in this repo and point maintainers at the wrong codebase (the KDoc now redirects them, at the price of reading it).
