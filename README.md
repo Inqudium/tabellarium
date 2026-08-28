@@ -58,7 +58,7 @@ service's own boundary; Tabellarium is the courier who carries the records away.
 
 2. Fill in the required elements — see [Configuration](#configuration)
    and the complete example at
-   [`docs/metrics+config/example-logback-spring.xml`](docs/metrics+config/example-logback-spring.xml).
+   [`docs/config/example-logback-spring.xml`](docs/config/example-logback-spring.xml).
 
 3. Optionally add a fallback appender (recommended) — see
    [Resilience](#resilience) below.
@@ -68,7 +68,7 @@ service's own boundary; Tabellarium is the courier who carries the records away.
 ## Configuration
 
 A complete configuration example lives at
-[`docs/metrics+config/example-logback-spring.xml`](docs/metrics+config/example-logback-spring.xml).
+[`docs/config/example-logback-spring.xml`](docs/config/example-logback-spring.xml).
 Reference for every supported element:
 
 | Element                      | Required | Type    | Notes                                                                              |

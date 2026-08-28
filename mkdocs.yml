@@ -32,8 +32,8 @@ theme:
 
 nav:
   - Home: index.md
-  - Configuration guide: metrics+config/kafka-appender-config-guide.md
-  - Metrics overview: metrics+config/metrics-overview.md
+  - Configuration guide: config/kafka-appender-config-guide.md
+  - Metrics overview: metrics/metrics-overview.md
 
 markdown_extensions:
   - admonition

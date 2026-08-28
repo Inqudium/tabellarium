@@ -30,16 +30,16 @@ be shipped.
 
 ## Documentation
 
-- **[Configuration guide](metrics+config/kafka-appender-config-guide.md)** —
+- **[Configuration guide](config/kafka-appender-config-guide.md)** —
   every XML element, producer property composition, topic routing,
   resilience behavior, and startup validation.
-- **[Metrics overview](metrics+config/metrics-overview.md)** — the full
+- **[Metrics overview](metrics/metrics-overview.md)** — the full
   Micrometer metric inventory with tags and dashboard guidance.
-- **[Example configuration](metrics+config/example-logback-spring.xml)** —
+- **[Example configuration](config/example-logback-spring.xml)** —
   a complete, annotated `logback-spring.xml`.
 - **Grafana dashboards** —
-  [appender dashboard](metrics+config/kafka-appender-dashboard.json) and
-  [producer-internals dashboard](metrics+config/kafka-producer-internals-dashboard.json),
+  [appender dashboard](metrics/kafka-appender-dashboard.json) and
+  [producer-internals dashboard](metrics/kafka-producer-internals-dashboard.json),
   ready for import.
 
 ## Project

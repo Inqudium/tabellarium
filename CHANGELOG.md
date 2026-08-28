@@ -21,6 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in Micrometer metrics with Spring binding helper
   (`KafkaAppenderMetricsBinding`).
 - Configuration guide, metrics overview, and Grafana dashboards under
-  `docs/metrics+config/`.
+  `docs/config/` and `docs/metrics/`.
 
 [Unreleased]: https://github.com/Inqudium/tabellarium/commits/main
