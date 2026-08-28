@@ -328,6 +328,24 @@ class KafkaAppender :
                         ?: "none - events will be silently dropped on send failure"
                 ),
         )
+        // Per active class, the producer settings the appender GENERATED on
+        // top of the operator's own configuration: the derived client.id
+        // plus the class's default and mandatory overrides that actually
+        // took effect. Deliberately a diff against the operator's base
+        // properties - their own values (including credentials) are never
+        // repeated here, which keeps this output credential-safe by
+        // construction (see SECURITY.md on status-message leakage).
+        val baseProperties = parseKafkaProducerProperties(kafkaProducerProperties)
+        producerRegistry.activeTopicClasses.forEach { topicClass ->
+            val generated =
+                producerRegistry.effectiveProperties
+                    .getValue(topicClass)
+                    .filter { (key, value) -> baseProperties[key] != value }
+                    .toSortedMap()
+                    .entries
+                    .joinToString(", ") { (key, value) -> "$key=$value" }
+            addInfo("Generated producer settings [${topicClass.tag}]: $generated")
+        }
     }
 
     // -- Hot path -------------------------------------------------------

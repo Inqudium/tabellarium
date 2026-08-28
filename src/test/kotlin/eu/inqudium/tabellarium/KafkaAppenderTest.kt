@@ -529,6 +529,95 @@ class KafkaAppenderTest {
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("Debug mode enabled") }
         }
+
+        @Test
+        fun `should list the generated producer settings when debug is enabled`() {
+            // What is to be tested? Whether debug mode surfaces the values
+            //   the appender GENERATED on top of the operator's base
+            //   configuration - the derived client.id and the class
+            //   overrides that actually took effect - without repeating
+            //   values the operator supplied themselves.
+            // How will the test case be deemed successful and why? Successful
+            //   if the generated-settings line names the derived client.id
+            //   and the acks default, but neither the operator's own
+            //   bootstrap.servers nor their explicitly set linger.ms
+            //   (an operator value is not a generated value, even when a
+            //   class default exists for the same key).
+            // Why is it important to test this test case? Operators debug
+            //   delivery issues by asking "what did the appender change?";
+            //   repeating their own configuration would bury the answer -
+            //   and could leak credentials into status output.
+
+            // Given: operator sets bootstrap and overrides linger.ms
+            val appender =
+                newAppender(
+                    debug = true,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.LINGER_MS_CONFIG}=10
+                        """.trimIndent(),
+                )
+
+            // When
+            appender.start()
+
+            // Then
+            val generatedLine =
+                appender.statusMessages().single { it.startsWith("Generated producer settings [technical]") }
+            assertThat(generatedLine)
+                .contains("client.id=tabellarium-test-service-technical")
+                .contains("acks=1")
+                .doesNotContain("bootstrap.servers")
+                .doesNotContain("linger.ms")
+        }
+
+        @Test
+        fun `should never repeat operator-supplied credentials in the debug output`() {
+            // What is to be tested? Whether the generated-settings output
+            //   is credential-safe: values from <kafkaProducerProperties>
+            //   (which routinely carries keystore passwords and JAAS
+            //   configs) must not appear in any status message.
+            // How will the test case be deemed successful and why? Successful
+            //   if no status message contains the secret value. The
+            //   diff-against-base construction guarantees this; the test
+            //   pins it against a refactor that switches back to dumping
+            //   the full effective configuration.
+            // Why is it important to test this test case? SECURITY.md names
+            //   credential leakage through status messages as an explicit
+            //   concern for this appender.
+
+            // Given
+            val appender =
+                newAppender(
+                    debug = true,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ssl.keystore.password=extremely-secret-123
+                        """.trimIndent(),
+                )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("extremely-secret-123") }
+        }
+
+        @Test
+        fun `should not emit generated producer settings when debug is disabled`() {
+            // Given
+            val appender = newAppender(debug = false)
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("Generated producer settings") }
+        }
     }
 
     @Nested

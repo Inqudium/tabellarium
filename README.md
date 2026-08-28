@@ -83,7 +83,7 @@ Reference for every supported element:
 | `<environment>`              | Yes      | string  | Deployment environment (e.g. `prod`, `staging`).                                   |
 | `<component>`                | Yes      | string  | Service component identifier (typically `${spring.application.name}`).             |
 | `<cmdbId>`                   | Yes      | string  | CMDB identifier of the deploying instance.                                         |
-| `<debug>`                    | No       | boolean | Startup diagnostics only: logs the active topic classes and fallback configuration to Logback's status manager. No per-event effect. |
+| `<debug>`                    | No       | boolean | Startup diagnostics only: logs active topic classes, fallback configuration, and the generated producer settings (derived `client.id`, applied class overrides) to Logback's status manager. No per-event effect. |
 | `<appender-ref ref="..."/>`  | No       | ref     | Single fallback appender — see [Resilience](#resilience).                          |
 
 Missing or blank values for the five required elements cause the

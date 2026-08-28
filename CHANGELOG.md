@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (and any unmapped topic) directly, so the default stream can carry a
   compliance grade without a synthetic marker mapping; conflicts with
   a `<mapping>` naming the default topic are rejected at startup.
+- `<debug>true</debug>` additionally emits the generated producer
+  settings per active class (derived `client.id`, applied default and
+  mandatory overrides) as a diff against the operator's base
+  properties — operator-supplied values, credentials included, are
+  never repeated.
 - Joran round-trip tests: the declarative XML surface (including
   `<mapping>` and `<appender-ref>`) is exercised end-to-end through
   `JoranConfigurator`, offline against a real Kafka producer.

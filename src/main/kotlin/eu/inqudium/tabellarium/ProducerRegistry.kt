@@ -44,6 +44,18 @@ class ProducerRegistry private constructor(
      * blank id would match every thread name).
      */
     val clientIds: Set<String>,
+    /**
+     * The merged producer properties each producer was created with,
+     * per class - the [ProducerPropertiesBuilder] output (base +
+     * default + mandatory overrides; the serializers forced by
+     * [ProducerFactory.default] apply on top and are not part of this
+     * map). Kept RAW, including operator-supplied credentials:
+     * consumers must never surface these values wholesale. The
+     * appender's debug diagnostics, for example, only print the diff
+     * against the operator's base properties (the generated settings),
+     * which keeps credentials out by construction.
+     */
+    val effectiveProperties: Map<TopicClass, Map<String, String>>,
 ) : AutoCloseable {
     /**
      * Topic classes for which a producer was successfully created.
@@ -149,6 +161,7 @@ class ProducerRegistry private constructor(
             val createdProducers = LinkedHashMap<TopicClass, Producer<ByteArray, ByteArray>>()
             val allViolations = mutableListOf<MandatoryOverrideViolation>()
             val clientIds = mutableSetOf<String>()
+            val effectiveProperties = LinkedHashMap<TopicClass, Map<String, String>>()
 
             try {
                 activeTopicClasses.forEach { topicClass ->
@@ -157,6 +170,7 @@ class ProducerRegistry private constructor(
                     resolved.properties[ProducerConfig.CLIENT_ID_CONFIG]
                         ?.takeIf { it.isNotBlank() }
                         ?.let { clientIds += it }
+                    effectiveProperties[topicClass] = resolved.properties
                     createdProducers[topicClass] = producerFactory.create(resolved.properties)
                 }
             } catch (e: Exception) {
@@ -177,6 +191,7 @@ class ProducerRegistry private constructor(
                 closeTimeout = closeTimeout,
                 mandatoryOverrideViolations = allViolations.toList(),
                 clientIds = clientIds.toSet(),
+                effectiveProperties = java.util.Map.copyOf(effectiveProperties),
             )
         }
     }

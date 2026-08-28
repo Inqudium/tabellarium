@@ -148,8 +148,10 @@
 
         <!-- Optional. When true, the appender emits extra startup info
              (active topic classes, mandatory-override violations,
-             fallback configuration) to Logback's status manager. Has
-             NO per-event effect.
+             fallback configuration, and the generated producer settings
+             such as the derived client.id and applied class overrides -
+             your own values, credentials included, are never repeated)
+             to Logback's status manager. Has NO per-event effect.
              Recommended: leave unset or set to false. -->
         <!-- <debug>true</debug> -->
 

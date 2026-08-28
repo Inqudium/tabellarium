@@ -80,8 +80,21 @@ validated as non-blank at `start()`. Blank values abort startup with an
 
 `<debug>true</debug>` affects only **startup diagnostics**: when enabled,
 the appender emits the active topic classes, the fallback configuration,
-and any mandatory-override conflicts to Logback's status manager. It has
-no per-event effect. Leave it unset or `false` in new deployments.
+any mandatory-override conflicts, and — per active class — the
+**generated producer settings**: the values the appender put on top of
+your own configuration, i.e. the derived `client.id` and the class's
+default/mandatory overrides that actually took effect, for example:
+
+```
+Generated producer settings [technical]: acks=1, batch.size=32768,
+client.id=tabellarium-my-service-technical, compression.type=lz4,
+linger.ms=50, max.block.ms=500
+```
+
+Your own values are deliberately **not repeated** (a value you set
+yourself — including any credential — never appears in this output; the
+line is a diff against your base properties). The flag has no per-event
+effect. Leave it unset or `false` in new deployments.
 
 ### Placeholder resolution (where the values come from)
 
