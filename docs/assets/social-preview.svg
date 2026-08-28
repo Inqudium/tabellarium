@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="Tabellarium social preview">
+  <defs>
+    <linearGradient id="spBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26222A"/>
+      <stop offset="1" stop-color="#171419"/>
+    </linearGradient>
+    <linearGradient id="tileBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8E2C21"/>
+      <stop offset="1" stop-color="#521810"/>
+    </linearGradient>
+    <linearGradient id="tileEdge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E2B36A"/>
+      <stop offset="1" stop-color="#A87A35"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#spBg)"/>
+  <!-- faint roman road behind -->
+  <g stroke="#C99A4B" opacity="0.14" fill="none">
+    <line x1="0" y1="540" x2="1280" y2="540" stroke-width="2"/>
+    <line x1="0" y1="552" x2="1280" y2="552" stroke-width="1"/>
+  </g>
+
+  <!-- element tile, centered left -->
+  <g transform="translate(180 110) scale(1.75)">
+    <rect x="0" y="0" width="240" height="240" rx="30" fill="url(#tileBg)"/>
+    <rect x="0" y="0" width="240" height="240" rx="30" fill="none" stroke="url(#tileEdge)" stroke-width="7"/>
+    <rect x="14" y="14" width="212" height="212" rx="20" fill="none" stroke="#E8C388" stroke-width="1.5" opacity="0.35"/>
+    <text x="25" y="53" font-family="Georgia, 'Times New Roman', serif" font-size="30" fill="#E8C388">121</text>
+    <text x="120" y="150" font-family="Georgia, 'Times New Roman', serif" font-size="104" font-weight="bold" fill="#F4EAD8" text-anchor="middle">Tb</text>
+    <text x="120" y="205" font-family="Georgia, 'Times New Roman', serif" font-size="21" letter-spacing="3.5" fill="#E8C388" text-anchor="middle">TABELLARIVM</text>
+  </g>
+
+  <!-- wordmark -->
+  <text x="700" y="310" font-family="Georgia, 'Times New Roman', serif" font-size="92" fill="#F4EAD8">Tabellarium</text>
+  <text x="704" y="368" font-family="Georgia, 'Times New Roman', serif" font-size="30" fill="#C99A4B">The element of reliable carriage</text>
+  <text x="704" y="416" font-family="Verdana, Geneva, sans-serif" font-size="21" fill="#8F8A96">A resilient Logback appender for Apache Kafka</text>
+</svg>
