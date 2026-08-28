@@ -1,5 +1,12 @@
 # Tabellarium
 
+[![CI](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml/badge.svg)](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Inqudium/tabellarium)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/projects/jdk/21/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
+[![Last commit](https://img.shields.io/github/last-commit/Inqudium/tabellarium)](https://github.com/Inqudium/tabellarium/commits/main)
+[![Issues](https://img.shields.io/github/issues/Inqudium/tabellarium)](https://github.com/Inqudium/tabellarium/issues)
+
 Tabellarium is a resilient Logback appender that ships structured log events to
 Apache Kafka. Named after the Roman letter-carrier, it never blocks the sender:
 per-topic-class circuit breakers stop hammering a broken route, mandatory
