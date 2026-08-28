@@ -1,3 +1,5 @@
+![Tabellarium — a resilient Logback appender for Apache Kafka](docs/assets/banner.svg)
+
 # Tabellarium
 
 [![CI](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml/badge.svg)](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml)
