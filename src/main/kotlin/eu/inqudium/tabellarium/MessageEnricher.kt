@@ -3,6 +3,7 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.spi.ILoggingEvent
 import eu.inqudium.tabellarium.MessageEnricher.Companion.DEFAULT_TRACE_ID_EXTRACTOR
 import eu.inqudium.tabellarium.MessageEnricher.Companion.TRACE_ID_MDC_KEY
+import java.util.Properties
 
 /**
  * Enriches logging events with static metadata and a per-event partitioning key.
@@ -145,8 +146,7 @@ class MessageEnricher(
                 MessageEnricher::class.java
                     .getResourceAsStream("/tabellarium-version.properties")
                     ?.use { stream ->
-                        java.util
-                            .Properties()
+                        Properties()
                             .apply { load(stream) }
                             .getProperty("version")
                     }?.takeIf { it.isNotBlank() } ?: "unknown"

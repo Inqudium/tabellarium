@@ -24,11 +24,6 @@ class MessageEnricherTest {
             partitioningKeyExtractor = extractor,
         )
 
-    private fun loggingEventWithMdc(
-        mdc: Map<String, String> = emptyMap(),
-        message: String = "test message",
-    ): ILoggingEvent = newTestLoggingEvent(message = message, mdc = mdc)
-
     /**
      * Decodes the pre-encoded UTF-8 header byte arrays back into Strings
      * for human-readable assertions. The headers in [EnrichedRecord] are
@@ -73,7 +68,7 @@ class MessageEnricherTest {
         fun `should include component cmdbId and environment in the headers`() {
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc()
+            val event = newTestLoggingEvent()
 
             // When
             val result = enricher.enrich(event)
@@ -89,7 +84,7 @@ class MessageEnricherTest {
         fun `should include the agent name and version in the headers`() {
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc()
+            val event = newTestLoggingEvent()
 
             // When
             val result = enricher.enrich(event)
@@ -138,7 +133,7 @@ class MessageEnricherTest {
 
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc()
+            val event = newTestLoggingEvent()
 
             // When
             val result = enricher.enrich(event)
@@ -169,8 +164,8 @@ class MessageEnricherTest {
             val enricher = newEnricher()
 
             // When
-            val firstResult = enricher.enrich(loggingEventWithMdc())
-            val secondResult = enricher.enrich(loggingEventWithMdc())
+            val firstResult = enricher.enrich(newTestLoggingEvent())
+            val secondResult = enricher.enrich(newTestLoggingEvent())
 
             // Then
             assertThat(firstResult.headers).isSameAs(secondResult.headers)
@@ -182,7 +177,7 @@ class MessageEnricherTest {
             val enricher = newEnricher()
 
             // When
-            val result = enricher.enrich(loggingEventWithMdc())
+            val result = enricher.enrich(newTestLoggingEvent())
 
             // Then: attempting to mutate the returned map throws
             @Suppress("UNCHECKED_CAST")
@@ -198,7 +193,7 @@ class MessageEnricherTest {
         fun `should derive the partitioning key from the traceId in the MDC`() {
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc(mapOf("traceId" to "trace-abc-123"))
+            val event = newTestLoggingEvent(mdc = mapOf("traceId" to "trace-abc-123"))
 
             // When
             val result = enricher.enrich(event)
@@ -247,7 +242,7 @@ class MessageEnricherTest {
         fun `should return a null partitioning key when the MDC does not contain a traceId`() {
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc(mapOf("other-key" to "other-value"))
+            val event = newTestLoggingEvent(mdc = mapOf("other-key" to "other-value"))
 
             // When
             val result = enricher.enrich(event)
@@ -271,7 +266,7 @@ class MessageEnricherTest {
 
             // Given
             val enricher = newEnricher()
-            val event = loggingEventWithMdc(mapOf("traceId" to "   "))
+            val event = newTestLoggingEvent(mdc = mapOf("traceId" to "   "))
 
             // When
             val result = enricher.enrich(event)
@@ -287,7 +282,7 @@ class MessageEnricherTest {
         fun `should use the custom extractor when one is provided`() {
             // Given: an extractor that returns the formatted message
             val enricher = newEnricherWith { event -> event.formattedMessage }
-            val event = loggingEventWithMdc(message = "specific-message")
+            val event = newTestLoggingEvent(message = "specific-message")
 
             // When
             val result = enricher.enrich(event)
@@ -300,7 +295,7 @@ class MessageEnricherTest {
         fun `should pass null returned by the custom extractor through unchanged`() {
             // Given
             val enricher = newEnricherWith { _ -> null }
-            val event = loggingEventWithMdc()
+            val event = newTestLoggingEvent()
 
             // When
             val result = enricher.enrich(event)
@@ -324,7 +319,7 @@ class MessageEnricherTest {
 
             // Given
             val enricher = newEnricherWith { _ -> "   " }
-            val event = loggingEventWithMdc()
+            val event = newTestLoggingEvent()
 
             // When
             val result = enricher.enrich(event)
@@ -351,7 +346,7 @@ class MessageEnricherTest {
 
             // Given
             val mdc = mapOf("traceId" to "trace-abc-123", "userId" to "u-42")
-            val event = loggingEventWithMdc(mdc)
+            val event = newTestLoggingEvent(mdc = mdc)
 
             // When
             newEnricher().enrich(event)

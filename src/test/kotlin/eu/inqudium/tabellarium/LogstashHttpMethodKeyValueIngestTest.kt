@@ -64,13 +64,21 @@ class LogstashHttpMethodKeyValueIngestTest {
         )
 
     @Nested
-    inner class EncoderBehaviour {
+    inner class `Encoder behaviour` {
         @Test
         fun `should emit a fluent event with a raw HttpMethod KeyValue instead of dropping it`() {
-            // What is tested: that LogstashEncoder does NOT silently drop or fail on a fluent event whose
-            //   KeyValue value is a raw HttpMethod - it emits the event and renders the value as an empty
-            //   object. Why it matters: this rules the encoder/logback out as the cause and proves the event
-            //   genuinely reaches stdout, matching the raw pod log; the loss must therefore be downstream.
+            // What is to be tested? Whether LogstashEncoder silently drops
+            //   or fails on a fluent event whose KeyValue value is a raw
+            //   HttpMethod - it must emit the event and render the value as
+            //   an empty JSON object.
+            // How will the test case be deemed successful and why? Successful
+            //   if the event appears in the encoder output with the method
+            //   field rendered as {} and no encode error swallowed into the
+            //   StatusManager. This rules the encoder/logback out as the
+            //   cause of the incident.
+            // Why is it important to test this test case? It proves the event
+            //   genuinely reaches stdout, matching the raw pod log - the
+            //   loss must therefore be downstream (Elasticsearch ingest).
 
             // Given / When: the production-shaped diary event is emitted with a raw HttpMethod KeyValue.
             val emitted = emitDiaryEvent(methodValue = HttpMethod.GET)
@@ -90,7 +98,7 @@ class LogstashHttpMethodKeyValueIngestTest {
     }
 
     @Nested
-    inner class ElasticsearchIngestContract {
+    inner class `Elasticsearch ingest contract` {
         @Test
         fun `should render a raw HttpMethod KeyValue as an empty object that a scalar mapping rejects`() {
             // Given: the emitted diary JSON, parsed as Elasticsearch would receive it.
@@ -127,13 +135,19 @@ class LogstashHttpMethodKeyValueIngestTest {
 
         @Test
         fun `should omit a null method field entirely so the document still ingests cleanly`() {
-            // What is tested: how the fixed call site behaves when diary.method is null - i.e. method?.name()
-            //   is null. This happens for real when the diary exists but the request never reached the filter
-            //   (e.g. a CircuitBreaker short-circuit), so method stays null. Why it matters: the fix must not
+            // What is to be tested? How the fixed call site behaves when
+            //   diary.method is null - i.e. method?.name() is null. This
+            //   happens for real when the diary exists but the request never
+            //   reached the filter (e.g. a CircuitBreaker short-circuit).
+            // How will the test case be deemed successful and why? Successful
+            //   if the field is simply absent from the JSON (LogstashEncoder
+            //   drops null KeyValues), no encode error occurred, and no
+            //   scalar/object conflict arises - an absent field never
+            //   conflicts with any mapping.
+            // Why is it important to test this test case? The fix must not
             //   trade the object-{} bug for a different ingest break.
-            // How it is judged: LogstashEncoder drops a KeyValue whose value is null, so the field is simply
-            //   absent from the JSON. An absent field never conflicts with any mapping, so the document is
-            //   accepted - the null case is safe.
+
+            // Given
             val emitted = emitDiaryEvent(methodValue = null)
             val doc = ObjectMapper().readTree(emitted.json)
 

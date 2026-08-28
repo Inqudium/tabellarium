@@ -7,11 +7,17 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.common.errors.InvalidTopicException
+import org.apache.kafka.common.errors.RecordTooLargeException
+import org.apache.kafka.common.errors.SerializationException
+import org.apache.kafka.common.errors.TimeoutException
+import org.apache.kafka.common.errors.TopicAuthorizationException
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
 
 class ResilientMessageSenderTest {
@@ -71,7 +77,7 @@ class ResilientMessageSenderTest {
             val detail: String?,
         )
 
-        val events: MutableList<Event> = java.util.Collections.synchronizedList(mutableListOf())
+        val events: MutableList<Event> = Collections.synchronizedList(mutableListOf())
 
         override fun eventAccepted(topicClass: TopicClass) {
             events.add(Event("accepted", topicClass, null))
@@ -660,8 +666,7 @@ class ResilientMessageSenderTest {
                     originalEvent = newTestLoggingEvent(message = "huge-$it"),
                 )
                 ctx.factory.createdProducers[0].errorNext(
-                    org.apache.kafka.common.errors
-                        .RecordTooLargeException("payload exceeds max.request.size"),
+                    RecordTooLargeException("payload exceeds max.request.size"),
                 )
             }
 
@@ -702,8 +707,7 @@ class ResilientMessageSenderTest {
                     originalEvent = newTestLoggingEvent(message = "timeout-$it"),
                 )
                 ctx.factory.createdProducers[0].errorNext(
-                    org.apache.kafka.common.errors
-                        .TimeoutException("ack not received in time"),
+                    TimeoutException("ack not received in time"),
                 )
             }
 
@@ -724,14 +728,10 @@ class ResilientMessageSenderTest {
             // When: a mix of client-side exceptions, all ignored
             val ignoredExceptions =
                 listOf<RuntimeException>(
-                    org.apache.kafka.common.errors
-                        .RecordTooLargeException("too big"),
-                    org.apache.kafka.common.errors
-                        .InvalidTopicException("bad name"),
-                    org.apache.kafka.common.errors
-                        .SerializationException("encode failed"),
-                    org.apache.kafka.common.errors
-                        .TopicAuthorizationException("denied"),
+                    RecordTooLargeException("too big"),
+                    InvalidTopicException("bad name"),
+                    SerializationException("encode failed"),
+                    TopicAuthorizationException("denied"),
                 )
             repeat(20) { i ->
                 ctx.sender.send(

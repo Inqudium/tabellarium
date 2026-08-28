@@ -8,6 +8,10 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.errors.InvalidTopicException
+import org.apache.kafka.common.errors.RecordTooLargeException
+import org.apache.kafka.common.errors.SerializationException
+import org.apache.kafka.common.errors.TopicAuthorizationException
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -320,10 +324,10 @@ internal class ResilientMessageSender(
                 .waitDurationInOpenState(Duration.ofSeconds(30))
                 .permittedNumberOfCallsInHalfOpenState(10)
                 .ignoreExceptions(
-                    org.apache.kafka.common.errors.RecordTooLargeException::class.java,
-                    org.apache.kafka.common.errors.InvalidTopicException::class.java,
-                    org.apache.kafka.common.errors.SerializationException::class.java,
-                    org.apache.kafka.common.errors.TopicAuthorizationException::class.java,
+                    RecordTooLargeException::class.java,
+                    InvalidTopicException::class.java,
+                    SerializationException::class.java,
+                    TopicAuthorizationException::class.java,
                 ).build()
 
         /**

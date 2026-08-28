@@ -4,6 +4,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.slf4j.MarkerFactory
 
 class TopicMappingConfigTest {
     @Nested
@@ -212,7 +213,7 @@ class TopicMappingConfigTest {
             val table = config.toTopicTable()
 
             // Then: routing
-            val securityMarker = org.slf4j.MarkerFactory.getDetachedMarker("SECURITY")
+            val securityMarker = MarkerFactory.getDetachedMarker("SECURITY")
             assertThat(router.route(listOf(securityMarker))).isEqualTo("audit.security")
             assertThat(router.route(emptyList())).isEqualTo("default.topic")
             // And: classification (topicClass parsing is case-insensitive)
@@ -231,7 +232,7 @@ class TopicMappingConfigTest {
             // When / Then
             assertThat(
                 config.toTopicRouter().route(
-                    listOf(org.slf4j.MarkerFactory.getDetachedMarker("SECURITY")),
+                    listOf(MarkerFactory.getDetachedMarker("SECURITY")),
                 ),
             ).isEqualTo("audit.security")
             assertThat(config.toTopicTable().classFor("audit.security")).isEqualTo(TopicClass.AUDIT)
@@ -406,7 +407,7 @@ class TopicMappingConfigTest {
 
             // When / Then: no conflict; both markers route there
             val router = config.toTopicRouter()
-            assertThat(router.route(listOf(org.slf4j.MarkerFactory.getDetachedMarker("MONEY"))))
+            assertThat(router.route(listOf(MarkerFactory.getDetachedMarker("MONEY"))))
                 .isEqualTo("audit.events")
             assertThat(config.toTopicTable().classFor("audit.events")).isEqualTo(TopicClass.AUDIT)
         }

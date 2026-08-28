@@ -29,3 +29,22 @@ internal fun newTestLoggingEvent(
         threadName?.let { this.threadName = it }
     }
 }
+
+/**
+ * Bounded-deadline polling for asynchronous assertions - the shared
+ * alternative to naked sleeps and to pulling in awaitility for the few
+ * places that need it. Fails with an [AssertionError] when [condition]
+ * does not become true within [timeoutMs].
+ */
+internal fun pollUntil(
+    timeoutMs: Long = 2000,
+    intervalMs: Long = 10,
+    condition: () -> Boolean,
+) {
+    val deadline = System.nanoTime() + timeoutMs * 1_000_000
+    while (System.nanoTime() < deadline) {
+        if (condition()) return
+        Thread.sleep(intervalMs)
+    }
+    throw AssertionError("Condition did not become true within ${timeoutMs}ms")
+}

@@ -10,6 +10,8 @@ import io.micrometer.core.instrument.Tags
 import org.slf4j.LoggerFactory
 import org.springframework.context.event.ContextRefreshedEvent
 import org.springframework.context.event.EventListener
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -150,8 +152,8 @@ open class KafkaAppenderMetricsBinding(
     private fun collectKafkaAppenders(loggerContext: LoggerContext): List<KafkaAppender> {
         val result = LinkedHashSet<KafkaAppender>()
         val visited =
-            java.util.Collections.newSetFromMap(
-                java.util.IdentityHashMap<Appender<ILoggingEvent>, Boolean>(),
+            Collections.newSetFromMap(
+                IdentityHashMap<Appender<ILoggingEvent>, Boolean>(),
             )
         for (logger in loggerContext.loggerList) {
             val iterator = logger.iteratorForAppenders()

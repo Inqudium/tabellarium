@@ -164,11 +164,12 @@ class TopicMappingConfig {
     }
 
     private fun resolvedDefaultTopicClass(): TopicClass =
-        TopicClass.entries.firstOrNull { it.name.equals(defaultTopicClass, ignoreCase = true) }
-            ?: throw IllegalArgumentException(
-                "Unknown <defaultTopicClass> '$defaultTopicClass'; " +
-                    "must be one of ${TopicClass.entries.joinToString()}",
-            )
+        requireNotNull(
+            TopicClass.entries.firstOrNull { it.name.equals(defaultTopicClass, ignoreCase = true) },
+        ) {
+            "Unknown <defaultTopicClass> '$defaultTopicClass'; " +
+                "must be one of ${TopicClass.entries.joinToString()}"
+        }
 }
 
 /**
@@ -204,9 +205,10 @@ class TopicMappingEntry {
         }
 
     internal fun resolvedTopicClass(): TopicClass =
-        TopicClass.entries.firstOrNull { it.name.equals(topicClass, ignoreCase = true) }
-            ?: throw IllegalArgumentException(
-                "Unknown <topicClass> '$topicClass' for marker '$marker' (topic '$topic'); " +
-                    "must be one of ${TopicClass.entries.joinToString()}",
-            )
+        requireNotNull(
+            TopicClass.entries.firstOrNull { it.name.equals(topicClass, ignoreCase = true) },
+        ) {
+            "Unknown <topicClass> '$topicClass' for marker '$marker' (topic '$topic'); " +
+                "must be one of ${TopicClass.entries.joinToString()}"
+        }
 }

@@ -1,11 +1,13 @@
 package eu.inqudium.tabellarium
 
+import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -17,9 +19,7 @@ class FallbackDispatcherTest {
      * AppenderBase instances, Logback emits "No context given for ..."
      * warnings to stderr on every doAppend.
      */
-    private val testContext =
-        ch.qos.logback.classic
-            .LoggerContext()
+    private val testContext = LoggerContext()
 
     /** Appender that records the events it receives. */
     private inner class RecordingAppender : AppenderBase<ILoggingEvent>() {
@@ -47,9 +47,7 @@ class FallbackDispatcherTest {
          * release latch. Used by tests to deterministically wait for
          * the dispatcher worker to enter the blocking call.
          */
-        val inAppend =
-            java.util.concurrent.atomic
-                .AtomicBoolean(false)
+        val inAppend = AtomicBoolean(false)
 
         init {
             context = testContext
@@ -67,24 +65,6 @@ class FallbackDispatcherTest {
         }
 
         fun unblock() = release.countDown()
-    }
-
-    /**
-     * Polls [condition] until it returns true or the timeout elapses.
-     * Cheaper than introducing the awaitility dependency for the few
-     * places we need it.
-     */
-    private fun pollUntil(
-        timeoutMs: Long = 2000,
-        intervalMs: Long = 10,
-        condition: () -> Boolean,
-    ) {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        while (System.nanoTime() < deadline) {
-            if (condition()) return
-            Thread.sleep(intervalMs)
-        }
-        throw AssertionError("Condition did not become true within ${timeoutMs}ms")
     }
 
     // -- Tests ----------------------------------------------------------

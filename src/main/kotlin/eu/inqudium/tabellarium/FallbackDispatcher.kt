@@ -70,11 +70,10 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
-    queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
+    private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
     private val synchronous: Boolean = false,
 ) : AutoCloseable {
-    private val queueCapacity: Int = queueCapacity
     private val queue: LinkedBlockingQueue<ILoggingEvent> = LinkedBlockingQueue(queueCapacity)
     private val droppedCount = AtomicLong(0)
 
@@ -193,7 +192,8 @@ internal class FallbackDispatcher(
         // for the typical case (fast appender, small queue), short
         // enough that a hung appender does not stretch shutdown.
         val gracefulWait = GRACEFUL_DRAIN_WAIT_MS.coerceAtMost(shutdownTimeoutMs)
-        worker!!.join(gracefulWait)
+        val worker = checkNotNull(worker) { "a non-synchronous dispatcher always has a worker thread" }
+        worker.join(gracefulWait)
 
         if (worker.isAlive) {
             // Phase 2: forced exit.

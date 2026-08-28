@@ -16,10 +16,12 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.ResourceLock
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.event.ContextRefreshedEvent
 
 /**
  * Mutates the GLOBAL SLF4J LoggerContext (the binding discovers
@@ -63,12 +65,12 @@ class KafkaAppenderMetricsBindingTest {
         loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
 
         appender = newStartedAppender()
-        loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).addAppender(appender)
+        loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(appender)
     }
 
     @AfterEach
     fun tearDown() {
-        loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).detachAppender(appender)
+        loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).detachAppender(appender)
         appender.stop()
     }
 
@@ -230,10 +232,7 @@ class KafkaAppenderMetricsBindingTest {
                     val registry = ctx.getBean(MeterRegistry::class.java)
                     // Publish a second refresh event manually
                     val publisher = ctx.sourceApplicationContext
-                    publisher.publishEvent(
-                        org.springframework.context.event
-                            .ContextRefreshedEvent(publisher),
-                    )
+                    publisher.publishEvent(ContextRefreshedEvent(publisher))
 
                     val before =
                         registry

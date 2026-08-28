@@ -2,9 +2,11 @@ package eu.inqudium.tabellarium
 
 import ch.qos.logback.core.spi.ContextAware
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
+import io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics
 
 /**
  * Owns the Micrometer side of a [KafkaAppender]'s lifecycle: binding
@@ -134,7 +136,7 @@ internal class MetricsBindings(
         registry: MeterRegistry,
         circuitBreakerRegistry: CircuitBreakerRegistry,
     ) {
-        io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics
+        TaggedCircuitBreakerMetrics
             .ofCircuitBreakerRegistry(circuitBreakerRegistry)
             .bindTo(registry)
     }
@@ -175,9 +177,7 @@ internal class MetricsBindings(
                 Tags
                     .of(commonTags)
                     .and(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, topicClass.tag)
-            val binding =
-                io.micrometer.core.instrument.binder.kafka
-                    .KafkaClientMetrics(producer, tagsForClass)
+            val binding = KafkaClientMetrics(producer, tagsForClass)
             binding.bindTo(registry)
             producerMetricBindings += binding
         }

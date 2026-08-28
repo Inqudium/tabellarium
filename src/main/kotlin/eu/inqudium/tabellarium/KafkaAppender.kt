@@ -6,6 +6,9 @@ import ch.qos.logback.core.UnsynchronizedAppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.spi.AppenderAttachable
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Tag
+import io.micrometer.core.instrument.Tags
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -236,7 +239,7 @@ class KafkaAppender :
         // Logback start() methods are idempotent, so starting an already-
         // started encoder is safe - we start it ourselves to handle the
         // case where Logback's outer initialization order hasn't done so.
-        encoder!!.start()
+        checkNotNull(encoder) { "encoder was validated non-null in validateConfiguration" }.start()
 
         super.start()
     }
@@ -320,11 +323,10 @@ class KafkaAppender :
         addInfo("Active topic classes: ${producerRegistry.activeTopicClasses.joinToString()}")
         addInfo(
             "Fallback appender: " +
-                if (fallbackAppender != null) {
-                    "configured (${fallbackAppender!!.javaClass.simpleName})"
-                } else {
-                    "none - events will be silently dropped on send failure"
-                },
+                (
+                    fallbackAppender?.let { "configured (${it.javaClass.simpleName})" }
+                        ?: "none - events will be silently dropped on send failure"
+                ),
         )
     }
 
@@ -356,7 +358,9 @@ class KafkaAppender :
         // without a class tag (rare; only on malformed marker input).
         var topicClassForFailure: TopicClass? = null
         try {
-            val payload = encoder!!.encode(event)
+            // Non-null by the start() gate: append only runs on a started
+            // appender, and start() refuses without an encoder.
+            val payload = checkNotNull(encoder).encode(event)
             val markers = event.markerList ?: emptyList()
             val topicName = topicRouter.route(markers)
             val topicClass = topicTable.classFor(topicName)
@@ -446,7 +450,7 @@ class KafkaAppender :
     // -- Public API: metrics integration --------------------------------
 
     /**
-     * Wires the appender to a Micrometer [io.micrometer.core.instrument.MeterRegistry].
+     * Wires the appender to a Micrometer [MeterRegistry].
      *
      * After this call, the appender publishes counters, timers and
      * gauges for hot-path events; the [ResilientMessageSender] reports
@@ -463,7 +467,7 @@ class KafkaAppender :
      *
      * **When to call:** typically from a Spring `@PostConstruct` or
      * an `ApplicationReadyEvent` handler, after the application's
-     * [io.micrometer.core.instrument.MeterRegistry] bean is available.
+     * [MeterRegistry] bean is available.
      * Pre-Spring log events are not captured (they happen before
      * the registry exists), which is acceptable for almost all
      * monitoring needs.
@@ -473,14 +477,12 @@ class KafkaAppender :
      * @param registry The Micrometer registry to publish to.
      * @param commonTags Tags attached to every metric. Use sparingly.
      *                   The registry's own common tags are typically
-     *                   enough; pass [io.micrometer.core.instrument.Tags.empty]
+     *                   enough; pass [Tags.empty]
      *                   for the no-extra-tags case.
      */
     fun bindMeterRegistry(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        commonTags: Iterable<io.micrometer.core.instrument.Tag> =
-            io.micrometer.core.instrument.Tags
-                .empty(),
+        registry: MeterRegistry,
+        commonTags: Iterable<Tag> = Tags.empty(),
     ) {
         if (!isStarted) {
             addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")

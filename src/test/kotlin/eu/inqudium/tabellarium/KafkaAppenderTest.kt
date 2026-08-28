@@ -7,6 +7,7 @@ import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
@@ -16,10 +17,12 @@ import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class KafkaAppenderTest {
     // -- Test fixtures --------------------------------------------------
@@ -45,6 +48,20 @@ class KafkaAppenderTest {
         override fun footerBytes(): ByteArray = ByteArray(0)
     }
 
+    /**
+     * Stateless encoder for tests that append from many threads
+     * concurrently: unlike [TestEncoder] it records nothing, so the
+     * test harness itself introduces no unsynchronized shared state
+     * (TestEncoder's recording list is a plain ArrayList).
+     */
+    private class StatelessEncoder : EncoderBase<ILoggingEvent>() {
+        override fun encode(event: ILoggingEvent): ByteArray = event.formattedMessage.toByteArray(Charsets.UTF_8)
+
+        override fun headerBytes(): ByteArray = ByteArray(0)
+
+        override fun footerBytes(): ByteArray = ByteArray(0)
+    }
+
     private class TestProducerFactory : ProducerFactory {
         val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
         val createdWithProperties = mutableListOf<Map<String, String>>()
@@ -60,7 +77,7 @@ class KafkaAppenderTest {
     private class RecordingAppender : AppenderBase<ILoggingEvent>() {
         // Synchronized: the asynchronous-dispatch test appends from the
         // dispatcher worker thread while the test thread polls.
-        val events: MutableList<ILoggingEvent> = java.util.Collections.synchronizedList(mutableListOf())
+        val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
 
         init {
             start()
@@ -105,24 +122,6 @@ class KafkaAppenderTest {
         }
 
     private fun KafkaAppender.statusMessages(): List<String> = context.statusManager.copyOfStatusList.map { it.message }
-
-    /**
-     * Bounded-deadline polling for asynchronous assertions (same pattern
-     * as FallbackDispatcherTest). Fails with an AssertionError when the
-     * condition does not become true within the timeout.
-     */
-    private fun pollUntil(
-        timeoutMs: Long = 2000,
-        intervalMs: Long = 10,
-        condition: () -> Boolean,
-    ) {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        while (System.nanoTime() < deadline) {
-            if (condition()) return
-            Thread.sleep(intervalMs)
-        }
-        throw AssertionError("Condition did not become true within ${timeoutMs}ms")
-    }
 
     // -- Tests ----------------------------------------------------------
 
@@ -918,7 +917,7 @@ class KafkaAppenderTest {
                 object : Producer<ByteArray, ByteArray> by mock {
                     override fun send(
                         record: ProducerRecord<ByteArray, ByteArray>,
-                        callback: org.apache.kafka.clients.producer.Callback?,
+                        callback: Callback?,
                     ): Future<RecordMetadata> = synchronized(mock) { mock.send(record, callback) }
 
                     override fun send(record: ProducerRecord<ByteArray, ByteArray>): Future<RecordMetadata> = synchronized(mock) { mock.send(record) }
@@ -945,19 +944,25 @@ class KafkaAppenderTest {
             //   into the hot path would have passed every other test and
             //   failed only in production under load.
 
-            // Given
+            // Given: a stateless encoder - the recording TestEncoder's
+            //   plain ArrayList would race under concurrent appends and
+            //   sporadically divert an event to the fallback (a harness
+            //   race, not an appender defect)
             val threadCount = 8
             val eventsPerThread = 250
             val factory = SynchronizedTestProducerFactory()
             val fallback = RecordingAppender()
-            val appender = newAppender(producerFactory = factory, fallback = fallback)
+            val appender =
+                newAppender(
+                    encoder = StatelessEncoder(),
+                    producerFactory = factory,
+                    fallback = fallback,
+                )
             appender.start()
 
             val startLatch = CountDownLatch(1)
             val doneLatch = CountDownLatch(threadCount)
-            val failures =
-                java.util.concurrent.atomic
-                    .AtomicInteger(0)
+            val failures = AtomicInteger(0)
             val executor = Executors.newFixedThreadPool(threadCount)
             try {
                 // When: all threads hammer append simultaneously

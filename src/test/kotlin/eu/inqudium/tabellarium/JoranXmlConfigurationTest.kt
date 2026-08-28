@@ -9,6 +9,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.slf4j.Logger
 import org.slf4j.MarkerFactory
 import java.io.ByteArrayInputStream
 
@@ -46,7 +47,7 @@ class JoranXmlConfigurationTest {
 
     private fun kafkaAppender(): KafkaAppender =
         context
-            .getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)
+            .getLogger(Logger.ROOT_LOGGER_NAME)
             .getAppender("KAFKA") as KafkaAppender
 
     /** The documented full configuration shape, as an operator would write it. */
@@ -184,22 +185,9 @@ class JoranXmlConfigurationTest {
                 .info(MarkerFactory.getDetachedMarker("SECURITY"), "undeliverable event")
 
             // Then: the event surfaces in the fallback via the async dispatcher
-            pollUntil { synchronized(list.list) { list.list.size } == 1 }
+            pollUntil(timeoutMs = 5000) { synchronized(list.list) { list.list.size } == 1 }
             assertThat(list.list[0].formattedMessage).isEqualTo("undeliverable event")
             assertThat(list.list[0].level).isEqualTo(Level.INFO)
         }
-    }
-
-    private fun pollUntil(
-        timeoutMs: Long = 5000,
-        intervalMs: Long = 20,
-        condition: () -> Boolean,
-    ) {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        while (System.nanoTime() < deadline) {
-            if (condition()) return
-            Thread.sleep(intervalMs)
-        }
-        throw AssertionError("Condition did not become true within ${timeoutMs}ms")
     }
 }

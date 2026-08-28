@@ -2,11 +2,14 @@ package eu.inqudium.tabellarium
 
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
+import io.micrometer.core.instrument.Timer
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.data.Offset
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class MicrometerKafkaAppenderMetricsTest {
@@ -30,7 +33,7 @@ class MicrometerKafkaAppenderMetricsTest {
         registry: SimpleMeterRegistry,
         name: String,
         vararg tags: Pair<String, String>,
-    ): io.micrometer.core.instrument.Timer {
+    ): Timer {
         val tagList = tags.map { Tag.of(it.first, it.second) }
         return registry.find(name).tags(tagList).timer()
             ?: error("timer $name with tags ${tags.toList()} not found in registry")
@@ -175,12 +178,8 @@ class MicrometerKafkaAppenderMetricsTest {
             assertThat(successTimer.count()).isEqualTo(2L)
             assertThat(errorTimer.count()).isEqualTo(1L)
             // Total time for two 15+20=35 ms samples on the success timer
-            assertThat(successTimer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS))
-                .isCloseTo(
-                    35.0,
-                    org.assertj.core.data.Offset
-                        .offset(0.001),
-                )
+            assertThat(successTimer.totalTime(TimeUnit.MILLISECONDS))
+                .isCloseTo(35.0, Offset.offset(0.001))
         }
     }
 
