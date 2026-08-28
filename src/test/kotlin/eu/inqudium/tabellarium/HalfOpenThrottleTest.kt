@@ -289,6 +289,35 @@ class HalfOpenThrottleTest {
         }
 
         @Test
+        fun `should allow the first probe even when the monotonic clock is deeply negative`() {
+            // What is to be tested? Whether the "no probe yet" state is
+            //   anchored to the actual clock instead of a fixed far-past
+            //   sentinel. System.nanoTime has an arbitrary origin and may
+            //   itself be deeply negative; with the old sentinel
+            //   (Long.MIN_VALUE / 2), a clock below the sentinel made
+            //   `now - last` negative and denied every probe forever -
+            //   permanently locking the breaker out of recovery.
+            // How will the test case be deemed successful and why? Successful
+            //   if a HALF_OPEN throttle whose clock starts near
+            //   Long.MIN_VALUE admits its first probe. This pins the
+            //   clock-anchored initialization.
+            // Why is it important to test this test case? The failure mode
+            //   is a total, permanent logging outage after the first
+            //   breaker trip - invisible in any test using a small clock.
+
+            // Given: a clock starting near the bottom of the long range
+            val breaker = newBreaker()
+            breaker.transitionToOpenState()
+            breaker.transitionToHalfOpenState()
+            val deepNegativeClock = FakeNanoClock(initialNanos = Long.MIN_VALUE + 1_000_000)
+            val (throttle, _) =
+                newThrottle(breaker = breaker, gap = Duration.ofMillis(5), clock = deepNegativeClock)
+
+            // When / Then: the first probe is admitted
+            assertThat(throttle.mayAttemptProbe()).isTrue()
+        }
+
+        @Test
         fun `should disable throttling when gap is zero`() {
             // What is to be tested? Whether gap=0 is an explicit
             //   "disable" sentinel, allowing operators to switch off

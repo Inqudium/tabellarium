@@ -10,7 +10,9 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import net.logstash.logback.encoder.LogstashEncoder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.ResourceLock
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpMethod
 import java.io.ByteArrayOutputStream
@@ -18,6 +20,15 @@ import java.nio.charset.StandardCharsets
 import ch.qos.logback.classic.Logger as LogbackLogger
 
 /**
+ * **EXTERNAL-CONTRACT CHARACTERIZATION TEST — exercises no tabellarium
+ * code.** It pins the behavior of LogstashEncoder + Jackson against an
+ * Elasticsearch scalar mapping for an emitter call-site that lives in
+ * the consuming services, not in this library. It is kept here as
+ * executable documentation of the incident below; if it fails after a
+ * logstash-logback-encoder upgrade, the finding concerns the emitting
+ * services' call sites — not this appender. Tagged `external-contract`
+ * so it can be excluded from library-focused runs.
+ *
  * Regression guard for a production incident: one structured per-exchange log event
  * ("Adapter http exchange ... -> 403") reached the pod stdout but never appeared in Kibana, while every
  * neighbouring log line on the same logger did.
@@ -36,6 +47,8 @@ import ch.qos.logback.classic.Logger as LogbackLogger
  * serialise to a JSON scalar, not an object. The one-line fix at the call site is to pass
  * `method.name()` (a String) instead of the [HttpMethod] object.
  */
+@Tag("external-contract")
+@ResourceLock("logback.global-logger-context")
 class LogstashHttpMethodKeyValueIngestTest {
     /**
      * The lap.* leaf fields the log index maps as scalars (keyword / long), ECS-style. A JSON object value

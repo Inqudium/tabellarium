@@ -1,9 +1,7 @@
 package eu.inqudium.tabellarium
 
-import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
@@ -17,11 +15,20 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.ResourceLock
 import org.slf4j.LoggerFactory
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
+/**
+ * Mutates the GLOBAL SLF4J LoggerContext (the binding discovers
+ * appenders through LoggerFactory.getILoggerFactory, so a private
+ * context cannot be used). The [ResourceLock] serializes this class
+ * against every other test that touches the global context, keeping
+ * the suite safe if JUnit parallel execution is ever enabled.
+ */
+@ResourceLock("logback.global-logger-context")
 class KafkaAppenderMetricsBindingTest {
     // -- Test fixtures --------------------------------------------------
 
@@ -85,12 +92,7 @@ class KafkaAppenderMetricsBindingTest {
             start()
         }
 
-    private fun loggingEvent(message: String = "test message"): LoggingEvent {
-        val logger = loggerContext.getLogger("test-logger")
-        return LoggingEvent("fqcn.dummy", logger, Level.INFO, message, null, null).apply {
-            mdcPropertyMap = emptyMap()
-        }
-    }
+    private fun loggingEvent(message: String = "test message"): ILoggingEvent = newTestLoggingEvent(message = message)
 
     // -- Tests ----------------------------------------------------------
 

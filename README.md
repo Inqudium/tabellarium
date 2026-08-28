@@ -394,7 +394,7 @@ Micrometer on the classpath and emits no metrics until
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
 | `kafka.appender.events.accepted`    | Counter | `topic.class`                     | Events entering `KafkaAppender.append`                        |
 | `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` (callback outcome unknown)   |
-| `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events routed to the fallback appender                        |
+| `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost because the fallback dispatcher queue was full    |
 | `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue                |
@@ -596,18 +596,6 @@ on the appender.
 
 Items deferred from the current revision, in roughly decreasing
 priority order:
-
-### Eager validation of `max.in.flight.requests.per.connection`
-
-When AUDIT classification is active, the appender forces
-`enable.idempotence=true`. Kafka's producer rejects idempotence with
-`max.in.flight.requests.per.connection > 5` at construction time —
-which currently surfaces as a generic "Failed to build pipeline"
-error in the appender's status manager. Adding a check in
-`validateConfiguration()` that catches this combination before the
-producer constructor runs would give operators a clearer error
-message at startup. Estimated effort: half a day, including a test
-that exercises the combination.
 
 ### Producer-registry consolidation
 

@@ -149,10 +149,14 @@ open class KafkaAppenderMetricsBinding(
      */
     private fun collectKafkaAppenders(loggerContext: LoggerContext): List<KafkaAppender> {
         val result = LinkedHashSet<KafkaAppender>()
+        val visited =
+            java.util.Collections.newSetFromMap(
+                java.util.IdentityHashMap<Appender<ILoggingEvent>, Boolean>(),
+            )
         for (logger in loggerContext.loggerList) {
             val iterator = logger.iteratorForAppenders()
             while (iterator.hasNext()) {
-                visit(iterator.next(), result)
+                visit(iterator.next(), result, visited)
             }
         }
         return result.toList()
@@ -161,12 +165,20 @@ open class KafkaAppenderMetricsBinding(
     /**
      * Recursively descends into appenders attached to other appenders.
      * Handles the common case of a `KafkaAppender` wrapped in an
-     * `AsyncAppender`. Bounded by the appender graph, which is finite.
+     * `AsyncAppender`. The [visited] identity-set makes the walk safe
+     * on cyclic appender attachments (a pathological but constructible
+     * configuration) - without it, a cycle would overflow the stack
+     * inside the ContextRefreshedEvent listener and abort application
+     * startup.
      */
     private fun visit(
         appender: Appender<ILoggingEvent>,
         sink: MutableSet<KafkaAppender>,
+        visited: MutableSet<Appender<ILoggingEvent>>,
     ) {
+        if (!visited.add(appender)) {
+            return
+        }
         if (appender is KafkaAppender) {
             sink.add(appender)
             return
@@ -176,7 +188,7 @@ open class KafkaAppenderMetricsBinding(
             val attachable = appender as AppenderAttachable<ILoggingEvent>
             val iterator = attachable.iteratorForAppenders()
             while (iterator.hasNext()) {
-                visit(iterator.next(), sink)
+                visit(iterator.next(), sink, visited)
             }
         }
     }

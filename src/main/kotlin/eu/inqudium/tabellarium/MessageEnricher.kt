@@ -131,8 +131,28 @@ class MessageEnricher(
         /** Fixed value for the agent name. */
         const val AGENT_NAME: String = "logback-kafka-appender"
 
-        /** Fixed value for the agent version. */
-        const val AGENT_VERSION: String = "1.0.0"
+        /**
+         * The library version, read once from a build-time-filtered
+         * classpath resource so the header can never drift from the
+         * actual artifact version (the pom's `revision`). Falls back to
+         * `"unknown"` when the resource is missing (e.g. exotic
+         * repackaging) - a visible signal rather than a stale lie.
+         */
+        val AGENT_VERSION: String = loadAgentVersion()
+
+        private fun loadAgentVersion(): String =
+            try {
+                MessageEnricher::class.java
+                    .getResourceAsStream("/tabellarium-version.properties")
+                    ?.use { stream ->
+                        java.util
+                            .Properties()
+                            .apply { load(stream) }
+                            .getProperty("version")
+                    }?.takeIf { it.isNotBlank() } ?: "unknown"
+            } catch (_: Exception) {
+                "unknown"
+            }
 
         /** Default MDC key from which the trace id is read for partitioning. */
         const val TRACE_ID_MDC_KEY: String = "traceId"
@@ -179,6 +199,14 @@ class MessageEnricher(
  * (typically the MDC trace id). The sender UTF-8 encodes it on each
  * send - one allocation per event, unavoidable.
  *
+ * ## Identity semantics
+ *
+ * Deliberately NOT a `data class`: the header values are byte arrays,
+ * for which generated `equals`/`hashCode` would compare by reference -
+ * two records with identical content would not be equal, and `copy()`
+ * would silently share the mutable arrays. Instances compare by
+ * identity; there is no use case for value equality on this type.
+ *
  * @param partitioningKey The Kafka record key. Null means "no key": the
  *                        producer will then distribute records via its
  *                        configured partitioner (sticky-random by default).
@@ -186,7 +214,7 @@ class MessageEnricher(
  *                value bytes. Same instance across all enrich calls of
  *                a given enricher. Byte arrays must NOT be mutated.
  */
-data class EnrichedRecord(
+class EnrichedRecord(
     val partitioningKey: String?,
     val headers: Map<String, ByteArray>,
 )

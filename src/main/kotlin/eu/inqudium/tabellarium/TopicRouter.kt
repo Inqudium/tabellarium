@@ -36,7 +36,9 @@ import org.slf4j.Marker
  * - All mapped marker names must not be blank.
  * - All mapped topic names must not be blank.
  * - All topic names must match the Kafka-permitted character set
- *   `[a-zA-Z0-9._-]+` (Kafka rejects spaces and other characters at the broker).
+ *   `[a-zA-Z0-9._-]+` (Kafka rejects spaces and other characters at the broker),
+ *   must not be the reserved names `.` or `..`, and must not exceed
+ *   Kafka's maximum topic-name length of 249 characters.
  *
  * Violations raise an [IllegalArgumentException] at construction time, never later.
  *
@@ -57,9 +59,7 @@ class TopicRouter(
         require(defaultTopic.isNotBlank()) {
             "Default topic must not be blank"
         }
-        require(defaultTopic.matches(KAFKA_TOPIC_PATTERN)) {
-            "Default topic name contains characters not permitted by Kafka: '$defaultTopic'"
-        }
+        requireKafkaValidTopicName(defaultTopic) { "Default topic name" }
         markerMappings.forEach { (marker, topic) ->
             require(marker.isNotBlank()) {
                 "Marker name must not be blank (mapped to topic '$topic')"
@@ -67,9 +67,33 @@ class TopicRouter(
             require(topic.isNotBlank()) {
                 "Topic name for marker '$marker' must not be blank"
             }
-            require(topic.matches(KAFKA_TOPIC_PATTERN)) {
-                "Topic name for marker '$marker' contains characters not permitted by Kafka: '$topic'"
-            }
+            requireKafkaValidTopicName(topic) { "Topic name for marker '$marker'" }
+        }
+    }
+
+    /**
+     * Enforces Kafka's full topic-name rules, mirroring
+     * `org.apache.kafka.common.internals.Topic.validate`: permitted
+     * character set, the reserved names `.` and `..`, and the maximum
+     * length of 249. Anything the broker would reject must fail HERE,
+     * at construction - a name that passes startup but fails per send
+     * would divert every event to the fallback while the breaker
+     * (which deliberately ignores InvalidTopicException) reports a
+     * healthy pipeline.
+     */
+    private inline fun requireKafkaValidTopicName(
+        topic: String,
+        what: () -> String,
+    ) {
+        require(topic != "." && topic != "..") {
+            "${what()} must not be '.' or '..' (reserved by Kafka): '$topic'"
+        }
+        require(topic.length <= KAFKA_MAX_TOPIC_NAME_LENGTH) {
+            "${what()} exceeds Kafka's maximum length of $KAFKA_MAX_TOPIC_NAME_LENGTH characters " +
+                "(got ${topic.length}): '${topic.take(64)}…'"
+        }
+        require(topic.matches(KAFKA_TOPIC_PATTERN)) {
+            "${what()} contains characters not permitted by Kafka: '$topic'"
         }
     }
 
@@ -106,5 +130,8 @@ class TopicRouter(
         // Kafka topic name validation: letters, digits, dot, underscore, hyphen.
         // See org.apache.kafka.common.internals.Topic.containsValidPattern.
         private val KAFKA_TOPIC_PATTERN = Regex("[a-zA-Z0-9._\\-]+")
+
+        // See org.apache.kafka.common.internals.Topic.MAX_NAME_LENGTH.
+        private const val KAFKA_MAX_TOPIC_NAME_LENGTH = 249
     }
 }

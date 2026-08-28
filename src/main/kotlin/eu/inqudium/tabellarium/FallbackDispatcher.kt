@@ -4,6 +4,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.Appender
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -105,6 +106,14 @@ internal class FallbackDispatcher(
     @Volatile
     private var running = true
 
+    /**
+     * Ensures the close sequence runs exactly once: a second [close]
+     * (the appender's stop may be invoked repeatedly during context
+     * teardown) must not re-count the remaining queue as dropped or
+     * re-join the worker.
+     */
+    private val closeExecuted = AtomicBoolean(false)
+
     private val worker: Thread? =
         if (synchronous) {
             null
@@ -150,11 +159,27 @@ internal class FallbackDispatcher(
         if (!accepted) {
             droppedCount.incrementAndGet()
             metrics.fallbackDispatcherDropped()
+            return false
         }
-        return accepted
+        // Close the check-then-act window against close(): if the
+        // dispatcher was closed between the running check above and the
+        // offer, the event may have been added after close() finished its
+        // final drain accounting - it would then be neither delivered nor
+        // counted. Re-check and, if we can still pull our own event back
+        // out, count it as dropped ourselves.
+        if (!running && queue.remove(event)) {
+            droppedCount.incrementAndGet()
+            metrics.fallbackDispatcherDropped()
+            return false
+        }
+        return true
     }
 
     override fun close() {
+        if (!closeExecuted.compareAndSet(false, true)) {
+            // Close already ran; nothing left to account for.
+            return
+        }
         running = false
         if (synchronous) {
             // No worker thread to wait for.
@@ -186,14 +211,13 @@ internal class FallbackDispatcher(
                 worker.join(remainingTimeout)
             }
         }
-        // Any remaining queued events are dropped on shutdown.
-        val shutdownDrops = queue.size.toLong()
-        if (shutdownDrops > 0) {
-            droppedCount.addAndGet(shutdownDrops)
-            val m = metrics
-            repeat(shutdownDrops.toInt().coerceAtMost(Int.MAX_VALUE)) {
-                m.fallbackDispatcherDropped()
-            }
+        // Any remaining queued events are dropped on shutdown. Drain and
+        // count in one pass (rather than reading queue.size) so the events
+        // are actually released and cannot be re-counted by a later call.
+        val m = metrics
+        while (queue.poll() != null) {
+            droppedCount.incrementAndGet()
+            m.fallbackDispatcherDropped()
         }
     }
 

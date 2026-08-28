@@ -195,14 +195,17 @@ producers never collide on JMX names. An explicit `client.id` in
 active class.
 
 The client.id also powers the **self-logging guard**: the Kafka client
-names its internal threads after the client.id
-(`kafka-producer-network-thread | <client.id>`), and the appender
-ignores any log event whose thread name contains one of its producers'
-client.ids — otherwise the producer's own logging would be routed back
-through the producer, a feedback loop that amplifies exactly during
-broker trouble. Ignored means ignored entirely: no metrics, no
-fallback. A blank operator-supplied `client.id` is excluded from the
-guard (it would match every thread name).
+names its producer network thread
+`kafka-producer-network-thread | <client.id>`, and the appender ignores
+any log event whose thread name matches exactly that scheme for one of
+its producers' client.ids — otherwise the producer's own logging would
+be routed back through the producer, a feedback loop that amplifies
+exactly during broker trouble. Ignored means ignored entirely: no
+metrics, no fallback. The match is anchored to the full thread-naming
+scheme, so an operator-supplied short `client.id` can never suppress
+events from unrelated application threads whose names merely contain
+it; a blank operator-supplied `client.id` is additionally excluded
+from the guard.
 
 ### Worked example
 
@@ -466,7 +469,7 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | ------------------------------------------ | ------- | ------------------------- | ------- |
 | `kafka.appender.events.accepted`           | Counter | `topic.class`             | Events entering `append()` (after class routing). |
 | `kafka.appender.events.dispatched`         | Counter | `topic.class`             | Events handed to `producer.send()` (callback outcome not yet known). |
-| `kafka.appender.events.fallback`           | Counter | `topic.class`, `reason`   | Events routed to the fallback instead of Kafka. |
+| `kafka.appender.events.fallback`           | Counter | `topic.class`, `reason`   | Events diverted from Kafka delivery (to the fallback if configured, otherwise dropped). |
 | `kafka.appender.send.duration`             | Timer   | `topic.class`, `outcome`  | Wall-clock from `send()` invocation to callback. |
 | `kafka.appender.fallback.dropped`          | Counter | —                         | Events dropped by the dispatcher (queue full / shutdown timeout). |
 | `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape). |

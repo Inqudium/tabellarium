@@ -56,7 +56,7 @@ package eu.inqudium.tabellarium
  *   resolves to [TopicClass.TECHNICAL] via the fallback. Only one
  *   producer (the TECHNICAL one) is instantiated.
  */
-class TopicMappingConfig {
+open class TopicMappingConfig {
     /**
      * The default topic for events whose markers do not match any
      * explicit mapping. Set by Joran from the `<defaultTopic>` text
@@ -75,7 +75,7 @@ class TopicMappingConfig {
      *                                  contains characters Kafka does not
      *                                  permit.
      */
-    fun toTopicRouter(): TopicRouter =
+    open fun toTopicRouter(): TopicRouter =
         TopicRouter(
             defaultTopic = defaultTopic,
             markerMappings = emptyMap(),
@@ -87,7 +87,7 @@ class TopicMappingConfig {
      * topic-to-class assignments and every topic resolves to the
      * fallback class.
      */
-    fun toTopicTable(): TopicTable =
+    open fun toTopicTable(): TopicTable =
         TopicTable(
             topicsByName = emptyMap(),
             fallbackClass = TopicClass.TECHNICAL,

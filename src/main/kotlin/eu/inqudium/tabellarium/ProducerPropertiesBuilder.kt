@@ -103,11 +103,41 @@ class ProducerPropertiesBuilder(
             merged[key] = enforcedValue
         }
 
+        validateIdempotenceCompatibility(merged, topicClass)
+
         return TopicClassProperties(
             topicClass = topicClass,
             properties = java.util.Map.copyOf(merged),
             mandatoryOverrideViolations = violations.toList(),
         )
+    }
+
+    /**
+     * Rejects property combinations that the Kafka producer constructor
+     * would refuse anyway - but with a clear, named message instead of
+     * the generic construction failure the appender would otherwise
+     * surface. Relevant when a class mandates `enable.idempotence=true`
+     * (AUDIT) and the caller's tuning contradicts the idempotence
+     * preconditions.
+     */
+    private fun validateIdempotenceCompatibility(
+        merged: Map<String, String>,
+        topicClass: TopicClass,
+    ) {
+        if (merged[ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG]?.toBoolean() != true) return
+        merged[ProducerConfig.RETRIES_CONFIG]?.toIntOrNull()?.let { retries ->
+            require(retries > 0) {
+                "retries=$retries is incompatible with enable.idempotence=true " +
+                    "(required for $topicClass): the idempotent producer needs retries > 0"
+            }
+        }
+        merged[ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION]?.toIntOrNull()?.let { inFlight ->
+            require(inFlight <= 5) {
+                "max.in.flight.requests.per.connection=$inFlight is incompatible with " +
+                    "enable.idempotence=true (required for $topicClass): the idempotent " +
+                    "producer needs a value of at most 5"
+            }
+        }
     }
 }
 

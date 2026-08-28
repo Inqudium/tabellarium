@@ -321,6 +321,59 @@ class TopicRouterTest {
         }
 
         @Test
+        fun `should reject construction when the default topic is a reserved Kafka name`() {
+            // What is to be tested? Whether Kafka's reserved topic names
+            //   "." and ".." are rejected at construction. They pass the
+            //   character-set pattern but the broker refuses them - and
+            //   the resulting InvalidTopicException is deliberately
+            //   ignored by the circuit breaker, so a reserved name that
+            //   survived startup would silently divert every event to
+            //   the fallback while the pipeline reports healthy.
+            // How will the test case be deemed successful and why? Successful
+            //   if both "." and ".." throw IllegalArgumentException at
+            //   construction. This closes the validate-eagerly contract.
+            // Why is it important to test this test case? The failure mode
+            //   is permanent silent log loss after a clean startup - the
+            //   exact latent misconfiguration eager validation exists for.
+
+            // When / Then
+            listOf(".", "..").forEach { reserved ->
+                assertThatThrownBy {
+                    TopicRouter(defaultTopic = reserved, markerMappings = emptyMap())
+                }.isInstanceOf(IllegalArgumentException::class.java)
+                    .hasMessageContaining("reserved by Kafka")
+            }
+        }
+
+        @Test
+        fun `should reject construction when a topic name exceeds Kafka's maximum length`() {
+            // Given: 250 characters - one over Kafka's limit of 249
+            val overlong = "a".repeat(250)
+
+            // When / Then: rejected for the default topic
+            assertThatThrownBy {
+                TopicRouter(defaultTopic = overlong, markerMappings = emptyMap())
+            }.isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("maximum length")
+
+            // And: rejected for a mapped topic
+            assertThatThrownBy {
+                TopicRouter(defaultTopic = "default-topic", markerMappings = mapOf("AUDIT" to overlong))
+            }.isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("maximum length")
+        }
+
+        @Test
+        fun `should accept a topic name at exactly Kafka's maximum length`() {
+            // Given: exactly 249 characters - the boundary value
+            val maxLength = "a".repeat(249)
+
+            // When / Then: accepted
+            val router = TopicRouter(defaultTopic = maxLength, markerMappings = emptyMap())
+            assertThat(router.route(emptyList())).isEqualTo(maxLength)
+        }
+
+        @Test
         fun `should accept construction when the marker mappings are empty`() {
             // What is to be tested? Whether an empty marker map is a valid configuration.
             // How will the test case be deemed successful and why? Successful if no

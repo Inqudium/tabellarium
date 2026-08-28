@@ -27,16 +27,7 @@ class MessageEnricherTest {
     private fun loggingEventWithMdc(
         mdc: Map<String, String> = emptyMap(),
         message: String = "test message",
-    ): ILoggingEvent {
-        // Always set mdcPropertyMap explicitly: a freshly constructed LoggerContext
-        // has no MDCAdapter bound, so Logback's lazy-init in getMDCPropertyMap()
-        // would otherwise throw NPE on the first read.
-        val context = LoggerContext()
-        val logger = context.getLogger("test-logger")
-        return LoggingEvent("fqcn.dummy", logger, Level.INFO, message, null, null).apply {
-            mdcPropertyMap = mdc
-        }
-    }
+    ): ILoggingEvent = newTestLoggingEvent(message = message, mdc = mdc)
 
     /**
      * Decodes the pre-encoded UTF-8 header byte arrays back into Strings
@@ -107,6 +98,29 @@ class MessageEnricherTest {
             assertThat(result.headers.decoded())
                 .containsEntry(MessageEnricher.HEADER_AGENT_NAME, MessageEnricher.AGENT_NAME)
                 .containsEntry(MessageEnricher.HEADER_AGENT_VERSION, MessageEnricher.AGENT_VERSION)
+        }
+
+        @Test
+        fun `should load the agent version from the build-filtered resource`() {
+            // What is to be tested? Whether AGENT_VERSION comes from the
+            //   Maven-filtered tabellarium-version.properties resource
+            //   rather than a hardcoded constant that would drift from
+            //   the artifact version.
+            // How will the test case be deemed successful and why? Successful
+            //   if the loaded version is neither blank nor the "unknown"
+            //   fallback and starts with a digit (a real version string).
+            //   On the test classpath the filtered resource exists, so
+            //   the fallback firing would mean the loading is broken.
+            // Why is it important to test this test case? Downstream
+            //   consumers filter records by meta.agent.version; a header
+            //   that silently reports a stale hardcoded version after a
+            //   release bump would corrupt that dimension.
+
+            // When / Then
+            assertThat(MessageEnricher.AGENT_VERSION)
+                .isNotBlank()
+                .isNotEqualTo("unknown")
+                .matches("^\\d.*")
         }
 
         @Test

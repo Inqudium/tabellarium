@@ -2,6 +2,7 @@ package eu.inqudium.tabellarium
 
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
@@ -100,22 +101,40 @@ internal class MicrometerKafkaAppenderMetrics(
             .of(commonTags)
             .and(TAG_APPENDER, appenderName?.takeIf { it.isNotBlank() } ?: "unnamed")
 
+    /**
+     * Every meter this instance registered, so [deregisterFrom] can
+     * remove them from the registry when the appender stops or
+     * re-binds. Guarded by its own monitor: registration happens on
+     * the bind thread, deregistration possibly on a different
+     * shutdown thread.
+     */
+    private val registeredMeters = mutableListOf<Meter>()
+
+    private fun <M : Meter> track(meter: M): M {
+        synchronized(registeredMeters) { registeredMeters += meter }
+        return meter
+    }
+
     private val accepted: Map<TopicClass, Counter> =
         TopicClass.entries.associateWith { tc ->
-            Counter
-                .builder(METRIC_EVENTS_ACCEPTED)
-                .tags(tagsWith(TAG_TOPIC_CLASS, tc.tag))
-                .description("Events handed to KafkaAppender.append by Logback")
-                .register(registry)
+            track(
+                Counter
+                    .builder(METRIC_EVENTS_ACCEPTED)
+                    .tags(tagsWith(TAG_TOPIC_CLASS, tc.tag))
+                    .description("Events handed to KafkaAppender.append by Logback")
+                    .register(registry),
+            )
         }
 
     private val dispatched: Map<TopicClass, Counter> =
         TopicClass.entries.associateWith { tc ->
-            Counter
-                .builder(METRIC_EVENTS_DISPATCHED)
-                .tags(tagsWith(TAG_TOPIC_CLASS, tc.tag))
-                .description("Events accepted by producer.send (callback outcome not yet known)")
-                .register(registry)
+            track(
+                Counter
+                    .builder(METRIC_EVENTS_DISPATCHED)
+                    .tags(tagsWith(TAG_TOPIC_CLASS, tc.tag))
+                    .description("Events accepted by producer.send (callback outcome not yet known)")
+                    .register(registry),
+            )
         }
 
     /**
@@ -126,35 +145,43 @@ internal class MicrometerKafkaAppenderMetrics(
     private val fallback: Map<TopicClass, Map<KafkaAppenderMetrics.FallbackReason, Counter>> =
         TopicClass.entries.associateWith { tc ->
             KafkaAppenderMetrics.FallbackReason.entries.associateWith { reason ->
-                Counter
-                    .builder(METRIC_EVENTS_FALLBACK)
-                    .tags(
-                        tagsWith(TAG_TOPIC_CLASS, tc.tag)
-                            .and(TAG_REASON, reason.tag),
-                    ).description("Events routed to the fallback appender instead of Kafka")
-                    .register(registry)
+                track(
+                    Counter
+                        .builder(METRIC_EVENTS_FALLBACK)
+                        .tags(
+                            tagsWith(TAG_TOPIC_CLASS, tc.tag)
+                                .and(TAG_REASON, reason.tag),
+                        ).description(
+                            "Events diverted from Kafka delivery - handed to the fallback " +
+                                "appender when one is configured, otherwise dropped",
+                        ).register(registry),
+                )
             }
         }
 
     private val sendTimers: Map<TopicClass, Map<KafkaAppenderMetrics.SendOutcome, Timer>> =
         TopicClass.entries.associateWith { tc ->
             KafkaAppenderMetrics.SendOutcome.entries.associateWith { outcome ->
-                Timer
-                    .builder(METRIC_SEND_DURATION)
-                    .tags(
-                        tagsWith(TAG_TOPIC_CLASS, tc.tag)
-                            .and(TAG_OUTCOME, outcome.tag),
-                    ).description("Wall-clock duration of producer.send from invocation to callback")
-                    .register(registry)
+                track(
+                    Timer
+                        .builder(METRIC_SEND_DURATION)
+                        .tags(
+                            tagsWith(TAG_TOPIC_CLASS, tc.tag)
+                                .and(TAG_OUTCOME, outcome.tag),
+                        ).description("Wall-clock duration of producer.send from invocation to callback")
+                        .register(registry),
+                )
             }
         }
 
     private val fallbackDropped: Counter =
-        Counter
-            .builder(METRIC_FALLBACK_DROPPED)
-            .tags(fullTags)
-            .description("Events dropped by the FallbackDispatcher (queue full or shutdown timeout)")
-            .register(registry)
+        track(
+            Counter
+                .builder(METRIC_FALLBACK_DROPPED)
+                .tags(fullTags)
+                .description("Events dropped by the FallbackDispatcher (queue full or shutdown timeout)")
+                .register(registry),
+        )
 
     /**
      * Holder for the queue-size supplier. Replaced atomically by
@@ -166,15 +193,35 @@ internal class MicrometerKafkaAppenderMetrics(
     init {
         // Register the size gauge once at construction. The actual
         // supplier is plugged in later via registerFallbackQueueGauges.
-        // We don't need to handle re-registration: gauges are registered
-        // by their name+tags, and re-registering the same combination is
-        // idempotent in Micrometer.
-        Gauge
-            .builder(METRIC_FALLBACK_QUEUE_SIZE) {
-                queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
-            }.tags(fullTags)
-            .description("Current number of events waiting in the FallbackDispatcher queue")
-            .register(registry)
+        // Micrometer keeps the FIRST registration for a given name+tags
+        // combination - which is exactly why deregisterFrom() must run
+        // on stop/rebind, so a fresh instance's gauge is not silently
+        // shadowed by a stale one.
+        track(
+            Gauge
+                .builder(METRIC_FALLBACK_QUEUE_SIZE) {
+                    queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
+                }.tags(fullTags)
+                .description("Current number of events waiting in the FallbackDispatcher queue")
+                .register(registry),
+        )
+    }
+
+    /**
+     * Removes every meter this instance registered from [registry].
+     * Called by [KafkaAppender.stop] (and before a repeated bind) so
+     * that reconfiguration cycles do not accumulate meters or leave
+     * gauges reading a closed dispatcher's queue. Safe to call more
+     * than once. Note: when two instances share identical name+tags
+     * (two unnamed appenders on one registry), Micrometer hands both
+     * the same meter object - deregistering one then removes the
+     * shared meter; the `appender` tag exists to avoid that overlap.
+     */
+    internal fun deregisterFrom(registry: MeterRegistry) {
+        val toRemove = synchronized(registeredMeters) { registeredMeters.toList().also { registeredMeters.clear() } }
+        toRemove.forEach { meter ->
+            safe { registry.remove(meter) }
+        }
     }
 
     override fun eventAccepted(topicClass: TopicClass) {
@@ -219,11 +266,13 @@ internal class MicrometerKafkaAppenderMetrics(
             queueSizeSupplier.set(queueSize)
             // The capacity is fixed for the dispatcher's lifetime,
             // so it can be a constant-valued gauge.
-            Gauge
-                .builder(METRIC_FALLBACK_QUEUE_CAPACITY) { capacity.toDouble() }
-                .tags(fullTags)
-                .description("Maximum number of events the FallbackDispatcher queue can hold")
-                .register(registry)
+            track(
+                Gauge
+                    .builder(METRIC_FALLBACK_QUEUE_CAPACITY) { capacity.toDouble() }
+                    .tags(fullTags)
+                    .description("Maximum number of events the FallbackDispatcher queue can hold")
+                    .register(registry),
+            )
         }
     }
 

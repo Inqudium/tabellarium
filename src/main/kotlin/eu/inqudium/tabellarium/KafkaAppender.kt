@@ -193,12 +193,35 @@ class KafkaAppender :
     @Volatile
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
 
+    /**
+     * State of the last [bindMeterRegistry] call, kept so [stop] (and a
+     * repeated bind) can deregister everything that was registered:
+     * the appender's own meters, the per-producer [io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics]
+     * binders (which are [AutoCloseable] and must be closed), and the
+     * Resilience4j circuit-breaker meters. Without this teardown, every
+     * Logback reconfiguration cycle would leak meters and leave gauges
+     * reporting the previous instance's (closed) dispatcher queue.
+     */
+    private var boundMetrics: MicrometerKafkaAppenderMetrics? = null
+    private var boundRegistry: io.micrometer.core.instrument.MeterRegistry? = null
+    private val producerMetricBindings = mutableListOf<AutoCloseable>()
+
+    /**
+     * Guards the teardown in [stop] so a repeated stop (Logback may call
+     * it more than once during context teardown) does not re-run the
+     * close sequence - re-closing the dispatcher would double-count its
+     * remaining queue as dropped and re-emit the drop warning. Reset in
+     * [start] in case the appender is ever restarted.
+     */
+    private val stopExecuted = AtomicBoolean(false)
+
     // -- Lifecycle ------------------------------------------------------
 
     override fun start() {
         if (!validateConfiguration()) {
             return // addError was already called for each failure
         }
+        stopExecuted.set(false)
 
         try {
             buildPipeline()
@@ -313,16 +336,21 @@ class KafkaAppender :
     // -- Hot path -------------------------------------------------------
 
     override fun append(event: ILoggingEvent) {
-        // Self-logging guard: the Kafka client names its internal threads
-        // after the producer's client.id (e.g. "kafka-producer-network-
-        // thread | tabellarium-<component>-technical"). Log events from
-        // those threads are the producer's own logging; routing them back
-        // into this appender would feed the producer its own output - a
-        // feedback loop that amplifies exactly when the producer logs
+        // Self-logging guard: the Kafka client names its producer network
+        // thread "kafka-producer-network-thread | <client.id>". Log events
+        // from those threads are the producer's own logging; routing them
+        // back into this appender would feed the producer its own output -
+        // a feedback loop that amplifies exactly when the producer logs
         // most (broker trouble). Such events are ignored entirely: no
-        // metrics, no fallback.
+        // metrics, no fallback. The match is anchored to the exact thread-
+        // naming scheme (prefix + full client.id), so an operator-supplied
+        // short client.id can never swallow events from unrelated
+        // application threads whose names merely contain it.
         val threadName = event.threadName
-        if (threadName != null && producerClientIds.any { threadName.contains(it) }) {
+        if (threadName != null &&
+            threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
+            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in producerClientIds
+        ) {
             return
         }
         // Snapshot once so all hooks for this event use the same instance.
@@ -372,6 +400,12 @@ class KafkaAppender :
     // -- Shutdown -------------------------------------------------------
 
     override fun stop() {
+        if (!stopExecuted.compareAndSet(false, true)) {
+            // Teardown already ran; just keep Logback's state machine happy.
+            super.stop()
+            return
+        }
+        unbindMetrics()
         if (this::producerRegistry.isInitialized) {
             try {
                 producerRegistry.close()
@@ -456,13 +490,73 @@ class KafkaAppender :
             addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
             return
         }
+        // A repeated bind (context refresh, manual re-wiring) first tears
+        // down the previous registration so meters are not duplicated and
+        // stale gauges do not linger.
+        unbindMetrics()
         val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = this.name)
         metrics = impl
         messageSender.setMetrics(impl)
         fallbackDispatcher?.setMetrics(impl)
+        boundMetrics = impl
+        boundRegistry = registry
 
         bindResilience4jMetrics(registry, commonTags)
         bindKafkaProducerMetrics(registry, commonTags)
+    }
+
+    /**
+     * Reverses everything [bindMeterRegistry] registered: closes the
+     * per-producer Kafka metric binders, removes the Resilience4j
+     * circuit-breaker meters for this appender's breakers, and removes
+     * the appender's own meters from the registry. No-op when nothing
+     * is bound. Called from [stop] and before a repeated bind.
+     */
+    private fun unbindMetrics() {
+        val registry = boundRegistry ?: return
+        producerMetricBindings.forEach { binding ->
+            try {
+                binding.close()
+            } catch (e: Exception) {
+                addWarn("Error closing Kafka producer metric binding: ${e.message}", e)
+            }
+        }
+        producerMetricBindings.clear()
+        try {
+            removeResilience4jMeters(registry)
+        } catch (e: Exception) {
+            addWarn("Error removing Resilience4j meters: ${e.message}", e)
+        }
+        try {
+            boundMetrics?.deregisterFrom(registry)
+        } catch (e: Exception) {
+            addWarn("Error deregistering appender meters: ${e.message}", e)
+        }
+        boundMetrics = null
+        boundRegistry = null
+        metrics = KafkaAppenderMetrics.NO_OP
+    }
+
+    /**
+     * Removes the circuit-breaker meters that
+     * [io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics]
+     * registered for this appender's breakers. The binder itself offers
+     * no removal API, so the meters are found by their name prefix plus
+     * the breaker-name tag, restricted to this appender's own breaker
+     * names so an operator's unrelated breakers on a shared registry are
+     * never touched.
+     */
+    private fun removeResilience4jMeters(registry: io.micrometer.core.instrument.MeterRegistry) {
+        if (!this::producerRegistry.isInitialized) return
+        val breakerNames =
+            producerRegistry.activeTopicClasses
+                .map { ResilientMessageSender.circuitBreakerName(it) }
+                .toSet()
+        registry.meters
+            .filter { meter ->
+                meter.id.name.startsWith("resilience4j.circuitbreaker") &&
+                    meter.id.getTag("name") in breakerNames
+            }.forEach { registry.remove(it) }
     }
 
     /**
@@ -565,9 +659,13 @@ class KafkaAppender :
                 io.micrometer.core.instrument.Tags
                     .of(commonTags)
                     .and(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, topicClass.tag)
-            io.micrometer.core.instrument.binder.kafka
-                .KafkaClientMetrics(producer, tagsForClass)
-                .bindTo(registry)
+            val binding =
+                io.micrometer.core.instrument.binder.kafka
+                    .KafkaClientMetrics(producer, tagsForClass)
+            binding.bindTo(registry)
+            // Tracked so unbindMetrics() can close the binder (it is
+            // AutoCloseable and removes its meters on close).
+            producerMetricBindings += binding
         }
     }
 
@@ -580,6 +678,14 @@ class KafkaAppender :
      * the single fallback slot. Additional `<appender-ref>` elements
      * are ignored with a status warning - the KafkaAppender has only
      * one fallback slot and the first one wins.
+     *
+     * **Ownership:** the KafkaAppender assumes it owns the attached
+     * fallback appender's lifecycle - [stop] stops it (via
+     * [detachAndStopAllAppenders]) to release file handles and worker
+     * threads. Do not attach an appender that is simultaneously
+     * referenced by other loggers unless a full-context shutdown is
+     * the only stop path in your deployment; a selective stop of this
+     * appender would silence the shared appender for everyone.
      */
     override fun addAppender(newAppender: Appender<ILoggingEvent>) {
         if (fallbackAppender != null) {
@@ -619,5 +725,14 @@ class KafkaAppender :
             return true
         }
         return false
+    }
+
+    private companion object {
+        /**
+         * Kafka's fixed naming scheme for the producer's network thread;
+         * the client.id follows verbatim after this prefix. See
+         * `org.apache.kafka.clients.producer.KafkaProducer` (NETWORK_THREAD_PREFIX).
+         */
+        private const val PRODUCER_NETWORK_THREAD_PREFIX = "kafka-producer-network-thread | "
     }
 }

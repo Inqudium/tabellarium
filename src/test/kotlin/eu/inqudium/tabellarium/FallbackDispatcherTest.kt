@@ -276,6 +276,46 @@ class FallbackDispatcherTest {
             // Cleanup: unblock so the worker thread can exit
             blockingAppender.unblock()
         }
+
+        @Test
+        fun `should not change the dropped count when closed twice`() {
+            // What is to be tested? Whether close() is idempotent: the
+            //   appender's stop() may run more than once during Logback
+            //   context teardown, and each additional close() used to
+            //   re-count the still-queued events as dropped.
+            // How will the test case be deemed successful and why? Successful
+            //   if the droppedEventCount observed after the first close()
+            //   is unchanged after a second close(). This pins the
+            //   drain-and-clear accounting: events are counted exactly once.
+            // Why is it important to test this test case? The dropped count
+            //   feeds an operator warning and a loss metric; double
+            //   counting turns the primary loss-diagnostics signal into a
+            //   lie precisely during shutdown investigations.
+
+            // Given: a dispatcher whose worker is anchored in a blocked
+            //   doAppend so events remain queued at close time
+            val blockingAppender = BlockingAppender()
+            val dispatcher =
+                FallbackDispatcher(
+                    fallbackAppender = blockingAppender,
+                    shutdownTimeoutMs = 100,
+                )
+            dispatcher.enqueue(newTestLoggingEvent(message = "trigger"))
+            pollUntil { blockingAppender.inAppend.get() }
+            (1..3).forEach { dispatcher.enqueue(newTestLoggingEvent(message = "stuck-$it")) }
+
+            // When
+            dispatcher.close()
+            val afterFirstClose = dispatcher.droppedEventCount
+            dispatcher.close()
+
+            // Then
+            assertThat(afterFirstClose).isGreaterThanOrEqualTo(1L)
+            assertThat(dispatcher.droppedEventCount).isEqualTo(afterFirstClose)
+
+            // Cleanup
+            blockingAppender.unblock()
+        }
     }
 
     @Nested

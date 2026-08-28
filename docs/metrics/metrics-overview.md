@@ -8,7 +8,7 @@ Alle Metriken tragen den `appender`-Tag, der den Logback-Appender-Namen widerspi
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
 | `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Jedes Event, das `KafkaAppender.append()` betritt (nach Routing zur Topic-Klasse) |
 | `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event wurde erfolgreich an `producer.send()` übergeben (Callback-Outcome noch unbekannt) |
-| `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event ging zum Fallback-Appender statt zu Kafka              |
+| `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event wurde an Kafka vorbeigeleitet (zum Fallback-Appender, falls konfiguriert, sonst verworfen)              |
 | `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher musste verwerfen (Queue voll oder Shutdown-Timeout) |
 
 ### Timer

@@ -203,7 +203,7 @@ class ResilientMessageSenderTest {
         fun `should leave the record key null when the enrichment has no partitioning key`() {
             // Given
             val ctx = newSender()
-            val noKeyEnrichment = basicEnrichment.copy(partitioningKey = null)
+            val noKeyEnrichment = EnrichedRecord(partitioningKey = null, headers = basicEnrichment.headers)
 
             // When
             ctx.sender.send(

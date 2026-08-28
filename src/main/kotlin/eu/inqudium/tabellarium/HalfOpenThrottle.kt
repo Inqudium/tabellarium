@@ -68,10 +68,17 @@ internal class HalfOpenThrottle(
 
     /**
      * Timestamp of the last permitted probe in nanoseconds (monotonic).
-     * Initialized to a value far in the past so the very first probe
-     * is always allowed.
+     * Initialized to construction-time-minus-one-gap so the very first
+     * probe is always allowed. Deliberately NOT a fixed far-past
+     * sentinel: `nanoTime` has an arbitrary origin and may itself be
+     * deeply negative, and a sentinel below that origin would make
+     * `now - last` negative - permanently denying every probe and
+     * locking the breaker out of recovery. Anchoring to the actual
+     * clock keeps the arithmetic valid for any origin (the only
+     * remaining wrap case is a clock value within one gap of
+     * Long.MIN_VALUE, which no JVM produces in practice).
      */
-    private val lastProbeNanos: AtomicLong = AtomicLong(Long.MIN_VALUE / 2)
+    private val lastProbeNanos: AtomicLong = AtomicLong(nanoTimeSource() - minProbeGapNanos)
 
     init {
         require(!minProbeGap.isNegative) {

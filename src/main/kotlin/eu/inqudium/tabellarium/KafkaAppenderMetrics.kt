@@ -49,9 +49,12 @@ interface KafkaAppenderMetrics {
     fun eventDispatched(topicClass: TopicClass)
 
     /**
-     * Recorded once per event that was routed to the fallback appender
-     * instead of being dispatched to Kafka. The [reason] indicates
-     * which gate produced the routing decision.
+     * Recorded once per event that was **diverted from Kafka delivery**.
+     * The event is handed to the fallback appender when one is
+     * configured; without a fallback it is dropped - the counter
+     * increments either way, so it reads as "did not reach Kafka",
+     * not as "was delivered to the fallback". The [reason] indicates
+     * which gate produced the diversion.
      */
     fun eventFallback(
         topicClass: TopicClass,
@@ -94,8 +97,8 @@ interface KafkaAppenderMetrics {
     )
 
     /**
-     * Reasons a single event was routed to the fallback appender
-     * instead of being dispatched to Kafka.
+     * Reasons a single event was diverted from Kafka delivery (to the
+     * fallback appender when configured, otherwise dropped).
      */
     enum class FallbackReason(
         /** Lowercase, dot-free tag value suitable for Prometheus etc. */

@@ -326,6 +326,71 @@ class ProducerPropertiesBuilderTest {
     }
 
     @Nested
+    inner class `Idempotence compatibility validation` {
+        @Test
+        fun `should reject retries zero when the class mandates idempotence`() {
+            // What is to be tested? Whether a configuration the Kafka
+            //   producer constructor would refuse anyway (idempotence
+            //   requires retries > 0) is rejected here with a clear,
+            //   named message instead of surfacing later as a generic
+            //   "Failed to build pipeline".
+            // How will the test case be deemed successful and why? Successful
+            //   if AUDIT (mandated idempotence) with operator retries=0
+            //   throws an IllegalArgumentException naming both properties.
+            // Why is it important to test this test case? Operators
+            //   debugging a refused startup need the conflicting property
+            //   named; the generic constructor failure hides it.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.RETRIES_CONFIG to "0"),
+                )
+
+            // When / Then
+            assertThatThrownBy { builder.buildFor(TopicClass.AUDIT) }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("retries=0")
+                .hasMessageContaining("enable.idempotence")
+        }
+
+        @Test
+        fun `should reject more than five in-flight requests when the class mandates idempotence`() {
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION to "6"),
+                )
+
+            // When / Then
+            assertThatThrownBy { builder.buildFor(TopicClass.AUDIT) }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("max.in.flight.requests.per.connection=6")
+                .hasMessageContaining("at most 5")
+        }
+
+        @Test
+        fun `should not apply the idempotence checks to classes without the mandate`() {
+            // Given: the same tuning that AUDIT rejects
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(
+                        ProducerConfig.RETRIES_CONFIG to "0",
+                        ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION to "6",
+                    ),
+                )
+
+            // When: TECHNICAL has no idempotence mandate
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then: accepted verbatim
+            assertThat(result.properties)
+                .containsEntry(ProducerConfig.RETRIES_CONFIG, "0")
+                .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "6")
+        }
+    }
+
+    @Nested
     inner class `Client id default` {
         @Test
         fun `should derive a per-class client id from the prefix`() {

@@ -6,13 +6,20 @@ import ch.qos.logback.core.Appender
 import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 
 class KafkaAppenderTest {
     // -- Test fixtures --------------------------------------------------
@@ -51,7 +58,9 @@ class KafkaAppenderTest {
     }
 
     private class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        val events = mutableListOf<ILoggingEvent>()
+        // Synchronized: the asynchronous-dispatch test appends from the
+        // dispatcher worker thread while the test thread polls.
+        val events: MutableList<ILoggingEvent> = java.util.Collections.synchronizedList(mutableListOf())
 
         init {
             start()
@@ -96,6 +105,24 @@ class KafkaAppenderTest {
         }
 
     private fun KafkaAppender.statusMessages(): List<String> = context.statusManager.copyOfStatusList.map { it.message }
+
+    /**
+     * Bounded-deadline polling for asynchronous assertions (same pattern
+     * as FallbackDispatcherTest). Fails with an AssertionError when the
+     * condition does not become true within the timeout.
+     */
+    private fun pollUntil(
+        timeoutMs: Long = 2000,
+        intervalMs: Long = 10,
+        condition: () -> Boolean,
+    ) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            if (condition()) return
+            Thread.sleep(intervalMs)
+        }
+        throw AssertionError("Condition did not become true within ${timeoutMs}ms")
+    }
 
     // -- Tests ----------------------------------------------------------
 
@@ -319,13 +346,28 @@ class KafkaAppenderTest {
 
     @Nested
     inner class `Mandatory override warnings` {
+        /**
+         * TopicMappingConfig variant that classifies the default topic
+         * as AUDIT, activating the mandatory-override machinery that
+         * the minimal XML surface cannot reach yet. Uses the same
+         * `open` seam Joran extensions would use.
+         */
+        private inner class AuditTopicMappingConfig : TopicMappingConfig() {
+            override fun toTopicTable(): TopicTable =
+                TopicTable(
+                    topicsByName = mapOf(defaultTopic to TopicClass.AUDIT),
+                    fallbackClass = TopicClass.AUDIT,
+                )
+        }
+
         @Test
         fun `should emit a status warning when a user value conflicts with a mandatory override`() {
             // What is to be tested? Whether mandatory-override violations
             //   from ProducerPropertiesBuilder are surfaced to operators
-            //   via Logback's status manager.
+            //   via Logback's status manager - the addWarn wiring in
+            //   start(), not just the builder-level violation records.
             // How will the test case be deemed successful and why? Successful
-            //   if a warning message containing both the property key and
+            //   if a warning naming the property key, the user value, and
             //   the enforced value reaches the status manager. The warning
             //   is the only mechanism by which operators learn that their
             //   configuration intent was overruled for compliance reasons.
@@ -333,30 +375,46 @@ class KafkaAppenderTest {
             //   would let an operator believe their acks=1 had taken effect
             //   for audit topics, when in fact acks=all was forced. Auditors
             //   would later find a discrepancy between the documented
-            //   configuration and the actual broker behavior - exactly the
-            //   compliance gap this refactor closes.
+            //   configuration and the actual broker behavior.
 
-            // Given: a configuration with custom mappings that conflict with
-            //   AUDIT mandates. To trigger this we need at least one topic
-            //   classified as AUDIT, which the minimal configuration alone
-            //   does not produce. We bypass by constructing a topicMapping
-            //   with an explicit topic-class assignment.
-
-            // For now, the minimal configuration does not produce AUDIT
-            // topics, so we verify the absence of warnings as a baseline.
-            // When per-class topic mapping is added to TopicMappingConfig,
-            // this test should be expanded to cover the actual violation case.
+            // Given: the default topic classified as AUDIT and a conflicting
+            //   operator-supplied acks=1
             val factory = TestProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
-                    kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092",
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.ACKS_CONFIG}=1
+                        """.trimIndent(),
                 )
+            appender.topicMapping = AuditTopicMappingConfig().apply { defaultTopic = "default.topic" }
 
             // When
             appender.start()
 
-            // Then: no AUDIT mandates triggered with current minimal config
+            // Then: the appender started and the violation was surfaced
+            assertThat(appender.isStarted).isTrue()
+            assertThat(appender.statusMessages())
+                .anyMatch {
+                    it.contains("Mandatory override applied") &&
+                        it.contains(ProducerConfig.ACKS_CONFIG) &&
+                        it.contains("'1'") &&
+                        it.contains("'all'")
+                }
+        }
+
+        @Test
+        fun `should emit no override warning with the minimal configuration`() {
+            // Given: the minimal configuration (everything TECHNICAL, no
+            //   mandates) - the baseline the previous test's setup departs from
+            val appender = newAppender()
+
+            // When
+            appender.start()
+
+            // Then
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("Mandatory override applied") }
         }
@@ -460,6 +518,48 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(threadName = "http-nio-8080-exec-3"))
 
             // Then
+            assertThat(factory.createdProducers[0].history()).hasSize(1)
+        }
+
+        @Test
+        fun `should deliver events from application threads whose name merely contains a client id`() {
+            // What is to be tested? Whether the guard is anchored to
+            //   Kafka's producer-network-thread naming scheme instead of
+            //   a bare substring match. An operator may pin a short,
+            //   generic client.id; application threads whose names happen
+            //   to contain it must still be logged.
+            // How will the test case be deemed successful and why? Successful
+            //   if an event from a thread named after the (short) client.id
+            //   plus a suffix is delivered to the producer. With the old
+            //   substring match this event would have been silently
+            //   swallowed - the worst failure mode for a logging component.
+            // Why is it important to test this test case? Silent log loss
+            //   from unrelated threads is nearly undiagnosable in
+            //   production; the anchored match is the guarantee that the
+            //   guard only ever suppresses the producer's own logging.
+
+            // Given: operator pins the generic client.id "app"
+            val factory = TestProducerFactory()
+            val appender =
+                newAppender(
+                    producerFactory = factory,
+                    kafkaProducerProperties =
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.CLIENT_ID_CONFIG}=app
+                        """.trimIndent(),
+                )
+            appender.start()
+
+            // When: an ordinary application thread containing "app" logs
+            appender.doAppend(newTestLoggingEvent(threadName = "app-worker-1"))
+            // And: the actual producer network thread logs
+            appender.doAppend(
+                newTestLoggingEvent(threadName = "kafka-producer-network-thread | app"),
+            )
+
+            // Then: the application thread's event was delivered; the
+            //   producer thread's event was suppressed
             assertThat(factory.createdProducers[0].history()).hasSize(1)
         }
 
@@ -728,6 +828,192 @@ class KafkaAppenderTest {
 
             // Then
             assertThat(fallback.isStarted).isFalse()
+        }
+    }
+
+    @Nested
+    inner class `Hot path concurrency` {
+        /**
+         * Factory wrapping each MockProducer in a synchronizing delegate:
+         * MockProducer itself is not thread-safe (its history is a plain
+         * list), so without the wrapper the test harness would race
+         * internally and hide or fabricate failures. The appender-side
+         * code under test still runs fully concurrently.
+         */
+        private inner class SynchronizedTestProducerFactory : ProducerFactory {
+            val mock =
+                MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+
+            override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> =
+                object : Producer<ByteArray, ByteArray> by mock {
+                    override fun send(
+                        record: ProducerRecord<ByteArray, ByteArray>,
+                        callback: org.apache.kafka.clients.producer.Callback?,
+                    ): Future<RecordMetadata> = synchronized(mock) { mock.send(record, callback) }
+
+                    override fun send(record: ProducerRecord<ByteArray, ByteArray>): Future<RecordMetadata> = synchronized(mock) { mock.send(record) }
+                }
+
+            fun historySize(): Int = synchronized(mock) { mock.history().size }
+        }
+
+        @Test
+        fun `should deliver every event when many threads append concurrently`() {
+            // What is to be tested? Whether the unsynchronized hot path
+            //   (append -> route -> classify -> enrich -> send, plus the
+            //   breaker/throttle gates) is actually safe under real
+            //   contention - the central design claim behind extending
+            //   UnsynchronizedAppenderBase.
+            // How will the test case be deemed successful and why? Successful
+            //   if N threads x M events all reach the producer with no
+            //   exception escaping append and nothing diverted to the
+            //   fallback. Races that corrupt shared state would surface
+            //   as lost events, duplicate metric state, or exceptions.
+            // Why is it important to test this test case? The suite's only
+            //   true contention test used to cover HalfOpenThrottle alone;
+            //   a regression introducing shared mutable per-event state
+            //   into the hot path would have passed every other test and
+            //   failed only in production under load.
+
+            // Given
+            val threadCount = 8
+            val eventsPerThread = 250
+            val factory = SynchronizedTestProducerFactory()
+            val fallback = RecordingAppender()
+            val appender = newAppender(producerFactory = factory, fallback = fallback)
+            appender.start()
+
+            val startLatch = CountDownLatch(1)
+            val doneLatch = CountDownLatch(threadCount)
+            val failures =
+                java.util.concurrent.atomic
+                    .AtomicInteger(0)
+            val executor = Executors.newFixedThreadPool(threadCount)
+            try {
+                // When: all threads hammer append simultaneously
+                repeat(threadCount) { t ->
+                    executor.submit {
+                        try {
+                            startLatch.await()
+                            repeat(eventsPerThread) { i ->
+                                appender.doAppend(
+                                    newTestLoggingEvent(
+                                        message = "t$t-e$i",
+                                        threadName = "worker-$t",
+                                    ),
+                                )
+                            }
+                        } catch (_: Throwable) {
+                            failures.incrementAndGet()
+                        } finally {
+                            doneLatch.countDown()
+                        }
+                    }
+                }
+                startLatch.countDown()
+                assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue()
+            } finally {
+                executor.shutdownNow()
+            }
+
+            // Then: no thread failed, every event reached the producer,
+            //   nothing was diverted
+            assertThat(failures.get()).isZero()
+            assertThat(factory.historySize()).isEqualTo(threadCount * eventsPerThread)
+            assertThat(fallback.events).isEmpty()
+        }
+    }
+
+    @Nested
+    inner class `Asynchronous fallback dispatch` {
+        @Test
+        fun `should deliver fallback events through the real worker thread`() {
+            // What is to be tested? The production-representative
+            //   asynchronous appender -> dispatcher -> worker -> fallback
+            //   chain, which every other appender-level test bypasses via
+            //   the synchronous test hook.
+            // How will the test case be deemed successful and why? Successful
+            //   if events diverted by a failing encoder arrive at the
+            //   fallback appender asynchronously (bounded polling) and a
+            //   subsequent stop() completes cleanly, draining the queue.
+            // Why is it important to test this test case? A regression in
+            //   the dispatcher wiring (worker not started, stop-ordering
+            //   closing the dispatcher before the registry) would be
+            //   invisible to all synchronous-mode tests.
+
+            // Given: async dispatcher (the production path)
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = ThrowingEncoder(),
+                    fallback = fallback,
+                )
+            appender.useSynchronousFallbackForTests = false
+            appender.start()
+
+            // When: events fail in the hot path and divert to the fallback
+            repeat(5) { appender.doAppend(newTestLoggingEvent(message = "async-$it")) }
+
+            // Then: the worker thread delivers them asynchronously
+            pollUntil { fallback.events.size == 5 }
+
+            // And: stop() drains and shuts down cleanly, with no drop warning
+            appender.stop()
+            assertThat(appender.statusMessages())
+                .noneMatch { it.contains("dropped") }
+        }
+    }
+
+    @Nested
+    inner class `Metrics lifecycle` {
+        @Test
+        fun `should deregister its meters from the registry on stop`() {
+            // What is to be tested? Whether stop() removes everything
+            //   bindMeterRegistry registered - otherwise every Logback
+            //   reconfiguration cycle leaks meters and leaves gauges
+            //   reading the previous (closed) dispatcher's queue.
+            // How will the test case be deemed successful and why? Successful
+            //   if after stop() the registry no longer contains any
+            //   kafka.appender.* meter. This pins the register/deregister
+            //   symmetry of the metrics lifecycle.
+            // Why is it important to test this test case? Meter leaks are
+            //   invisible in tests and single-start deployments; they
+            //   surface as slowly growing scrape payloads and misleading
+            //   dashboards only after reload cycles in production.
+
+            // Given: a bound appender with a fallback (so queue gauges exist)
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender()
+            val appender = newAppender(fallback = fallback)
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            assertThat(registry.meters)
+                .anyMatch { it.id.name.startsWith("kafka.appender.") }
+
+            // When
+            appender.stop()
+
+            // Then: all appender meters are gone
+            assertThat(registry.meters)
+                .noneMatch { it.id.name.startsWith("kafka.appender.") }
+        }
+
+        @Test
+        fun `should not duplicate meters when bound twice`() {
+            // Given
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender()
+            appender.start()
+
+            // When: bound twice against the same registry
+            appender.bindMeterRegistry(registry)
+            val countAfterFirst = registry.meters.count { it.id.name.startsWith("kafka.appender.") }
+            appender.bindMeterRegistry(registry)
+            val countAfterSecond = registry.meters.count { it.id.name.startsWith("kafka.appender.") }
+
+            // Then: the second bind replaced, not duplicated
+            assertThat(countAfterSecond).isEqualTo(countAfterFirst)
+            appender.stop()
         }
     }
 

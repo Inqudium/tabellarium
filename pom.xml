@@ -211,6 +211,27 @@
         <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
         <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
 
+        <resources>
+            <!-- Filter ONLY the version resource (MessageEnricher reads it for
+                 the meta.agent.version header); everything else is copied
+                 verbatim so binary resources can never be corrupted by
+                 accidental placeholder substitution. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>tabellarium-version.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>tabellarium-version.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+
         <plugins>
             <!-- Flatten Plugin (resolves the CI-friendly ${revision} for install/deploy) -->
             <plugin>
