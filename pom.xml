@@ -341,6 +341,19 @@
                             <lineSuffix>#L</lineSuffix>
                         </link>
                     </sourceLinks>
+                    <pluginsConfiguration>
+                        <!--
+                            logo-icon.svg is the magic asset name: it replaces
+                            Dokka's default header logo AND the favicon (the
+                            generated pages link images/logo-icon.svg as icon).
+                            The file is a copy of docs/assets/icon.svg.
+                        -->
+                        <org.jetbrains.dokka.base.DokkaBase>
+                            <customAssets>
+                                <asset>${project.basedir}/docs/assets/logo-icon.svg</asset>
+                            </customAssets>
+                        </org.jetbrains.dokka.base.DokkaBase>
+                    </pluginsConfiguration>
                 </configuration>
             </plugin>
 
