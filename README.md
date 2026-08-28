@@ -26,11 +26,21 @@ configuration guide, metrics overview, and Grafana dashboards.
 
 ## Features
 
+### Delivery
+
 - **The sender is never made to wait.** The hot path takes no lock
   (`UnsynchronizedAppenderBase`, atomics only), so it neither pins carrier
   threads on virtual threads nor stalls a Reactor event loop. `max.block.ms`
   is capped at 500 ms per class, bounding the worst case even when the
   producer buffer is full.
+- **Undeliverable events take the side road, not the ditch.** An optional
+  fallback appender receives what Kafka refuses, fed through a bounded
+  queue and its own worker thread — the Kafka I/O thread is never blocked
+  by a slow file appender, and dropped events are counted rather than
+  silently lost.
+
+### Circuit breaking
+
 - **A broken route is not hammered.** One Resilience4j circuit breaker per
   topic class, so a stuck audit broker never throttles technical logging.
   Deterministic payload errors (`RecordTooLargeException` and friends) are
@@ -39,11 +49,9 @@ configuration guide, metrics overview, and Grafana dashboards.
 - **Recovery probes are spread over time.** In half-open state a throttle
   admits one probe per interval instead of letting a high-volume logger
   burn every permitted call in microseconds.
-- **Undeliverable events take the side road, not the ditch.** An optional
-  fallback appender receives what Kafka refuses, fed through a bounded
-  queue and its own worker thread — the Kafka I/O thread is never blocked
-  by a slow file appender, and dropped events are counted rather than
-  silently lost.
+
+### Compliance & routing
+
 - **Compliance grades that configuration cannot weaken.** Topics are
   classified `AUDIT` / `FUNCTIONAL` / `TECHNICAL` / `PERFORMANCE`; the
   first two enforce `acks=all` (and idempotence for `AUDIT`) over any
@@ -52,6 +60,9 @@ configuration guide, metrics overview, and Grafana dashboards.
 - **Marker-based routing.** `<mapping>` elements route by SLF4J marker to
   their own topic and class; one producer, breaker and `client.id` per
   active class, and none for dormant ones.
+
+### Operations
+
 - **Misconfiguration fails at startup, not per event.** Blank identity
   fields, invalid Kafka topic names, unknown topic classes, duplicate
   markers and idempotence-incompatible tuning all abort `start()` with a
@@ -59,6 +70,9 @@ configuration guide, metrics overview, and Grafana dashboards.
 - **Metrics are opt-in and complete.** Counters, timers and queue gauges
   for a Micrometer registry, plus Grafana dashboards and a Spring binding
   helper — and nothing at all until you bind a registry.
+
+### Footprint & security
+
 - **A lean dependency tree.** Micrometer, Spring and the Logstash encoder
   are all `optional`; consumers who do not want them do not get them.
 - **Security-conscious defaults.** Diagnostics never echo your producer
