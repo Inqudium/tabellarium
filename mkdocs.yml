@@ -1,0 +1,44 @@
+site_name: Tabellarium
+site_description: A resilient Logback appender for Apache Kafka
+site_url: https://inqudium.github.io/tabellarium/
+repo_url: https://github.com/Inqudium/tabellarium
+repo_name: Inqudium/tabellarium
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/icon.svg
+  favicon: assets/icon.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: red
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: red
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+
+nav:
+  - Home: index.md
+  - Configuration guide: metrics+config/kafka-appender-config-guide.md
+  - Metrics overview: metrics+config/metrics-overview.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
