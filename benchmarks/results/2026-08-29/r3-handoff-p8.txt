@@ -1,0 +1,166 @@
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: -Xms2g -Xmx2g
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 9 threads (1 group; 1x "consumer", 8x "producer" in each group), will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.HandoffBenchmark.handoff
+
+# Run progress: 0,00% complete, ETA 00:00:30
+# Fork: 1 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 1450,511 ±(99.9%) 791,073 ns/op
+# Warmup Iteration   2: 1272,722 ±(99.9%) 697,255 ns/op
+# Warmup Iteration   3: 1292,354 ±(99.9%) 747,165 ns/op
+# Warmup Iteration   4: 1052,534 ±(99.9%) 567,917 ns/op
+# Warmup Iteration   5: 741,092 ±(99.9%) 411,668 ns/op
+Iteration   1: 1088,019 ±(99.9%) 636,970 ns/op
+                 consumer: 97,789 ns/op
+                 producer: 1211,798 ±(99.9%) 155,511 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   2: 2061,494 ±(99.9%) 1255,085 ns/op
+                 consumer: 165,224 ns/op
+                 producer: 2298,528 ±(99.9%) 466,845 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   3: 1920,105 ±(99.9%) 1117,350 ns/op
+                 consumer: 182,058 ns/op
+                 producer: 2137,361 ±(99.9%) 268,952 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   4: 1160,895 ±(99.9%) 626,676 ns/op
+                 consumer: 169,440 ns/op
+                 producer: 1284,826 ±(99.9%) 59,284 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   5: 1379,159 ±(99.9%) 779,555 ns/op
+                 consumer: 160,493 ns/op
+                 producer: 1531,493 ±(99.9%) 162,940 ns/op
+                 rejected: ≈ 0 #
+
+
+# Run progress: 33,33% complete, ETA 00:00:20
+# Fork: 2 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 2315,551 ±(99.9%) 1356,641 ns/op
+# Warmup Iteration   2: 1250,522 ±(99.9%) 680,901 ns/op
+# Warmup Iteration   3: 1817,175 ±(99.9%) 1077,411 ns/op
+# Warmup Iteration   4: 1272,472 ±(99.9%) 699,322 ns/op
+# Warmup Iteration   5: 1954,852 ±(99.9%) 1192,577 ns/op
+Iteration   1: 2175,428 ±(99.9%) 1274,296 ns/op
+                 consumer: 212,838 ns/op
+                 producer: 2420,752 ±(99.9%) 373,468 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   2: 1831,157 ±(99.9%) 1031,244 ns/op
+                 consumer: 226,337 ns/op
+                 producer: 2031,760 ±(99.9%) 245,509 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   3: 1353,604 ±(99.9%) 751,313 ns/op
+                 consumer: 164,562 ns/op
+                 producer: 1502,234 ±(99.9%) 67,008 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   4: 1350,734 ±(99.9%) 755,086 ns/op
+                 consumer: 163,298 ns/op
+                 producer: 1499,164 ±(99.9%) 123,044 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   5: 1706,448 ±(99.9%) 982,910 ns/op
+                 consumer: 182,663 ns/op
+                 producer: 1896,921 ±(99.9%) 255,325 ns/op
+                 rejected: ≈ 0 #
+
+
+# Run progress: 66,67% complete, ETA 00:00:10
+# Fork: 3 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 1464,402 ±(99.9%) 819,971 ns/op
+# Warmup Iteration   2: 1604,862 ±(99.9%) 912,571 ns/op
+# Warmup Iteration   3: 1311,634 ±(99.9%) 788,330 ns/op
+# Warmup Iteration   4: 1170,069 ±(99.9%) 684,756 ns/op
+# Warmup Iteration   5: 1112,304 ±(99.9%) 645,343 ns/op
+Iteration   1: 638,317 ±(99.9%) 339,986 ns/op
+                 consumer: 99,160 ns/op
+                 producer: 705,711 ±(99.9%) 15,170 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   2: 912,469 ±(99.9%) 519,233 ns/op
+                 consumer: 100,657 ns/op
+                 producer: 1013,946 ±(99.9%) 108,078 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   3: 1072,712 ±(99.9%) 666,560 ns/op
+                 consumer: 88,636 ns/op
+                 producer: 1195,721 ±(99.9%) 297,302 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   4: 1576,922 ±(99.9%) 940,163 ns/op
+                 consumer: 139,366 ns/op
+                 producer: 1756,616 ±(99.9%) 305,935 ns/op
+                 rejected: ≈ 0 #
+
+Iteration   5: 799,475 ±(99.9%) 442,234 ns/op
+                 consumer: 100,539 ns/op
+                 producer: 886,843 ±(99.9%) 48,345 ns/op
+                 rejected: ≈ 0 #
+
+
+
+Result "eu.inqudium.tabellarium.bench.HandoffBenchmark.handoff":
+  1401,796 ±(99.9%) 500,256 ns/op [Average]
+  (min, avg, max) = (638,317, 1401,796, 2175,428), stdev = 467,940
+  CI (99.9%): [901,540, 1902,052] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.HandoffBenchmark.handoff:consumer":
+  150,204 ±(99.9%) 46,991 ns/op [Average]
+  (min, avg, max) = (88,636, 150,204, 226,337), stdev = 43,955
+  CI (99.9%): [103,213, 197,195] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.HandoffBenchmark.handoff:producer":
+  1558,245 ±(99.9%) 557,919 ns/op [Average]
+  (min, avg, max) = (705,711, 1558,245, 2420,752), stdev = 521,878
+  CI (99.9%): [1000,326, 2116,164] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.HandoffBenchmark.handoff:rejected":
+  ≈ 0 #
+
+
+# Run complete. Total time: 00:00:30
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                          Mode  Cnt     Score     Error  Units
+HandoffBenchmark.handoff           avgt   15  1401,796 ± 500,256  ns/op
+HandoffBenchmark.handoff:consumer  avgt   15   150,204 ±  46,991  ns/op
+HandoffBenchmark.handoff:producer  avgt   15  1558,245 ± 557,919  ns/op
+HandoffBenchmark.handoff:rejected  avgt   15       ≈ 0                #

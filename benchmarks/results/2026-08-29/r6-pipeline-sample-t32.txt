@@ -1,0 +1,265 @@
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: -Xms2g -Xmx2g
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 32 threads, will synchronize iterations
+# Benchmark mode: Sampling time
+# Benchmark: eu.inqudium.tabellarium.bench.AppendPipelineBenchmark.appendOneEvent
+# Parameters: (metricsBound = false)
+
+# Run progress: 0,00% complete, ETA 00:00:30
+# Fork: 1 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 30,265 ±(99.9%) 0,973 us/op
+# Warmup Iteration   2: 26,372 ±(99.9%) 0,362 us/op
+# Warmup Iteration   3: 24,750 ±(99.9%) 0,334 us/op
+# Warmup Iteration   4: 23,782 ±(99.9%) 0,306 us/op
+# Warmup Iteration   5: 23,124 ±(99.9%) 0,294 us/op
+Iteration   1: 21,717 ±(99.9%) 0,282 us/op
+                 p0.00:   0,090 us/op
+                 p0.50:   0,391 us/op
+                 p0.90:   3,704 us/op
+                 p0.95:   221,184 us/op
+                 p0.99:   249,856 us/op
+                 p0.999:  304,128 us/op
+                 p0.9999: 1347,911 us/op
+                 p1.00:   4505,600 us/op
+
+Iteration   2: 22,133 ±(99.9%) 0,296 us/op
+                 p0.00:   0,090 us/op
+                 p0.50:   0,411 us/op
+                 p0.90:   3,824 us/op
+                 p0.95:   225,024 us/op
+                 p0.99:   254,976 us/op
+                 p0.999:  324,096 us/op
+                 p0.9999: 873,877 us/op
+                 p1.00:   4726,784 us/op
+
+Iteration   3: 21,323 ±(99.9%) 0,268 us/op
+                 p0.00:   0,090 us/op
+                 p0.50:   0,380 us/op
+                 p0.90:   3,464 us/op
+                 p0.95:   220,672 us/op
+                 p0.99:   248,064 us/op
+                 p0.999:  295,936 us/op
+                 p0.9999: 1256,581 us/op
+                 p1.00:   4521,984 us/op
+
+Iteration   4: 23,512 ±(99.9%) 0,320 us/op
+                 p0.00:   0,080 us/op
+                 p0.50:   0,491 us/op
+                 p0.90:   3,936 us/op
+                 p0.95:   232,704 us/op
+                 p0.99:   306,176 us/op
+                 p0.999:  393,478 us/op
+                 p0.9999: 2119,480 us/op
+                 p1.00:   4866,048 us/op
+
+Iteration   5: [path-mix] metricsBound=false counters unavailable (NO_OP by design)
+23,246 ±(99.9%) 0,321 us/op
+                 p0.00:   0,090 us/op
+                 p0.50:   0,461 us/op
+                 p0.90:   4,384 us/op
+                 p0.95:   230,656 us/op
+                 p0.99:   259,072 us/op
+                 p0.999:  332,288 us/op
+                 p0.9999: 2244,608 us/op
+                 p1.00:   6004,736 us/op
+
+
+# Run progress: 33,33% complete, ETA 00:00:23
+# Fork: 2 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 36,068 ±(99.9%) 0,827 us/op
+# Warmup Iteration   2: 31,825 ±(99.9%) 0,503 us/op
+# Warmup Iteration   3: 29,368 ±(99.9%) 0,414 us/op
+# Warmup Iteration   4: 27,444 ±(99.9%) 0,425 us/op
+# Warmup Iteration   5: 27,365 ±(99.9%) 0,440 us/op
+Iteration   1: 29,528 ±(99.9%) 0,497 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,501 us/op
+                 p0.90:   4,144 us/op
+                 p0.95:   317,440 us/op
+                 p0.99:   370,688 us/op
+                 p0.999:  441,856 us/op
+                 p0.9999: 711,286 us/op
+                 p1.00:   8192,000 us/op
+
+Iteration   2: 28,976 ±(99.9%) 0,484 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,631 us/op
+                 p0.90:   4,888 us/op
+                 p0.95:   276,992 us/op
+                 p0.99:   352,256 us/op
+                 p0.999:  426,204 us/op
+                 p0.9999: 2600,960 us/op
+                 p1.00:   8470,528 us/op
+
+Iteration   3: 28,643 ±(99.9%) 0,450 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,551 us/op
+                 p0.90:   4,088 us/op
+                 p0.95:   303,616 us/op
+                 p0.99:   361,984 us/op
+                 p0.999:  438,784 us/op
+                 p0.9999: 2169,241 us/op
+                 p1.00:   6176,768 us/op
+
+Iteration   4: 28,844 ±(99.9%) 0,512 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,501 us/op
+                 p0.90:   3,908 us/op
+                 p0.95:   312,832 us/op
+                 p0.99:   371,712 us/op
+                 p0.999:  470,219 us/op
+                 p0.9999: 2277,206 us/op
+                 p1.00:   9846,784 us/op
+
+Iteration   5: [path-mix] metricsBound=false counters unavailable (NO_OP by design)
+29,728 ±(99.9%) 0,521 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,551 us/op
+                 p0.90:   4,432 us/op
+                 p0.95:   308,224 us/op
+                 p0.99:   363,008 us/op
+                 p0.999:  468,396 us/op
+                 p0.9999: 2404,150 us/op
+                 p1.00:   10829,824 us/op
+
+
+# Run progress: 66,67% complete, ETA 00:00:11
+# Fork: 3 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 39,452 ±(99.9%) 1,329 us/op
+# Warmup Iteration   2: 26,686 ±(99.9%) 0,385 us/op
+# Warmup Iteration   3: 20,504 ±(99.9%) 0,280 us/op
+# Warmup Iteration   4: 28,805 ±(99.9%) 0,447 us/op
+# Warmup Iteration   5: 28,431 ±(99.9%) 0,500 us/op
+Iteration   1: 28,482 ±(99.9%) 0,474 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,511 us/op
+                 p0.90:   3,664 us/op
+                 p0.95:   315,392 us/op
+                 p0.99:   368,640 us/op
+                 p0.999:  446,976 us/op
+                 p0.9999: 2457,600 us/op
+                 p1.00:   8069,120 us/op
+
+Iteration   2: 27,461 ±(99.9%) 0,451 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,491 us/op
+                 p0.90:   3,424 us/op
+                 p0.95:   311,808 us/op
+                 p0.99:   370,176 us/op
+                 p0.999:  447,488 us/op
+                 p0.9999: 2963,862 us/op
+                 p1.00:   7503,872 us/op
+
+Iteration   3: 26,570 ±(99.9%) 0,424 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,511 us/op
+                 p0.90:   3,236 us/op
+                 p0.95:   300,032 us/op
+                 p0.99:   359,936 us/op
+                 p0.999:  473,088 us/op
+                 p0.9999: 2236,146 us/op
+                 p1.00:   8634,368 us/op
+
+Iteration   4: 26,163 ±(99.9%) 0,384 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,511 us/op
+                 p0.90:   3,304 us/op
+                 p0.95:   296,960 us/op
+                 p0.99:   355,328 us/op
+                 p0.999:  426,496 us/op
+                 p0.9999: 999,659 us/op
+                 p1.00:   5636,096 us/op
+
+Iteration   5: [path-mix] metricsBound=false counters unavailable (NO_OP by design)
+27,733 ±(99.9%) 0,461 us/op
+                 p0.00:   0,150 us/op
+                 p0.50:   0,511 us/op
+                 p0.90:   3,684 us/op
+                 p0.95:   303,616 us/op
+                 p0.99:   364,032 us/op
+                 p0.999:  472,399 us/op
+                 p0.9999: 2486,200 us/op
+                 p1.00:   9961,472 us/op
+
+
+
+Result "eu.inqudium.tabellarium.bench.AppendPipelineBenchmark.appendOneEvent":
+  N = 9236856
+  mean =     25,931 ±(99.9%) 0,104 us/op
+
+  Histogram, us/op:
+    [    0,000,  1250,000) = 9235681 
+    [ 1250,000,  2500,000) = 539 
+    [ 2500,000,  3750,000) = 255 
+    [ 3750,000,  5000,000) = 117 
+    [ 5000,000,  6250,000) = 68 
+    [ 6250,000,  7500,000) = 21 
+    [ 7500,000,  8750,000) = 105 
+    [ 8750,000, 10000,000) = 47 
+    [10000,000, 11250,000) = 23 
+    [11250,000, 12500,000) = 0 
+    [12500,000, 13750,000) = 0 
+    [13750,000, 15000,000) = 0 
+    [15000,000, 16250,000) = 0 
+    [16250,000, 17500,000) = 0 
+    [17500,000, 18750,000) = 0 
+
+  Percentiles, us/op:
+      p(0,0000) =      0,080 us/op
+     p(50,0000) =      0,501 us/op
+     p(90,0000) =      3,796 us/op
+     p(95,0000) =    256,256 us/op
+     p(99,0000) =    351,744 us/op
+     p(99,9000) =    428,032 us/op
+     p(99,9900) =   2166,784 us/op
+     p(99,9990) =   8347,648 us/op
+     p(99,9999) =  10629,335 us/op
+    p(100,0000) =  10829,824 us/op
+
+
+# Run complete. Total time: 00:00:36
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                       (metricsBound)    Mode      Cnt      Score   Error  Units
+AppendPipelineBenchmark.appendOneEvent                   false  sample  9236856     25,931 ± 0,104  us/op
+AppendPipelineBenchmark.appendOneEvent:p0.00             false  sample               0,080          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.50             false  sample               0,501          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.90             false  sample               3,796          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.95             false  sample             256,256          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.99             false  sample             351,744          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.999            false  sample             428,032          us/op
+AppendPipelineBenchmark.appendOneEvent:p0.9999           false  sample            2166,784          us/op
+AppendPipelineBenchmark.appendOneEvent:p1.00             false  sample           10829,824          us/op

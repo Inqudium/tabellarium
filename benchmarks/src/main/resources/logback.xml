@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Silences the DEFAULT Logback context inside benchmark JVMs. Without
+    this file, Logback's zero-config default is root=DEBUG to console,
+    and Resilience4j logs a DEBUG line PER BREAKER CALL - the first
+    measurement session measured Logback console appending per op (15 GB
+    of log output) instead of the code under test. Root OFF removes the
+    format/append/write cost entirely; the isDebugEnabled guard that
+    remains is the realistic production condition.
+
+    The KafkaAppender under test is unaffected: the benchmarks give it
+    its own private LoggerContext, which never reads this file.
+-->
+<configuration>
+    <root level="OFF"/>
+</configuration>
