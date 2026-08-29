@@ -64,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   README element table; the Joran round-trip test now binds
   `<sendQueueCapacity>` and `<includeCallerData>` alongside the rest of
   the XML surface.
+- CI runs the real-broker integration stage as its own job on every
+  push, pull request, and the weekly schedule (`-Pintegration` with
+  `-Dgroups=integration`, so only the broker tests run there) — the
+  wire-level evidence can no longer rot silently.
+- The `external-contract` and `integration` test profiles compose:
+  each blanks only its own exclusion property, so
+  `mvn -Pexternal-contract,integration test` runs both stages
+  (previously the later-declared profile silently dropped the other
+  requested tag group).
+- The README architecture diagram shows the actual pipeline including
+  the per-class `SendDispatcher` workers and the `FallbackDispatcher`
+  (it previously described the pre-dispatcher architecture).
 - Test-suite visibility: JaCoCo runs with every `verify` and the Docs
   workflow publishes the coverage report plus a self-hosted badge; a
   generated "Test evidence" page lists every test sentence with its

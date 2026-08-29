@@ -86,8 +86,20 @@
             The integration tag marks the Testcontainers-based broker tests,
             which need a Docker daemon; the default loop stays offline and
             fast. Run them deliberately with -Pintegration.
+
+            One independent property per excluded tag, concatenated below:
+            each profile blanks only its own part, so the profiles COMPOSE -
+            "mvn -Pexternal-contract,integration test" runs both stages.
+            (With a single shared property, the later-declared profile's
+            value would win and silently drop the other requested stage.)
+            The static never-tagged sentinel keeps the list non-empty when
+            both profiles blank their parts: Surefire tolerates empty list
+            ENTRIES, but JUnit rejects an entirely empty tag list; excluding
+            a tag no test carries is a no-op.
         -->
-        <surefire.excludedGroups>external-contract,integration</surefire.excludedGroups>
+        <surefire.excluded.external-contract>external-contract</surefire.excluded.external-contract>
+        <surefire.excluded.integration>integration</surefire.excluded.integration>
+        <surefire.excludedGroups>never-tagged,${surefire.excluded.external-contract},${surefire.excluded.integration}</surefire.excludedGroups>
 
         <!-- Plugin Versions -->
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
@@ -526,7 +538,7 @@
         <profile>
             <id>external-contract</id>
             <properties>
-                <surefire.excludedGroups>integration</surefire.excludedGroups>
+                <surefire.excluded.external-contract></surefire.excluded.external-contract>
             </properties>
         </profile>
         <!--
@@ -537,7 +549,7 @@
         <profile>
             <id>integration</id>
             <properties>
-                <surefire.excludedGroups>external-contract</surefire.excludedGroups>
+                <surefire.excluded.integration></surefire.excluded.integration>
             </properties>
         </profile>
     </profiles>

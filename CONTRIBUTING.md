@@ -79,7 +79,10 @@ comment: fix it, or dismiss it in the UI with a written reason.
   **default run** may require a running Kafka broker or Docker.
 - Tests tagged `integration` (Testcontainers-based real-broker tests)
   are excluded from the default run; execute them deliberately with
-  `mvn -Pintegration test` (needs a Docker daemon).
+  `mvn -Pintegration test` (needs a Docker daemon). CI runs this stage
+  as its own job on every push/PR and weekly, so it cannot rot
+  silently. The stage profiles compose:
+  `mvn -Pexternal-contract,integration test` runs everything.
 - Tests tagged `external-contract` (characterization tests of third-party
   behavior that exercise no tabellarium code) are excluded from the
   default run; execute them deliberately with `mvn -Pexternal-contract test`.

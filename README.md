@@ -685,34 +685,40 @@ A minimal dashboard typically shows:
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      KafkaAppender (orchestrator)                │
-│                                                                  │
-│   start()  ─→  validateConfiguration                             │
-│                       │                                          │
-│                       ▼                                          │
-│                buildPipeline                                     │
-│              ┌─────────┼─────────┐                               │
-│              ▼         ▼         ▼                               │
-│   ┌──────────┐  ┌──────────┐  ┌──────────────┐                   │
-│   │ topic-   │  │ topic-   │  │ message-     │                   │
-│   │ Router   │  │ Table    │  │ Enricher     │                   │
-│   └──────────┘  └──────────┘  └──────────────┘                   │
-│                       │                                          │
-│                       ▼                                          │
-│           ┌─────────────────────┐                                │
-│           │ ProducerRegistry    │  one producer per active class │
-│           └─────────────────────┘                                │
-│                       │                                          │
-│                       ▼                                          │
-│           ┌─────────────────────┐                                │
-│           │ ResilientMessage    │  circuit breaker per class     │
-│           │ Sender              │  fallback on failure           │
-│           └─────────────────────┘                                │
-│                                                                  │
-│   append(event)  ─→  encode  ─→  route  ─→  enrich  ─→  send     │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                      KafkaAppender (orchestrator)                  │
+│                                                                    │
+│  start() ─→ validateConfiguration ─→ buildPipeline                 │
+│      ┌─────────────┬──────────────┬─────────────────┐              │
+│      ▼             ▼              ▼                 ▼              │
+│  TopicRouter   TopicTable   MessageEnricher   ProducerRegistry     │
+│  (marker →     (topic →     (meta.* headers,  (one producer per    │
+│   topic)        class)       traceId key)      active class)       │
+│                                                                    │
+│  append(event) — caller thread, CPU-bound only, never blocks:      │
+│      encode ─→ route ─→ classify ─→ enrich ─→ dispatch O(1)        │
+│                                                  │                 │
+│         one per active topic class               │ queue full /    │
+│      ┌───────────────────────────┐               │ stopped         │
+│      │ SendDispatcher            │◀──────────────┤                 │
+│      │ bounded queue + worker    │               │                 │
+│      └─────────────┬─────────────┘               │                 │
+│                    ▼ producer.send on the worker │                 │
+│      ┌───────────────────────────┐               │                 │
+│      │ ResilientMessageSender    │  breaker open /                 │
+│      │ half-open throttle +      │  throttled / send               │
+│      │ circuit breaker per class │  failed ─────────┐              │
+│      └─────────────┬─────────────┘               │  │              │
+│                    ▼ async callback              ▼  ▼              │
+│               Kafka broker            ┌───────────────────────┐    │
+│                                       │ FallbackDispatcher    │    │
+│                                       │ bounded queue + worker│    │
+│                                       └───────────┬───────────┘    │
+│                                                   ▼                │
+│                                        fallback appender           │
+│                                        (<appender-ref>, optional;  │
+│                                         overflow drops, counted)   │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 Every component below `KafkaAppender` is **internal implementation**

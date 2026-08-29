@@ -45,6 +45,32 @@ jobs:
         if: always()
         run: python3 .github/scripts/surefire-summary.py
 
+  broker-integration:
+    name: Real-broker integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # The only wire-level evidence (real broker via Testcontainers):
+      # runs the integration-tagged tests exclusively (-Dgroups), so this
+      # job proves broker acceptance without repeating the offline suite
+      # the build job already runs. On the weekly schedule it also
+      # catches rot from dependency/image drift on an unchanged tree -
+      # same rationale as the dependency scan below.
+      - name: Run broker integration tests
+        run: mvn --batch-mode --no-transfer-progress -Pintegration -Dgroups=integration test
+
+      - name: Publish test summary
+        if: always()
+        run: python3 .github/scripts/surefire-summary.py
+
   dependency-scan:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest
