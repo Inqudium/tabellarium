@@ -35,6 +35,7 @@ jobs:
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
       tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - name: Resolve tag and version
         id: meta
@@ -99,3 +100,44 @@ jobs:
       base64-subjects: ${{ needs.build.outputs.hashes }}
       upload-assets: true
       upload-tag-name: ${{ needs.build.outputs.tag }}
+
+  publish-github-packages:
+    name: Publish to GitHub Packages
+    # Mirrors the release into the GitHub Packages Maven registry
+    # (distributionManagement in pom.xml), authenticated with the workflow
+    # token - no provisioned secret; this replaces the manual
+    # `mvn source:jar deploy` mirror step. Maven Central remains the
+    # primary, deliberately manual path (release-central profile: GPG key
+    # and Portal token on the maintainer's machine). Gated to real release
+    # events: a workflow_dispatch backfill re-attests assets but must not
+    # try to republish a package version the registry already holds.
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+
+      # server-id: github makes setup-java write a settings.xml server
+      # entry that reads the credentials from GITHUB_ACTOR/GITHUB_TOKEN,
+      # matching the distributionManagement repository id in pom.xml.
+      - name: Set up JDK 21 (with GitHub Packages credentials)
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          server-id: github
+
+      - name: Deploy to GitHub Packages
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          mvn --batch-mode --no-transfer-progress -Drevision="$VERSION" \
+            -DskipTests -Djacoco.skip=true source:jar deploy

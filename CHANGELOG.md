@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the SBOM from the tag, uploads them as release assets, and attaches
   Sigstore-signed SLSA build provenance (slsa-github-generator); a
   `workflow_dispatch` variant backfills existing releases.
+- The Release workflow additionally mirrors each release into the GitHub
+  Packages Maven registry (the existing `distributionManagement` target),
+  authenticated with the workflow token — replacing the manual
+  `mvn source:jar deploy` mirror step; Maven Central remains the primary,
+  deliberately manual release path.
 
 ## [1.0.0] - 2026-08-29
 
