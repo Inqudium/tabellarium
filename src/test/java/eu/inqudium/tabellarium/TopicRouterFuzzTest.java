@@ -1,5 +1,7 @@
+package eu.inqudium.tabellarium;
+
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
-import eu.inqudium.tabellarium.TopicRouter;
+import com.code_intelligence.jazzer.junit.FuzzTest;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -18,13 +20,17 @@ import org.slf4j.helpers.BasicMarkerFactory;
  * accept; route() never throws for arbitrary marker trees and always
  * resolves to the default topic or a mapped one, with a direct marker match
  * winning.
+ *
+ * Runs as a regression test (checked-in inputs plus the empty input) in every
+ * build; the scheduled Fuzz workflow explores for real (JAZZER_FUZZ=1).
  */
-public final class TopicRouterFuzzer {
+class TopicRouterFuzzTest {
     private static final Pattern KAFKA_TOPIC = Pattern.compile("[a-zA-Z0-9._\\-]{1,249}");
     private static final String TOPIC_CHARS =
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
 
-    public static void fuzzerTestOneInput(FuzzedDataProvider data) {
+    @FuzzTest(maxDuration = "10m")
+    void validationAndRoutingUpholdTheirContract(FuzzedDataProvider data) {
         if (data.consumeBoolean()) {
             positiveOracle(data);
         } else {
@@ -47,7 +53,8 @@ public final class TopicRouterFuzzer {
         List<Marker> markers = new ArrayList<>();
         int markerCount = data.consumeInt(0, 4);
         for (int i = 0; i < markerCount; i++) {
-            Marker marker = factory.getDetachedMarker(data.consumeBoolean() ? "marker-" + data.consumeInt(0, 5) : data.consumeString(12));
+            Marker marker = factory.getDetachedMarker(
+                    data.consumeBoolean() ? "marker-" + data.consumeInt(0, 5) : data.consumeString(12));
             if (data.consumeBoolean()) {
                 marker.add(factory.getDetachedMarker("marker-" + data.consumeInt(0, 5)));
             }
@@ -84,7 +91,7 @@ public final class TopicRouterFuzzer {
                 throw new IllegalStateException("Kafka-invalid topic accepted: '" + topic + "'");
             }
         }
-        if (!mappings.isEmpty() && marker.isBlank()) {
+        if (!mappings.isEmpty() && kotlinBlank(marker)) {
             throw new IllegalStateException("blank marker name accepted");
         }
     }
@@ -105,5 +112,12 @@ public final class TopicRouterFuzzer {
         return topic.equals(".") || topic.equals("..") ? topic + "a" : topic;
     }
 
-    private TopicRouterFuzzer() {}
+    /**
+     * Kotlin's isBlank(), which the library uses: a char is whitespace per
+     * Character.isWhitespace OR isSpaceChar - NBSP counts, unlike in Java's
+     * String.isBlank(). The oracle must speak the library's dialect.
+     */
+    private static boolean kotlinBlank(String s) {
+        return s.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c));
+    }
 }

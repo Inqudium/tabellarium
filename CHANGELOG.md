@@ -25,10 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authenticated with the workflow token — replacing the manual
   `mvn source:jar deploy` mirror step; Maven Central remains the primary,
   deliberately manual release path.
-- Daily fuzzing via ClusterFuzzLite/Jazzer (`.clusterfuzzlite/`): three
+- Daily fuzzing via Jazzer's JUnit integration (`@FuzzTest` classes under
+  `src/test/java`, nightly `Fuzz` workflow with `JAZZER_FUZZ=1`): three
   targets assert the invariants of the externally influenced surfaces —
   the `<kafkaProducerProperties>` parser, topic-name validation and marker
-  routing, and the MDC-derived partitioning-key bounding.
+  routing, and the MDC-derived partitioning-key bounding — and replay
+  their checked-in findings as regression tests in every build.
 
 ## [1.0.0] - 2026-08-29
 

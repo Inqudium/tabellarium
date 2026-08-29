@@ -52,9 +52,9 @@ Measures already in place, so you know what is expected behaviour:
   and weekly; results appear under Security → Code scanning.
 - **The configuration parsers and the MDC-derived key are fuzzed.** The
   `<kafkaProducerProperties>` parser, topic-name validation/routing, and
-  the partitioning-key bounding run daily under ClusterFuzzLite/Jazzer
-  with their invariants asserted in the fuzz targets
-  (`.clusterfuzzlite/fuzz/`).
+  the partitioning-key bounding are Jazzer `@FuzzTest` targets with their
+  invariants asserted in the test body: explored nightly by the Fuzz
+  workflow, and replayed against the checked-in findings in every build.
 - **Release assets carry SLSA build provenance.** The Release workflow
   rebuilds the jar and the SBOM from the release tag, uploads them to the
   GitHub release, and attaches Sigstore-signed SLSA provenance

@@ -1,6 +1,8 @@
+package eu.inqudium.tabellarium;
+
 import ch.qos.logback.classic.spi.LoggingEvent;
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
-import eu.inqudium.tabellarium.MessageEnricher;
+import com.code_intelligence.jazzer.junit.FuzzTest;
 import java.util.Arrays;
 
 /**
@@ -13,9 +15,13 @@ import java.util.Arrays;
  * verbatim when non-blank and at most MAX_PARTITIONING_KEY_LENGTH characters,
  * and treated as ABSENT (not truncated) otherwise; the static header set is
  * complete and carries the identity verbatim as UTF-8.
+ *
+ * Runs as a regression test (checked-in inputs plus the empty input) in every
+ * build; the scheduled Fuzz workflow explores for real (JAZZER_FUZZ=1).
  */
-public final class MessageEnricherFuzzer {
-    public static void fuzzerTestOneInput(FuzzedDataProvider data) {
+class MessageEnricherFuzzTest {
+    @FuzzTest(maxDuration = "10m")
+    void enrichmentUpholdsItsContract(FuzzedDataProvider data) {
         String component = data.consumeString(24);
         String cmdbId = data.consumeString(24);
         String environment = data.consumeString(24);
@@ -66,6 +72,4 @@ public final class MessageEnricherFuzzer {
     private static boolean kotlinBlank(String s) {
         return s.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c));
     }
-
-    private MessageEnricherFuzzer() {}
 }

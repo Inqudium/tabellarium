@@ -1,5 +1,7 @@
+package eu.inqudium.tabellarium;
+
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
-import eu.inqudium.tabellarium.KafkaProducerPropertiesParserKt;
+import com.code_intelligence.jazzer.junit.FuzzTest;
 import java.util.Map;
 
 /**
@@ -11,9 +13,13 @@ import java.util.Map;
  * never carries null keys or values, and values carry no trailing whitespace
  * (the parser trims it deliberately - XML indentation must not leak into
  * producer configuration).
+ *
+ * Runs as a regression test (checked-in inputs plus the empty input) in every
+ * build; the scheduled Fuzz workflow explores for real (JAZZER_FUZZ=1).
  */
-public final class KafkaProducerPropertiesFuzzer {
-    public static void fuzzerTestOneInput(FuzzedDataProvider data) {
+class KafkaProducerPropertiesFuzzTest {
+    @FuzzTest(maxDuration = "10m")
+    void parserUpholdsItsContract(FuzzedDataProvider data) {
         String text = data.consumeRemainingAsString();
         Map<String, String> parsed;
         try {
@@ -32,6 +38,4 @@ public final class KafkaProducerPropertiesFuzzer {
             }
         }
     }
-
-    private KafkaProducerPropertiesFuzzer() {}
 }

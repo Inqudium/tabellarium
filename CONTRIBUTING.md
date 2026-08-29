@@ -53,26 +53,33 @@ results land in the repository's **Security → Code scanning** tab
 rather than in the build log. A finding there is triaged like a review
 comment: fix it, or dismiss it in the UI with a written reason.
 
-### Fuzzing (ClusterFuzzLite)
+### Fuzzing (Jazzer `@FuzzTest`)
 
 The components that parse or bound externally influenced data - the
 `<kafkaProducerProperties>` parser, topic-name validation and marker
 routing, and the MDC-derived partitioning key - are fuzzed with
-[Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) targets in
-`.clusterfuzzlite/fuzz/`, run daily (time-boxed) by the
-`ClusterFuzzLite batch fuzzing` workflow. A finding fails the run and
-attaches the reproducing input as a workflow artifact; turn such an input
-into a regression test before fixing. New parsing/validation surface should
-bring a fuzz target stating its invariants, like the existing ones do.
+[Jazzer](https://github.com/CodeIntelligenceTesting/jazzer)'s JUnit 5
+integration: `*FuzzTest.java` classes under `src/test/java`, stating their
+invariants in the test body. They run in two modes:
 
-To reproduce locally (requires Docker):
+- **Regression mode, in every build.** `mvn verify` executes each fuzz test
+  against its checked-in inputs (`src/test/resources/**/<Class>Inputs/`)
+  plus the empty input - cheap, deterministic, part of the normal suite.
+- **Fuzzing mode, nightly.** The `Fuzz` workflow sets `JAZZER_FUZZ=1` and
+  runs each target in its own job (Jazzer fuzzes only one `@FuzzTest` per
+  JVM), each capped by its `@FuzzTest(maxDuration = ...)`.
+
+A finding is written into the seed-corpus directory next to the test
+sources (the nightly run also uploads it as a workflow artifact): commit it
+there and it becomes a permanent regression input; then fix the code. New
+parsing/validation surface should bring a fuzz target stating its
+invariants, like the existing ones do - in JAVA, not Kotlin: the OpenSSF
+Scorecard fuzzing detector only recognizes Jazzer in `*.java` files.
+
+To fuzz locally (no Docker needed):
 
 ```bash
-docker build -t tabellarium-fuzz -f .clusterfuzzlite/Dockerfile .
-docker run --rm -e FUZZING_LANGUAGE=jvm -e SANITIZER=address \
-  -v "$PWD/build-out:/out" tabellarium-fuzz compile
-docker run --rm -v "$PWD/build-out:/out" gcr.io/oss-fuzz-base/base-runner \
-  run_fuzzer TopicRouterFuzzer -runs=100000
+JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
 ```
 
 ## Code style
