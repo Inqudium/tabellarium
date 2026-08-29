@@ -6,7 +6,7 @@
 
     <groupId>eu.inqudium</groupId>
     <artifactId>tabellarium-benchmarks</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <!--
@@ -37,7 +37,7 @@
         <dependency>
             <groupId>eu.inqudium</groupId>
             <artifactId>tabellarium</artifactId>
-            <version>1.0.0-SNAPSHOT</version>
+            <version>1.0.1-SNAPSHOT</version>
         </dependency>
         <!-- Optional in the library, needed here: the metrics-bound
              pipeline variant (finding 3) binds a SimpleMeterRegistry. -->
