@@ -6,6 +6,7 @@
 
 # Tabellarium
 
+[![Maven Central](https://img.shields.io/maven-central/v/eu.inqudium/tabellarium)](https://central.sonatype.com/artifact/eu.inqudium/tabellarium)
 [![CI](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml/badge.svg)](https://github.com/Inqudium/tabellarium/actions/workflows/ci.yml)
 [![Coverage](https://inqudium.github.io/tabellarium/coverage/badge.svg)](https://inqudium.github.io/tabellarium/coverage/)
 [![License](https://img.shields.io/github/license/Inqudium/tabellarium)](LICENSE)
@@ -136,8 +137,10 @@ service's own boundary; Tabellarium is the courier who carries the records away.
 
 ## Installation
 
-Releases are published to the
-[GitHub Packages Maven registry](https://github.com/Inqudium/tabellarium/packages).
+Releases are published to
+[Maven Central](https://central.sonatype.com/artifact/eu.inqudium/tabellarium)
+(GPG-signed, with sources, javadoc, and a CycloneDX SBOM) — no
+repository configuration needed:
 
 ```xml
 <dependency>
@@ -145,21 +148,14 @@ Releases are published to the
     <artifactId>tabellarium</artifactId>
     <version>1.0.0</version>
 </dependency>
-
-<repositories>
-    <repository>
-        <id>github-tabellarium</id>
-        <url>https://maven.pkg.github.com/Inqudium/tabellarium</url>
-    </repository>
-</repositories>
 ```
 
-GitHub Packages requires authentication even for public packages: add a
-`<server>` entry for `github-tabellarium` to your `settings.xml` with
-your GitHub username and a token carrying the `read:packages` scope.
-The jar is also attached to each
-[GitHub release](https://github.com/Inqudium/tabellarium/releases)
-together with its CycloneDX SBOM.
+Mirrors: the
+[GitHub Packages Maven registry](https://github.com/Inqudium/tabellarium/packages)
+(`https://maven.pkg.github.com/Inqudium/tabellarium`; needs a token
+with `read:packages` even for public packages), and the jar plus SBOM
+attached to each
+[GitHub release](https://github.com/Inqudium/tabellarium/releases).
 
 ## Quick start
 

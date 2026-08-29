@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Releases are published as Maven artifacts to the GitHub Packages
-  registry (`maven.pkg.github.com/Inqudium/tabellarium`), with the
-  publishing mechanism anchored in the pom (`distributionManagement`)
-  and consumption documented in the README; version 1.0.0 (with a
-  sources jar) was published retroactively from the `v1.0.0` tag.
+- Releases are published to **Maven Central** via the Sonatype Central
+  Portal (`release-central` profile: sources jar, Dokka javadoc jar,
+  CycloneDX SBOM, all GPG-signed) and mirrored to the GitHub Packages
+  registry (`maven.pkg.github.com/Inqudium/tabellarium`,
+  `distributionManagement`); version 1.0.0 was published to both from
+  the `v1.0.0` tag state, and the README documents consumption with
+  Central as the zero-configuration default.
 
 ## [1.0.0] - 2026-08-29
 
