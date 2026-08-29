@@ -92,9 +92,11 @@ jobs:
       id-token: write # keyless Sigstore signing of the provenance
       contents: write # upload the *.intoto.jsonl to the release
     # Referenced by TAG deliberately, unlike every other action here: the
-    # SLSA trusted builder must be called by a semantic-version tag for
-    # slsa-verifier to accept the result, and Scorecard exempts
-    # slsa-framework/slsa-github-generator from its pinning check.
+    # SLSA trusted builder only supports semantic-version tag references -
+    # calling it by commit SHA is unsupported and breaks the build/
+    # verification. Scorecard's Pinned-Dependencies check flags this one
+    # reference (score normalized to 9); that is the accepted price for
+    # verifiable provenance, not an oversight.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
