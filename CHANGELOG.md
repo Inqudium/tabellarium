@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.0.0] - 2026-08-29
+
+First stable release. The public API is the operator surface
+(ADR-0002): `KafkaAppender` with its XML configuration surface,
+`TopicMappingConfig`/`TopicMappingEntry`, `TopicClass`, and the
+optional `KafkaAppenderMetricsBinding`.
+
 ### Added
 
 - Initial public release of the `KafkaAppender`: resilient Logback
@@ -56,7 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AUDIT acks/idempotence handshake. The default test run stays offline.
 - ADR series under `docs/adr/`; ADR-0001 codifies the comment prefix
   vocabulary (`Rationale:`, `Invariant:`, `Workaround:`, `Safety:`,
-  `Compatibility:`, `CAUTION:`), referenced from CONTRIBUTING.
+  `Compatibility:`, `CAUTION:`), referenced from CONTRIBUTING; ADR-0002
+  fixes the public API as the operator surface.
+- Standalone JMH benchmark module (`benchmarks/`) as a permanent
+  regression asset, with the measured verdicts recorded in
+  `docs/assessment/BENCH_REPORT-2026-08-29T11-38-12.md`: the hand-off
+  put-lock is retired for realistic loads (measured ceiling ~4-6 M
+  events/s per class queue), the metrics envelope is a modest
+  +211 B/+120 ns per delivered event, and the shared-header candidate
+  saves a measured 160 B/event (kept on file as a tidy-up).
 - Dokka runs with `failOnWarning`: an unresolved `[Symbol]` reference in
   KDoc now fails the documentation build (and thereby the Docs
   workflow), so symbolic references cannot drift silently.
@@ -182,4 +199,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public type. Dokka's API reference now shows exactly the supported
   surface.
 
-[Unreleased]: https://github.com/Inqudium/tabellarium/commits/main
+[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Inqudium/tabellarium/releases/tag/v1.0.0
