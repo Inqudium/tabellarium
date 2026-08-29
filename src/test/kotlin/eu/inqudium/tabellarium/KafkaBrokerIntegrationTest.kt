@@ -4,6 +4,9 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
+import org.apache.kafka.clients.admin.Admin
+import org.apache.kafka.clients.admin.AdminClientConfig
+import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
@@ -15,6 +18,7 @@ import org.slf4j.MarkerFactory
 import org.testcontainers.kafka.KafkaContainer
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
  * Real-broker integration test for the central external system boundary.
@@ -66,6 +70,16 @@ class KafkaBrokerIntegrationTest {
 
         KafkaContainer(KAFKA_IMAGE).use { kafka ->
             kafka.start()
+
+            // Safety: pre-create the topics instead of relying on
+            // auto-creation. The appender caps max.block.ms at 500 ms
+            // (a production guarantee the test must not weaken), and on
+            // a cold CI broker the auto-creation/metadata round trip
+            // can exceed that - the first send then times out and the
+            // record diverts (no fallback configured -> dropped), which
+            // surfaced as a flaky empty consume in CI. Pre-creation
+            // takes topic bootstrap off the capped path.
+            createTopics(kafka.bootstrapServers)
 
             // Given: the production wiring - real KafkaProducer via the
             // default ProducerFactory, one TECHNICAL (default topic) and
@@ -132,6 +146,19 @@ class KafkaBrokerIntegrationTest {
                     .containsEntry("meta.cmdbId", "CMDB-IT")
                     .containsEntry("meta.environment", "it")
             }
+        }
+    }
+
+    private fun createTopics(bootstrapServers: String) {
+        Admin.create(mapOf<String, Any>(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG to bootstrapServers)).use { admin ->
+            admin
+                .createTopics(
+                    listOf(
+                        NewTopic(TECHNICAL_TOPIC, 1, 1.toShort()),
+                        NewTopic(AUDIT_TOPIC, 1, 1.toShort()),
+                    ),
+                ).all()
+                .get(30, TimeUnit.SECONDS)
         }
     }
 
