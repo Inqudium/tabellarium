@@ -64,6 +64,16 @@ internal class HalfOpenThrottle(
     minProbeGap: Duration,
     private val nanoTimeSource: () -> Long = System::nanoTime,
 ) {
+    // Validate BEFORE the property initializers below: Kotlin runs
+    // initializers in declaration order, so this init block is what
+    // keeps the derived state (and the first clock read) from being
+    // computed for invalid input.
+    init {
+        require(!minProbeGap.isNegative) {
+            "minProbeGap must be non-negative, got $minProbeGap"
+        }
+    }
+
     private val minProbeGapNanos: Long = minProbeGap.toNanos()
 
     /**
@@ -79,12 +89,6 @@ internal class HalfOpenThrottle(
      * Long.MIN_VALUE, which no JVM produces in practice).
      */
     private val lastProbeNanos: AtomicLong = AtomicLong(nanoTimeSource() - minProbeGapNanos)
-
-    init {
-        require(!minProbeGap.isNegative) {
-            "minProbeGap must be non-negative, got $minProbeGap"
-        }
-    }
 
     /**
      * Returns true if the caller may attempt to acquire a permission

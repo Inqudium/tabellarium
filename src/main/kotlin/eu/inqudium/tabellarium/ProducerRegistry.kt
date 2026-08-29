@@ -7,6 +7,7 @@ import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import java.time.Duration
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Holds one Kafka [Producer] per active [TopicClass], each configured with
@@ -97,7 +98,7 @@ class ProducerRegistry private constructor(
      * their own.
      */
     override fun close() {
-        val failures = java.util.concurrent.ConcurrentLinkedQueue<Pair<TopicClass, Exception>>()
+        val failures = ConcurrentLinkedQueue<Pair<TopicClass, Exception>>()
         val closers =
             producersByClass.map { (topicClass, producer) ->
                 Thread({

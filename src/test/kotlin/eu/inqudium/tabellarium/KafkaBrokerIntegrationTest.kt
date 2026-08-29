@@ -45,6 +45,25 @@ class KafkaBrokerIntegrationTest {
 
     @Test
     fun `should deliver a TECHNICAL and an AUDIT record through a real broker`() {
+        // What is to be tested? The central external system boundary
+        //   with a real broker: whether the appender's production
+        //   wiring - real KafkaProducer, forced ByteArraySerializers,
+        //   LZ4 default compression, enrichment headers, MDC-derived
+        //   partitioning key, and the AUDIT class's mandatory
+        //   acks=all/idempotence configuration - produces records a
+        //   broker actually accepts and a consumer can read back.
+        // How will the test case be deemed successful and why? Successful
+        //   if, after stop() drains and flushes, a fresh consumer reads
+        //   exactly the TECHNICAL and the AUDIT record from their
+        //   topics with byte-exact payloads, the traceId key, and the
+        //   meta.* headers intact. Broker acceptance is the part no
+        //   MockProducer test can prove.
+        // Why is it important to test this test case? The offline suite
+        //   verifies the producer API contract, not the wire: an
+        //   API-compatible but broker-incompatible configuration (e.g.
+        //   an idempotence setting the broker rejects) would otherwise
+        //   surface first in a consuming service's production logs.
+
         KafkaContainer(KAFKA_IMAGE).use { kafka ->
             kafka.start()
 

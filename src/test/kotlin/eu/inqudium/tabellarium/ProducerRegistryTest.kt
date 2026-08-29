@@ -8,6 +8,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 class ProducerRegistryTest {
     private val baseProperties =
@@ -45,7 +46,7 @@ class ProducerRegistryTest {
             ByteArraySerializer(),
             ByteArraySerializer(),
         ) {
-        override fun close(timeout: java.time.Duration): Unit = throw RuntimeException("simulated close failure")
+        override fun close(timeout: Duration): Unit = throw RuntimeException("simulated close failure")
     }
 
     @Nested

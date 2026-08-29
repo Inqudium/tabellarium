@@ -31,6 +31,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * Send and fallback dispatch are asynchronous (the production path).
+ * Tests therefore either stop() the appender before asserting - the
+ * stop sequence drains the send dispatchers through the still-open
+ * producers and then the fallback dispatcher, and the thread joins
+ * in close() establish the happens-before edge for reading the
+ * MockProducer history - or poll with [pollUntil] where the appender
+ * must keep running across the assertion.
+ */
 class KafkaAppenderTest {
     // -- Test fixtures --------------------------------------------------
 
@@ -123,14 +132,6 @@ class KafkaAppenderTest {
             // Joran's AppenderRefAction takes for <appender-ref>).
             fallback?.let { addAppender(it) }
         }
-
-    // Send and fallback dispatch are asynchronous (the production path).
-    // Tests therefore either stop() the appender before asserting - the
-    // stop sequence drains the send dispatchers through the still-open
-    // producers and then the fallback dispatcher, and the thread joins
-    // in close() establish the happens-before edge for reading the
-    // MockProducer history - or poll with pollUntil where the appender
-    // must keep running across the assertion.
 
     private fun KafkaAppender.statusMessages(): List<String> = context.statusManager.copyOfStatusList.map { it.message }
 

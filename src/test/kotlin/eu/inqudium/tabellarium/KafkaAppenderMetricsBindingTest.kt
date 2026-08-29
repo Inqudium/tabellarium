@@ -226,20 +226,24 @@ class KafkaAppenderMetricsBindingTest {
             //   would cause double-counting in production dashboards -
             //   a silent and nearly undetectable data-corruption bug.
 
+            // Given: a bound context that receives a second refresh event
             ApplicationContextRunner()
                 .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
                 .run { ctx ->
                     val registry = ctx.getBean(MeterRegistry::class.java)
-                    // Publish a second refresh event manually
                     val publisher = ctx.sourceApplicationContext
                     publisher.publishEvent(ContextRefreshedEvent(publisher))
 
+                    // When: one event flows through the hot path
                     val before =
                         registry
                             .find("kafka.appender.events.accepted")
                             .counters()
                             .sumOf { it.count() }
                     appender.doAppend(loggingEvent())
+
+                    // Then: the counter moved by exactly one - a double
+                    // binding would have counted it twice
                     val after =
                         registry
                             .find("kafka.appender.events.accepted")
