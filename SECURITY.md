@@ -50,6 +50,13 @@ Measures already in place, so you know what is expected behaviour:
 - **The code itself is statically analysed.** A CodeQL workflow analyses
   the library sources and the CI workflow definitions on every change
   and weekly; results appear under Security → Code scanning.
+- **Release assets carry SLSA build provenance.** The Release workflow
+  rebuilds the jar and the SBOM from the release tag, uploads them to the
+  GitHub release, and attaches Sigstore-signed SLSA v1.0 provenance
+  (`*.intoto.jsonl`) — verifiable with
+  [slsa-verifier](https://github.com/slsa-framework/slsa-verifier). Maven
+  Central artifacts are additionally GPG-signed by the release-central
+  profile.
 - **The repository's supply-chain posture is scored publicly.** The
   OpenSSF Scorecard badge in the README links to the current per-check
   breakdown. Read it as a posture indicator, not as a grade: several

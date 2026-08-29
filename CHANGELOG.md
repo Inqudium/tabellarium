@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `distributionManagement`); version 1.0.0 was published to both from
   the `v1.0.0` tag state, and the README documents consumption with
   Central as the zero-configuration default.
+- Release workflow: on a published GitHub release it rebuilds the jar and
+  the SBOM from the tag, uploads them as release assets, and attaches
+  Sigstore-signed SLSA v1.0 build provenance (slsa-github-generator); a
+  `workflow_dispatch` variant backfills existing releases.
 
 ## [1.0.0] - 2026-08-29
 

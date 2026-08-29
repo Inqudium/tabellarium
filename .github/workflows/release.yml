@@ -1,0 +1,101 @@
+name: Release
+
+# Attaches verifiable artifacts to every GitHub release: the library jar
+# and the CycloneDX SBOM, rebuilt from the release tag, plus SLSA v1.0
+# build provenance signed via Sigstore. The provenance (*.intoto.jsonl)
+# lets consumers verify that an asset was built by this repository's
+# workflow from this tag (slsa-verifier), and is what the OpenSSF
+# Scorecard Signed-Releases check looks for. Publishing to Maven Central
+# and GitHub Packages stays a separate, deliberate step (see the
+# release-central profile and distributionManagement in pom.xml) - this
+# workflow only serves the GitHub release page.
+
+on:
+  release:
+    types: [published]
+  # Backfill or retry for an existing release: rebuilds from its tag and
+  # REPLACES the release assets (--clobber), so only run it when changed
+  # asset checksums are acceptable.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)build and attest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the built jar and SBOM to the release.
+      contents: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Resolve tag and version
+        id: meta
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # Pinned to commit SHAs, not mutable tags - see ci.yml for the
+      # rationale. Checks out the RELEASE TAG, not the triggering ref,
+      # so a workflow_dispatch backfill builds the released state too.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # Tests and coverage are skipped deliberately: CI already gated the
+      # commit the tag points at; this job's product is the artifact set,
+      # not a second verdict.
+      - name: Build release artifacts (jar + SBOM)
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mvn --batch-mode --no-transfer-progress -Drevision="$VERSION" \
+            -DskipTests -Djacoco.skip=true package cyclonedx:makeBom
+          mkdir -p target/release-assets
+          cp target/tabellarium-"$VERSION".jar target/bom.json target/release-assets/
+
+      - name: Upload assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: gh release upload "$TAG" target/release-assets/* --clobber
+
+      # The provenance subjects: sha256 of exactly the uploaded assets,
+      # base64-encoded as the SLSA generator expects.
+      - name: Compute subject digests for provenance
+        id: hash
+        run: |
+          cd target/release-assets
+          echo "hashes=$(sha256sum * | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read # read the run context that goes into the provenance
+      id-token: write # keyless Sigstore signing of the provenance
+      contents: write # upload the *.intoto.jsonl to the release
+    # Referenced by TAG deliberately, unlike every other action here: the
+    # SLSA trusted builder must be called by a semantic-version tag for
+    # slsa-verifier to accept the result, and Scorecard exempts
+    # slsa-framework/slsa-github-generator from its pinning check.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      upload-assets: true
+      upload-tag-name: ${{ needs.build.outputs.tag }}
