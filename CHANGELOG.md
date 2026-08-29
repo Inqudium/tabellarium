@@ -158,5 +158,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Kotlin all-open/spring compiler plugin was removed from the build;
   the only Spring-proxied classes (`KafkaAppenderMetricsBinding` and
   test fixtures) are explicitly `open`.
+- The public API is narrowed to the operator surface (ADR-0002):
+  `KafkaAppender`, `TopicMappingConfig`/`TopicMappingEntry`,
+  `TopicClass`, and `KafkaAppenderMetricsBinding` remain public;
+  the eleven implementation building blocks beneath the appender
+  (router, table, registry, factory, properties builder and its result
+  types, enricher, enriched record, properties parser, metrics
+  interface) are `internal` — they had no public composition path and
+  carried an unintended compatibility commitment, including the
+  credential-bearing `ProducerRegistry.effectiveProperties` map on a
+  public type. Dokka's API reference now shows exactly the supported
+  surface.
 
 [Unreleased]: https://github.com/Inqudium/tabellarium/commits/main

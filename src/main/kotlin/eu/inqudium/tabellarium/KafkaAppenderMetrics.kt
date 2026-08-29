@@ -33,7 +33,7 @@ import java.time.Duration
  * - **Be thread-safe.** Several appender hot-path entries may run
  *   concurrently.
  */
-interface KafkaAppenderMetrics {
+internal interface KafkaAppenderMetrics {
     /**
      * Recorded once per event that enters [KafkaAppender.append].
      * Counted regardless of what happens downstream, so

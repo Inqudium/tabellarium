@@ -104,7 +104,7 @@ class TopicMappingConfig {
      *                                  when the same marker is mapped
      *                                  more than once.
      */
-    fun toTopicRouter(): TopicRouter {
+    internal fun toTopicRouter(): TopicRouter {
         val duplicateMarkers =
             mutableMappings
                 .groupBy { it.marker }
@@ -136,7 +136,7 @@ class TopicMappingConfig {
      *                                  conflicts with
      *                                  [defaultTopicClass]).
      */
-    fun toTopicTable(): TopicTable {
+    internal fun toTopicTable(): TopicTable {
         val fallbackClass = resolvedDefaultTopicClass()
         val byTopic = mutableMappings.groupBy({ it.topic }, { it.resolvedTopicClass() })
         val conflicting = byTopic.filterValues { it.toSet().size > 1 }

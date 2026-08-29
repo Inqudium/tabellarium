@@ -54,7 +54,7 @@ import java.util.Properties
  * @throws IllegalArgumentException if any of [component], [cmdbId], or
  *                                  [environment] is blank.
  */
-class MessageEnricher(
+internal class MessageEnricher(
     component: String,
     cmdbId: String,
     environment: String,
@@ -251,14 +251,15 @@ class MessageEnricher(
  * would silently share the mutable arrays. Instances compare by
  * identity; there is no use case for value equality on this type.
  *
- * ## Why [headers] is `internal`
+ * ## Why the type is `internal`
  *
  * The shared byte arrays are safe only as long as nobody mutates
- * them. Keeping the map off the public API shrinks that read-only
- * contract from "every consumer of the library" to "code in this
- * module" - the only code that ever touches the arrays is the
- * enricher (writes once) and the sender (hands them to Kafka, which
- * does not mutate header values).
+ * them. Keeping the whole type (and with it [headers]) off the public
+ * API shrinks that read-only contract from "every consumer of the
+ * library" to "code in this module" - the only code that ever touches
+ * the arrays is the enricher (writes once) and the sender (hands them
+ * to Kafka, which does not mutate header values). See ADR-0002 for
+ * the public-surface boundary.
  *
  * @param partitioningKey The Kafka record key. Null means "no key": the
  *                        producer will then distribute records via its
@@ -267,7 +268,7 @@ class MessageEnricher(
  *                value bytes. Same instance across all enrich calls of
  *                a given enricher. Byte arrays must NOT be mutated.
  */
-class EnrichedRecord internal constructor(
+internal class EnrichedRecord(
     val partitioningKey: String?,
-    internal val headers: Map<String, ByteArray>,
+    val headers: Map<String, ByteArray>,
 )

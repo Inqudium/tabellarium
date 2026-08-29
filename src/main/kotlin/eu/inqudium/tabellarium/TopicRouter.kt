@@ -51,7 +51,7 @@ import org.slf4j.Marker
  * @throws IllegalArgumentException if any input is blank or any topic name contains
  *                                  characters that Kafka does not permit.
  */
-class TopicRouter(
+internal class TopicRouter(
     private val defaultTopic: String,
     private val markerMappings: Map<String, String>,
 ) {

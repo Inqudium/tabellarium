@@ -44,7 +44,7 @@ package eu.inqudium.tabellarium
  *
  * @throws IllegalArgumentException if any key in [topicsByName] is blank.
  */
-class TopicTable(
+internal class TopicTable(
     topicsByName: Map<String, TopicClass>,
     val fallbackClass: TopicClass = TopicClass.TECHNICAL,
 ) {

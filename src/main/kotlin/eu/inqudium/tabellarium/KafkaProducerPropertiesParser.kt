@@ -74,7 +74,7 @@ import java.util.Properties
  *
  * @throws IllegalArgumentException on malformed Unicode escapes.
  */
-fun parseKafkaProducerProperties(text: String): Map<String, String> {
+internal fun parseKafkaProducerProperties(text: String): Map<String, String> {
     val props = Properties()
     try {
         props.load(StringReader(text))

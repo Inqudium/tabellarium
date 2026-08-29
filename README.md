@@ -715,22 +715,27 @@ A minimal dashboard typically shows:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Every component below `KafkaAppender` is a pure function or a
-side-effect-isolated wrapper, has its own dedicated unit test, and
-can be substituted via constructor injection in `KafkaAppender` for
-testing or extension.
+Every component below `KafkaAppender` is **internal implementation**
+with its own dedicated unit test. The supported public API is the
+operator surface only — the appender with its XML elements
+(`KafkaAppender`, `TopicMappingConfig`/`TopicMappingEntry`), the
+`TopicClass` enum, and the optional `KafkaAppenderMetricsBinding`;
+see [ADR-0002](docs/adr/ADR-0002-public-api-is-the-operator-surface.md).
+Substitution seams (producer factory, breaker registry, injected
+clocks) exist module-internally and carry the test suite; they are
+deliberately not a consumer contract.
 
 ## Extension points
 
 ### Custom partitioning key
 
-`MessageEnricher` takes an optional partitioning-key extractor in its
-constructor; the default reads MDC `traceId`. To use a different key
-(session id, user id, account id), inject a custom extractor when
-the appender is built. The appender does not currently expose this
-via XML — most deployments use the trace-id default. If a per-deployment
-override is needed, add a `setPartitioningKeyMdcName(String)` setter
-on the appender.
+The partitioning key is read from MDC `traceId` by default. There is
+currently no configuration surface for a different key (session id,
+user id, account id) — most deployments use the trace-id default. Per
+[ADR-0002](docs/adr/ADR-0002-public-api-is-the-operator-surface.md),
+such an override would be added as an XML-bindable `KafkaAppender`
+property (e.g. a partitioning-key MDC name), not by exposing the
+internal enricher — open an issue if your deployment needs it.
 
 ## Future work
 

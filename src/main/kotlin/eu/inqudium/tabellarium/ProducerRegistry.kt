@@ -34,7 +34,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * `start()` method) forwards these to Logback's status manager so
  * operators see them in the startup log.
  */
-class ProducerRegistry private constructor(
+internal class ProducerRegistry private constructor(
     private val producersByClass: Map<TopicClass, Producer<ByteArray, ByteArray>>,
     private val closeTimeout: Duration,
     val mandatoryOverrideViolations: List<MandatoryOverrideViolation>,
@@ -270,7 +270,7 @@ class ProducerRegistry private constructor(
  * `MockProducer<ByteArray, ByteArray>` and records the properties it
  * receives.
  */
-fun interface ProducerFactory {
+internal fun interface ProducerFactory {
     /**
      * Creates a producer from the given properties.
      *

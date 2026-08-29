@@ -60,7 +60,7 @@ import org.apache.kafka.clients.producer.ProducerConfig
  *                              `client.id`, Kafka then auto-generates
  *                              `producer-N` ids.
  */
-class ProducerPropertiesBuilder(
+internal class ProducerPropertiesBuilder(
     baseProperties: Map<String, String>,
     private val defaultClientIdPrefix: String? = null,
 ) {
@@ -200,7 +200,7 @@ class ProducerPropertiesBuilder(
  *                                    always carry the enforced values
  *                                    regardless of any conflict.
  */
-data class TopicClassProperties(
+internal data class TopicClassProperties(
     val topicClass: TopicClass,
     val properties: Map<String, String>,
     val mandatoryOverrideViolations: List<MandatoryOverrideViolation>,
@@ -220,7 +220,7 @@ data class TopicClassProperties(
  * @param userValue The caller-supplied value that was discarded.
  * @param enforcedValue The class-mandated value that was used instead.
  */
-data class MandatoryOverrideViolation(
+internal data class MandatoryOverrideViolation(
     val topicClass: TopicClass,
     val propertyKey: String,
     val userValue: String,
