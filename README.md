@@ -134,6 +134,33 @@ one well-defined capability, here the element of reliable carriage. The two neig
 even share a story — Limesium is the watchtower that records each crossing at the
 service's own boundary; Tabellarium is the courier who carries the records away.
 
+## Installation
+
+Releases are published to the
+[GitHub Packages Maven registry](https://github.com/Inqudium/tabellarium/packages).
+
+```xml
+<dependency>
+    <groupId>eu.inqudium</groupId>
+    <artifactId>tabellarium</artifactId>
+    <version>1.0.0</version>
+</dependency>
+
+<repositories>
+    <repository>
+        <id>github-tabellarium</id>
+        <url>https://maven.pkg.github.com/Inqudium/tabellarium</url>
+    </repository>
+</repositories>
+```
+
+GitHub Packages requires authentication even for public packages: add a
+`<server>` entry for `github-tabellarium` to your `settings.xml` with
+your GitHub username and a token carrying the `read:packages` scope.
+The jar is also attached to each
+[GitHub release](https://github.com/Inqudium/tabellarium/releases)
+together with its CycloneDX SBOM.
+
 ## Quick start
 
 1. Declare the appender in your `logback-spring.xml`:

@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Releases are published as Maven artifacts to the GitHub Packages
+  registry (`maven.pkg.github.com/Inqudium/tabellarium`), with the
+  publishing mechanism anchored in the pom (`distributionManagement`)
+  and consumption documented in the README; version 1.0.0 (with a
+  sources jar) was published retroactively from the `v1.0.0` tag.
 
 ## [1.0.0] - 2026-08-29
 

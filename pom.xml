@@ -56,6 +56,24 @@
         <url>https://github.com/Inqudium/tabellarium/issues</url>
     </issueManagement>
 
+    <!--
+        Releases are published to the GitHub Packages Maven registry:
+        mvn -Drevision=<version> source:jar deploy
+        with a server entry for id "github" (username + token carrying
+        write:packages) in the deployer's settings.xml. Consumers need a
+        repository entry plus a read:packages token - see the README's
+        Installation section. Maven Central would additionally require
+        namespace verification and GPG signing; kept as a possible
+        future step, not configured here.
+    -->
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>GitHub Packages</name>
+            <url>https://maven.pkg.github.com/Inqudium/tabellarium</url>
+        </repository>
+    </distributionManagement>
+
     <properties>
         <!-- CI-Friendly Version -->
         <revision>1.0.1-SNAPSHOT</revision>
