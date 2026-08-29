@@ -245,17 +245,42 @@ class KafkaAppender :
      * Per-thread reentry guard for [append]. Logback's
      * `UnsynchronizedAppenderBase` ships only a no-op guard, so a log
      * event emitted *synchronously from inside the append path itself*
-     * would re-enter [append] on the same thread. That is not
-     * hypothetical: the Kafka 4.x client logs `ApiException`s at DEBUG
-     * on the **caller's** thread in `KafkaProducer.doSend`'s synchronous
-     * failure path - before the send callback runs. With
-     * `org.apache.kafka` at DEBUG and the appender attached at the root
-     * logger, each such log would recursively invoke `producer.send`
-     * again (the network-thread-name guard below cannot catch it, the
-     * event carries the application thread's name), stacking up repeated
-     * `max.block.ms` waits and ultimately a `StackOverflowError`.
+     * would re-enter [append] on the same thread. The guard covers two
+     * distinct threads with one mechanism:
+     *
+     * - **Send workers** ([SendDispatcher] marks its worker once, for
+     *   its entire lifetime): `producer.send` runs there since the
+     *   asynchronous dispatch, and the Kafka 4.x client logs
+     *   `ApiException`s at DEBUG *synchronously on the `send` caller*
+     *   in `KafkaProducer.doSend`'s failure path. With
+     *   `org.apache.kafka` at DEBUG and the appender attached at the
+     *   root logger, each such log would feed a new event back into
+     *   the pipeline - a feedback loop that amplifies exactly during
+     *   broker trouble. (The network-thread-name guard below cannot
+     *   catch it: the event carries the worker's thread name.)
+     * - **Application (caller) threads** (set around each [append]
+     *   call): the remaining synchronous work - `encoder.encode`,
+     *   metric hooks - can itself log through SLF4J (an encoder's
+     *   internal warnings, a `MeterRegistry` complaining about meter
+     *   conflicts). Without the guard that is unbounded recursion
+     *   (append → encode → log → append …) ending in a
+     *   `StackOverflowError`.
+     *
      * Reentrant events are dropped entirely - same policy as the
      * network-thread guard: no metrics, no fallback.
+     *
+     * **Deliberately also active on virtual threads.** Skipping the
+     * guard for virtual callers (our own workers are always platform
+     * threads) was considered and rejected: the recurring per-event
+     * cost sits on the caller side, which is exactly where virtual
+     * threads occur and where the recursion protection is needed -
+     * safety must not depend on the thread type. The VT cost is one
+     * `ThreadLocalMap` entry per virtual thread that ever logs
+     * (`Boolean.TRUE`/`FALSE` are cached, so no boxing), transient
+     * with the thread. `ScopedValue` would be the structured,
+     * VT-friendly replacement, but is final only since JDK 25 - a
+     * candidate for a future baseline bump, not for the Java 21
+     * target. See the 2026-08-29 performance analysis, finding 6.
      */
     private val inAppend = ThreadLocal.withInitial { false }
 
