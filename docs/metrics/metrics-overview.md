@@ -1,70 +1,70 @@
-## Vollständige Metrik-Übersicht (Stand nach allen Patches)
+## Complete metrics overview (as of all patches applied)
 
-Alle Metriken tragen den `appender`-Tag, der den Logback-Appender-Namen widerspiegelt (`"unnamed"` wenn nicht gesetzt). Plus optional die Common-Tags, die der Operator beim `KafkaAppenderMetricsBinding`-Konstruktor mitgegeben hat.
+All metrics carry the `appender` tag, reflecting the Logback appender name (`"unnamed"` if not set). Plus, optionally, the common tags the operator passed to the `KafkaAppenderMetricsBinding` constructor.
 
-### Counter
+### Counters
 
-| Metrik                             | Tags                                | Wann wird inkrementiert                                      |
+| Metric                             | Tags                                | When it is incremented                                       |
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Jedes Event, das `KafkaAppender.append()` betritt (nach Routing zur Topic-Klasse) |
-| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event wurde erfolgreich an `producer.send()` übergeben (Callback-Outcome noch unbekannt) |
-| `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event wurde an Kafka vorbeigeleitet (zum Fallback-Appender, falls konfiguriert, sonst verworfen)              |
-| `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher musste verwerfen (Queue voll oder Shutdown-Timeout) |
+| `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Every event that enters `KafkaAppender.append()` (after routing to its topic class) |
+| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was successfully handed to `producer.send()` (callback outcome still unknown) |
+| `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event was routed past Kafka (to the fallback appender if configured, otherwise dropped) |
+| `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher had to drop (queue full or shutdown timeout) |
 
-### Timer
+### Timers
 
-| Metrik                         | Tags                                 | Was wird gemessen                                    |
-| ------------------------------ | ------------------------------------ | ---------------------------------------------------- |
-| `kafka.appender.send.duration` | `appender`, `topic.class`, `outcome` | Wall-Clock von `producer.send()`-Aufruf bis Callback |
+| Metric                         | Tags                                 | What is measured                                       |
+| ------------------------------ | ------------------------------------ | ------------------------------------------------------ |
+| `kafka.appender.send.duration` | `appender`, `topic.class`, `outcome` | Wall clock from the `producer.send()` call to the callback |
 
 ### Gauges
 
-| Metrik                                   | Tags                      | Was zeigt es                                                 |
+| Metric                                   | Tags                      | What it shows                                                |
 | ---------------------------------------- | ------------------------- | ------------------------------------------------------------ |
-| `kafka.appender.fallback.queue.size`     | `appender`                | Aktuelle Tiefe der FallbackDispatcher-Queue (live pro Scrape) |
-| `kafka.appender.fallback.queue.capacity` | `appender`                | Maximale Tiefe der Queue (konstant)                          |
-| `kafka.appender.send.queue.size`         | `appender`, `topic.class` | Aktuelle Tiefe der SendDispatcher-Queue der Klasse (live pro Scrape) |
-| `kafka.appender.send.queue.capacity`     | `appender`, `topic.class` | Maximale Tiefe der SendDispatcher-Queue (konstant)           |
+| `kafka.appender.fallback.queue.size`     | `appender`                | Current depth of the FallbackDispatcher queue (live per scrape) |
+| `kafka.appender.fallback.queue.capacity` | `appender`                | Maximum depth of the queue (constant)                        |
+| `kafka.appender.send.queue.size`         | `appender`, `topic.class` | Current depth of the class's SendDispatcher queue (live per scrape) |
+| `kafka.appender.send.queue.capacity`     | `appender`, `topic.class` | Maximum depth of the SendDispatcher queue (constant)         |
 
-## Tag-Werte
+## Tag values
 
-### `appender` — pro Appender-Instanz ein Wert
+### `appender` — one value per appender instance
 
-| Wert                  | Quelle                                                       |
+| Value                 | Source                                                       |
 | --------------------- | ------------------------------------------------------------ |
-| Logback-Appender-Name | Aus dem `<appender name="...">`-Attribut im XML              |
-| `unnamed`             | Fallback wenn kein Name gesetzt (sollte in Produktion nicht vorkommen) |
+| Logback appender name | From the `<appender name="...">` attribute in the XML        |
+| `unnamed`             | Fallback when no name is set (should not occur in production) |
 
-### `topic.class` — 4 mögliche Werte
+### `topic.class` — 4 possible values
 
-| Wert          | Wann gesetzt                                                 |
+| Value         | When set                                                     |
 | ------------- | ------------------------------------------------------------ |
-| `audit`       | Events für `TopicClass.AUDIT`                                |
-| `functional`  | Events für `TopicClass.FUNCTIONAL`                           |
-| `technical`   | Events für `TopicClass.TECHNICAL` (Default für unklassifizierte Events) |
-| `performance` | Events für `TopicClass.PERFORMANCE`                          |
+| `audit`       | Events for `TopicClass.AUDIT`                                |
+| `functional`  | Events for `TopicClass.FUNCTIONAL`                           |
+| `technical`   | Events for `TopicClass.TECHNICAL` (default for unclassified events) |
+| `performance` | Events for `TopicClass.PERFORMANCE`                          |
 
-### `reason` — 6 mögliche Werte (nur bei `events.fallback`)
+### `reason` — 6 possible values (only on `events.fallback`)
 
-| Wert            | Bedeutung                                                    |
+| Value           | Meaning                                                      |
 | --------------- | ------------------------------------------------------------ |
-| `breaker.open`  | Circuit Breaker hat keine Permission gegeben (OPEN oder HALF_OPEN ausgeschöpft) |
-| `throttle`      | Half-Open-Throttle: Probe-Gap noch nicht verstrichen         |
-| `send.error`    | `producer.send()` warf synchron oder Callback meldete Exception |
-| `encoder.error` | Hot-Path-Exception vor `send()` (Encoder, Routing, OOM)      |
-| `queue.full`    | SendDispatcher-Queue der Klasse war voll — Kafka-Delivery kommt nicht hinterher |
-| `shutdown`      | Event war beim Appender-Stop noch in der SendDispatcher-Queue oder in Zustellung |
+| `breaker.open`  | Circuit breaker gave no permission (OPEN, or HALF_OPEN exhausted) |
+| `throttle`      | Half-open throttle: probe gap not yet elapsed                |
+| `send.error`    | `producer.send()` threw synchronously or the callback reported an exception |
+| `encoder.error` | Hot-path exception before `send()` (encoder, routing, OOM)   |
+| `queue.full`    | The class's SendDispatcher queue was full — Kafka delivery cannot keep up |
+| `shutdown`      | Event was still in the SendDispatcher queue or in flight when the appender stopped |
 
-### `outcome` — 2 mögliche Werte (nur bei `send.duration`)
+### `outcome` — 2 possible values (only on `send.duration`)
 
-| Wert      | Bedeutung                                                    |
+| Value     | Meaning                                                      |
 | --------- | ------------------------------------------------------------ |
-| `success` | Callback meldete `exception == null`                         |
-| `error`   | Callback meldete Exception oder `producer.send()` warf synchron |
+| `success` | Callback reported `exception == null`                        |
+| `error`   | Callback reported an exception or `producer.send()` threw synchronously |
 
-## Common Tags (vom Operator konfiguriert)
+## Common tags (configured by the operator)
 
-Tags, die der Operator via Konstruktor an `KafkaAppenderMetricsBinding` mitgibt, werden **jeder** Metrik beigefügt:
+Tags the operator passes to `KafkaAppenderMetricsBinding` via the constructor are attached to **every** metric:
 
 ```kotlin
 KafkaAppenderMetricsBinding(
@@ -77,95 +77,97 @@ KafkaAppenderMetricsBinding(
 )
 ```
 
-Diese erscheinen dann zusätzlich zu den per-Metrik-Tags an allen oben genannten Counter, Timer und Gauges.
+These then appear in addition to the per-metric tags on all counters, timers, and gauges listed above.
 
-## Cardinality pro Appender-Instanz
+## Cardinality per appender instance
 
-| Metrik                    | Series-Anzahl                         |
+| Metric                    | Series count                          |
 | ------------------------- | ------------------------------------- |
-| `events.accepted`         | 4 (eine pro `topic.class`)            |
+| `events.accepted`         | 4 (one per `topic.class`)             |
 | `events.dispatched`       | 4                                     |
 | `events.fallback`         | 24 (4 × 6 = `topic.class` × `reason`) |
 | `send.duration`           | 8 (4 × 2 = `topic.class` × `outcome`) |
 | `fallback.dropped`        | 1                                     |
 | `fallback.queue.size`     | 1                                     |
 | `fallback.queue.capacity` | 1                                     |
-| `send.queue.size`         | 4 (eine pro aktiver `topic.class`)    |
+| `send.queue.size`         | 4 (one per active `topic.class`)      |
 | `send.queue.capacity`     | 4                                     |
-| **Gesamt**                | **51**                                |
+| **Total**                 | **51**                                |
 
-Multipliziert mit dem `appender`-Tag (im Default-Fall 1 Wert) und der Common-Tags-Cardinality (typisch 1, weil pro Service konstant).
+Multiplied by the `appender` tag (1 value in the default case) and the common-tags cardinality (typically 1, since constant per service).
 
-## Circuit-Breaker-Metriken
+## Circuit breaker metrics
 
-Werden vom appender-eigenen Binder registriert (kein `resilience4j-micrometer` nötig; `micrometer-core` genügt). Die Metriknamen und Tags entsprechen 1:1 denen von `TaggedCircuitBreakerMetrics`, ergänzt um den `appender`-Tag und die Common-Tags - dadurch kollidieren mehrere KafkaAppender-Instanzen an derselben Registry nicht mehr:
+Registered by the appender's own binder (no `resilience4j-micrometer` needed; `micrometer-core` suffices). The metric names and tags match those of `TaggedCircuitBreakerMetrics` 1:1, extended by the `appender` tag and the common tags — so multiple KafkaAppender instances no longer collide on the same registry:
 
-| Metrik                                       | Tags                        | Typ                                                          |
+| Metric                                       | Tags                        | Type                                                         |
 | -------------------------------------------- | --------------------------- | ------------------------------------------------------------ |
-| `resilience4j.circuitbreaker.state`          | `appender`, `name`, `state` | Gauge: 1 wenn Breaker in diesem State, sonst 0               |
-| `resilience4j.circuitbreaker.calls`          | `appender`, `name`, `kind`  | Timer pro Call-Outcome (`successful`, `failed`, `ignored`)   |
-| `resilience4j.circuitbreaker.not.permitted.calls` | `appender`, `name`, `kind` | Counter (`kind=not_permitted`): vom offenen Breaker abgewiesene Calls |
-| `resilience4j.circuitbreaker.buffered.calls` | `appender`, `name`, `kind`  | Gauge: aktuell im Sliding-Window                             |
-| `resilience4j.circuitbreaker.slow.calls`     | `appender`, `name`, `kind`  | Gauge: Slow Calls im Sliding-Window                          |
-| `resilience4j.circuitbreaker.failure.rate`   | `appender`, `name`          | Gauge: aktuelle Failure-Rate in Prozent                      |
-| `resilience4j.circuitbreaker.slow.call.rate` | `appender`, `name`          | Gauge: aktueller Slow-Call-Anteil in Prozent                 |
+| `resilience4j.circuitbreaker.state`          | `appender`, `name`, `state` | Gauge: 1 if the breaker is in this state, otherwise 0        |
+| `resilience4j.circuitbreaker.calls`          | `appender`, `name`, `kind`  | Timer per call outcome (`successful`, `failed`, `ignored`)   |
+| `resilience4j.circuitbreaker.not.permitted.calls` | `appender`, `name`, `kind` | Counter (`kind=not_permitted`): calls rejected by the open breaker |
+| `resilience4j.circuitbreaker.buffered.calls` | `appender`, `name`, `kind`  | Gauge: currently in the sliding window                       |
+| `resilience4j.circuitbreaker.slow.calls`     | `appender`, `name`, `kind`  | Gauge: slow calls in the sliding window                      |
+| `resilience4j.circuitbreaker.failure.rate`   | `appender`, `name`          | Gauge: current failure rate in percent                       |
+| `resilience4j.circuitbreaker.slow.call.rate` | `appender`, `name`          | Gauge: current slow-call share in percent                    |
 
-**`name`-Werte** entsprechen den aktiven Topic-Klassen:
+**`name` values** correspond to the active topic classes:
 
 - `kafka-appender-audit`
 - `kafka-appender-functional`
 - `kafka-appender-technical`
 - `kafka-appender-performance`
 
-## Kafka-Producer-Bridge (wenn `KafkaClientMetrics` im Classpath)
+## Kafka producer bridge (when `KafkaClientMetrics` is on the classpath)
 
-Wird automatisch via Reflection aktiviert, wenn `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` verfügbar ist. Pro aktiver TopicClass ein eigener Binding:
+Activated automatically via reflection when `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` is available. One binding per active TopicClass:
 
-| Metrik-Präfix                           | Beispiele                                 |
+| Metric prefix                           | Examples                                  |
 | --------------------------------------- | ----------------------------------------- |
-| `kafka.producer.record.send.total`      | Records, die der Producer angenommen hat  |
-| `kafka.producer.record.error.total`     | Records, die fehlgeschlagen sind          |
-| `kafka.producer.record.size.avg`        | Mittlere Record-Größe                     |
-| `kafka.producer.batch.size.avg`         | Mittlere Batch-Größe                      |
-| `kafka.producer.request.latency.avg`    | Mittlere Request-Latency zu Brokern       |
-| `kafka.producer.outgoing.byte.rate`     | Bytes/Sekunde zum Cluster                 |
-| `kafka.producer.buffer.available.bytes` | Freie Buffer-Bytes                        |
-| …                                       | (insgesamt ~40 Producer-interne Metriken) |
+| `kafka.producer.record.send.total`      | Records the producer accepted             |
+| `kafka.producer.record.error.total`     | Records that failed                       |
+| `kafka.producer.record.size.avg`        | Average record size                       |
+| `kafka.producer.batch.size.avg`         | Average batch size                        |
+| `kafka.producer.request.latency.avg`    | Average request latency to brokers        |
+| `kafka.producer.outgoing.byte.rate`     | Bytes/second to the cluster               |
+| `kafka.producer.buffer.available.bytes` | Free buffer bytes                         |
+| …                                       | (~40 producer-internal metrics in total)  |
 
-Alle mit Tag `topic.class` zur Disambiguierung zwischen den per-Klassen Producern.
+All carry the `topic.class` tag to disambiguate between the per-class producers.
 
-## Wichtige Prometheus-Queries für ein Dashboard
+## Key Prometheus queries for a dashboard
 
 ```promql
-# Throughput pro Topic-Klasse
+# Throughput per topic class
 rate(kafka_appender_events_accepted_total[1m])
 
-# Loss-Rate aufgeschlüsselt nach Grund
+# Loss rate broken down by reason
 rate(kafka_appender_events_fallback_total[1m])
 
-# p99 Send-Latency
+# p99 send latency
 histogram_quantile(0.99,
     rate(kafka_appender_send_duration_seconds_bucket[5m]))
 
-# Fallback-Queue-Sättigung in Prozent
+# Fallback queue saturation as a ratio
 kafka_appender_fallback_queue_size
   / kafka_appender_fallback_queue_capacity
 
-# Echter Datenverlust (= dropped events)
+# Actual data loss (= dropped events)
 rate(kafka_appender_fallback_dropped_total[5m])
 
-# Circuit-Breaker-Zustand
+# Circuit breaker state
 resilience4j_circuitbreaker_state{name=~"kafka-appender-.*"}
 ```
 
-## Wichtige Alarm-Schwellen
+## Key alert thresholds
 
-| Bedingung                                                    | Bedeutung                                                    | Severity                        |
+| Condition                                                    | Meaning                                                      | Severity                        |
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| `kafka_appender_fallback_dropped_total > 0`                  | Echter Datenverlust, FallbackDispatcher-Queue überfüllt      | Kritisch                        |
-| `kafka_appender_fallback_queue_size / capacity > 0.8` über 5 min | Fallback-Appender ist langsamer als Event-Rate               | Warnung                         |
-| `resilience4j_circuitbreaker_state{state="open"} == 1`       | Cluster-Verlust für diese Topic-Klasse                       | Kritisch (für AUDIT/FUNCTIONAL) |
-| `rate(kafka_appender_events_fallback{reason="send.error"}[1m]) > 0` über 10 min | Anhaltende Send-Fehler, die nicht durch Client-Errors gefiltert wurden | Warnung                         |
-| `rate(kafka_appender_events_fallback{reason="encoder.error"}[5m]) > 0` | Hot-Path-Exceptions im Encoder/Routing                       | Warnung (Code-Bug)              |
+| `kafka_appender_fallback_dropped_total > 0`                  | Actual data loss, FallbackDispatcher queue overflowed        | Critical                        |
+| `kafka_appender_fallback_queue_size / capacity > 0.8` for 5 min | Fallback appender is slower than the event rate              | Warning                         |
+| `resilience4j_circuitbreaker_state{state="open"} == 1`       | Cluster loss for this topic class                            | Critical (for AUDIT/FUNCTIONAL) |
+| `rate(kafka_appender_events_fallback{reason="send.error"}[1m]) > 0` for 10 min | Persistent send errors that were not filtered out as client errors | Warning                         |
+| `rate(kafka_appender_events_fallback{reason="encoder.error"}[5m]) > 0` | Hot-path exceptions in the encoder/routing                   | Warning (code bug)              |
 
-Das ist die komplette Übersicht. Falls du noch ein konkretes Grafana-JSON-Dashboard auf Basis dieser Metriken möchtest, kann ich das aus den Queries ableiten — sag Bescheid.
+Ready-made Grafana dashboards built on these metrics live next to this page:
+[`kafka-appender-dashboard.json`](./kafka-appender-dashboard.json) and
+[`kafka-producer-internals-dashboard.json`](./kafka-producer-internals-dashboard.json).
