@@ -22,10 +22,12 @@ import org.openjdk.jmh.annotations.Warmup;
  * {@code RecordHeader} wrappers are allocated per event for five
  * constant headers ({@code ResilientMessageSender.buildRecord}).
  *
- * <p>Baseline replicates the production record-building shape (create
+ * <p>Baseline replicates the original record-building shape (create
  * record, then five {@code headers().add(name, bytes)} calls); the
  * candidate passes one pre-built shared immutable header list to the
- * {@code ProducerRecord} constructor. The primary result is
+ * {@code ProducerRecord} constructor - since the finding-2 fix the
+ * candidate IS the production shape, and the baseline remains as the
+ * reference point the measured 160 B/op delta was taken against. The primary result is
  * {@code gc.alloc.rate.norm} (bytes/op) from {@code -prof gc}; the time
  * delta is secondary. Header names/values mirror the enricher's real
  * static header set in count and typical size.

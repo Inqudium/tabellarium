@@ -16,9 +16,11 @@ import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -96,12 +98,12 @@ public class SenderPathBenchmark {
 
         enrichment = new EnrichedRecord(
                 "trace-0123456789abcdef0123456789abcdef",
-                Map.of(
-                        "meta.component", "payment-service".getBytes(StandardCharsets.UTF_8),
-                        "meta.cmdbId", "CMDB-12345".getBytes(StandardCharsets.UTF_8),
-                        "meta.environment", "prod".getBytes(StandardCharsets.UTF_8),
-                        "meta.agent.name", "logback-kafka-appender".getBytes(StandardCharsets.UTF_8),
-                        "meta.agent.version", "1.0.0-SNAPSHOT".getBytes(StandardCharsets.UTF_8)));
+                List.of(
+                        new RecordHeader("meta.component", "payment-service".getBytes(StandardCharsets.UTF_8)),
+                        new RecordHeader("meta.cmdbId", "CMDB-12345".getBytes(StandardCharsets.UTF_8)),
+                        new RecordHeader("meta.environment", "prod".getBytes(StandardCharsets.UTF_8)),
+                        new RecordHeader("meta.agent.name", "logback-kafka-appender".getBytes(StandardCharsets.UTF_8)),
+                        new RecordHeader("meta.agent.version", "1.0.0-SNAPSHOT".getBytes(StandardCharsets.UTF_8))));
         payload = new byte[1024];
 
         // Pre-built, pre-frozen events: the sender only carries the event

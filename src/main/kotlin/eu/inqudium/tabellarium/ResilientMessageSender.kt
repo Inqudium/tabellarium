@@ -265,13 +265,9 @@ internal class ResilientMessageSender(
         enrichment: EnrichedRecord,
     ): ProducerRecord<ByteArray, ByteArray> {
         val key = enrichment.partitioningKey?.toByteArray(Charsets.UTF_8)
-        val record = ProducerRecord<ByteArray, ByteArray>(topicName, null, null, key, payload)
-        // The pre-encoded header arrays are passed by reference and are
+        // The pre-built shared headers are passed by reference and are
         // read-only by convention - see [EnrichedRecord.headers].
-        enrichment.headers.forEach { (name, valueBytes) ->
-            record.headers().add(name, valueBytes)
-        }
-        return record
+        return ProducerRecord(topicName, null, null, key, payload, enrichment.headers)
     }
 
     companion object {

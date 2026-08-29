@@ -3,29 +3,32 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.spi.ILoggingEvent
 import eu.inqudium.tabellarium.MessageEnricher.Companion.DEFAULT_TRACE_ID_EXTRACTOR
 import eu.inqudium.tabellarium.MessageEnricher.Companion.TRACE_ID_MDC_KEY
+import org.apache.kafka.common.header.Header
+import org.apache.kafka.common.header.internals.RecordHeader
 import java.util.Properties
 
 /**
  * Enriches logging events with static metadata and a per-event partitioning key.
  *
  * The enricher is a **pure function**: it never mutates the incoming logging event,
- * holds no per-call state, and returns the same immutable header map instance
+ * holds no per-call state, and returns the same immutable header list instance
  * across all calls.
  *
  * ## What gets enriched
  *
  * - **Static headers** - assembled once at construction time from [component],
- *   [cmdbId], and [environment], plus a fixed agent name and version. Values
- *   are pre-encoded as UTF-8 byte arrays so the hot path performs zero
- *   conversion. The same immutable map instance is reused for every event.
+ *   [cmdbId], and [environment], plus a fixed agent name and version. Each
+ *   header is pre-built as a complete [Header] wrapping the UTF-8-encoded
+ *   value bytes, so the hot path performs zero conversion and zero wrapper
+ *   allocation. The same immutable list instance is reused for every event.
  * - **Partitioning key** - derived per event from the configured
  *   [partitioningKeyExtractor]. The default extractor reads the [TRACE_ID_MDC_KEY]
  *   entry from the event's MDC and returns it if non-blank; otherwise null.
  *
  * Callers attach the enrichment result to a Kafka `ProducerRecord`: the
  * partitioning key becomes the record key (UTF-8 encoded by the sender, since
- * it varies per event), the headers become record headers passed by reference
- * - read-only by convention; the full contract lives on
+ * it varies per event), the header list is passed by reference to the record
+ * constructor - read-only by convention; the full contract lives on
  * [EnrichedRecord.headers].
  *
  * ## Input validation
@@ -61,34 +64,35 @@ internal class MessageEnricher(
     private val partitioningKeyExtractor: (ILoggingEvent) -> String? = DEFAULT_TRACE_ID_EXTRACTOR,
 ) {
     /**
-     * Pre-encoded UTF-8 byte arrays of the static header values, keyed
-     * by header name. Encoded once at construction time and shared
-     * across all [enrich] calls so the hot path produces zero
-     * allocations for the header set (one allocation for the
-     * partitioning key remains, since that varies per event). The
-     * arrays are shared and read-only by convention - see
-     * [EnrichedRecord.headers].
+     * Pre-built [Header] instances for the static metadata, each
+     * wrapping its UTF-8-encoded value bytes. Built once at
+     * construction time and shared across all [enrich] calls so the
+     * hot path produces zero allocations for the header set (one
+     * allocation for the partitioning key remains, since that varies
+     * per event). The wrappers and their arrays are shared and
+     * read-only by convention - see [EnrichedRecord.headers].
      */
-    private val staticHeaders: Map<String, ByteArray>
+    private val staticHeaders: List<Header>
 
     init {
         require(component.isNotBlank()) { "Component must not be blank" }
         require(cmdbId.isNotBlank()) { "CMDB id must not be blank" }
         require(environment.isNotBlank()) { "Environment must not be blank" }
 
-        // UTF-8 encode each header value ONCE here, not per event in the
-        // hot path. Map.copyOf returns a guaranteed-immutable map: attempts
-        // to modify it throw UnsupportedOperationException. (The arrays
-        // inside stay mutable - see EnrichedRecord.headers for the
-        // read-only convention.)
+        // UTF-8 encode each header value and wrap it in its RecordHeader
+        // ONCE here, not per event in the hot path. List.copyOf returns a
+        // guaranteed-immutable list: attempts to modify it throw
+        // UnsupportedOperationException. (The value arrays inside stay
+        // mutable - see EnrichedRecord.headers for the read-only
+        // convention.)
         staticHeaders =
-            java.util.Map.copyOf(
-                mapOf(
-                    HEADER_COMPONENT to component.toByteArray(Charsets.UTF_8),
-                    HEADER_CMDB_ID to cmdbId.toByteArray(Charsets.UTF_8),
-                    HEADER_ENVIRONMENT to environment.toByteArray(Charsets.UTF_8),
-                    HEADER_AGENT_NAME to AGENT_NAME.toByteArray(Charsets.UTF_8),
-                    HEADER_AGENT_VERSION to AGENT_VERSION.toByteArray(Charsets.UTF_8),
+            java.util.List.copyOf(
+                listOf(
+                    RecordHeader(HEADER_COMPONENT, component.toByteArray(Charsets.UTF_8)),
+                    RecordHeader(HEADER_CMDB_ID, cmdbId.toByteArray(Charsets.UTF_8)),
+                    RecordHeader(HEADER_ENVIRONMENT, environment.toByteArray(Charsets.UTF_8)),
+                    RecordHeader(HEADER_AGENT_NAME, AGENT_NAME.toByteArray(Charsets.UTF_8)),
+                    RecordHeader(HEADER_AGENT_VERSION, AGENT_VERSION.toByteArray(Charsets.UTF_8)),
                 ),
             )
     }
@@ -96,7 +100,7 @@ internal class MessageEnricher(
     /**
      * Enriches the given event and returns the resulting [EnrichedRecord].
      *
-     * The [EnrichedRecord.headers] is the shared immutable header map computed
+     * The [EnrichedRecord.headers] is the shared immutable header list built
      * at construction time. The [EnrichedRecord.partitioningKey] is non-null
      * only when the configured extractor returned a non-blank value **of at
      * most [MAX_PARTITIONING_KEY_LENGTH] characters** - see
@@ -215,26 +219,30 @@ internal class MessageEnricher(
  * that should be attached to the resulting Kafka producer record by a
  * downstream sender.
  *
- * ## Header byte arrays
+ * ## Shared header instances
  *
- * This section is the canonical statement of the shared-array
+ * This section is the canonical statement of the shared-header
  * read-only contract; the enricher's and sender's comments refer
  * here instead of repeating it.
  *
- * [headers] holds pre-UTF-8-encoded byte arrays, ready to pass directly
- * to Kafka's [org.apache.kafka.common.header.Headers.add]. The encoding
- * is performed once by the [MessageEnricher] at construction time, not
- * per event - this avoids ~5 byte-array allocations per log event in
- * the hot path of a high-volume service.
+ * [headers] holds pre-built [Header] instances wrapping
+ * pre-UTF-8-encoded value byte arrays, ready to pass directly to the
+ * `ProducerRecord` constructor that accepts an `Iterable<Header>`.
+ * Both the encoding and the wrappers are created once by the
+ * [MessageEnricher] at construction time, not per event - this avoids
+ * ~5 byte-array plus ~5 wrapper allocations per log event in the hot
+ * path of a high-volume service.
  *
- * Kafka does not defensive-copy header value arrays; they are stored
- * by reference. Callers MUST therefore treat the byte arrays as
- * read-only. Mutating them would corrupt subsequent events that share
+ * Kafka does not defensive-copy headers: the record stores the
+ * [Header] references, and each wrapper stores its value array by
+ * reference. Callers MUST therefore treat the wrappers and their byte
+ * arrays as read-only. [RecordHeader] itself is immutable, but
+ * mutating a value array would corrupt subsequent events that share
  * the same [MessageEnricher] instance and would also corrupt records
  * already accepted by Kafka but not yet serialized to the wire.
  *
- * The map itself is guaranteed immutable (built via
- * [java.util.Map.copyOf] in the enricher); attempts to put or remove
+ * The list itself is guaranteed immutable (built via
+ * [java.util.List.copyOf] in the enricher); attempts to add or remove
  * entries throw [UnsupportedOperationException].
  *
  * ## Partitioning key
@@ -245,11 +253,10 @@ internal class MessageEnricher(
  *
  * ## Identity semantics
  *
- * Deliberately NOT a `data class`: the header values are byte arrays,
- * for which generated `equals`/`hashCode` would compare by reference -
- * two records with identical content would not be equal, and `copy()`
- * would silently share the mutable arrays. Instances compare by
- * identity; there is no use case for value equality on this type.
+ * Deliberately NOT a `data class`: instances compare by identity -
+ * there is no use case for value equality on this type, and a
+ * generated `copy()` would silently share the mutable value arrays
+ * behind the headers.
  *
  * ## Why the type is `internal`
  *
@@ -264,11 +271,12 @@ internal class MessageEnricher(
  * @param partitioningKey The Kafka record key. Null means "no key": the
  *                        producer will then distribute records via its
  *                        configured partitioner (sticky-random by default).
- * @param headers Immutable map of header names to pre-encoded UTF-8
- *                value bytes. Same instance across all enrich calls of
- *                a given enricher. Byte arrays must NOT be mutated.
+ * @param headers Immutable list of pre-built headers wrapping
+ *                pre-encoded UTF-8 value bytes. Same instance across
+ *                all enrich calls of a given enricher. The value byte
+ *                arrays must NOT be mutated.
  */
 internal class EnrichedRecord(
     val partitioningKey: String?,
-    val headers: Map<String, ByteArray>,
+    val headers: List<Header>,
 )

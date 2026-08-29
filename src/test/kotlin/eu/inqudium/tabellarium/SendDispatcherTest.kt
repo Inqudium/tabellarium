@@ -106,12 +106,12 @@ class SendDispatcherTest {
                 )
             try {
                 // When: the first dispatch parks the worker in the send
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("first"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("first"))
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
 
                 // And: a second dispatch while the send is parked
                 val startNanos = System.nanoTime()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("second"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("second"))
                 val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
 
                 // Then: the caller returned immediately
@@ -135,7 +135,7 @@ class SendDispatcherTest {
             try {
                 // When
                 (1..5).forEach { i ->
-                    dispatcher.dispatch("topic-$i", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("e$i"))
+                    dispatcher.dispatch("topic-$i", ByteArray(0), EnrichedRecord(null, emptyList()), pending("e$i"))
                 }
 
                 // Then: all delivered, in order
@@ -175,7 +175,7 @@ class SendDispatcherTest {
                 )
             try {
                 // When
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("probe"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("probe"))
 
                 // Then
                 pollUntil { guardSeenTrue.get() }
@@ -223,11 +223,11 @@ class SendDispatcherTest {
             try {
                 // When: first dispatch pins the worker, second fills the
                 //   queue, third and fourth overflow
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("in-flight"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("queued"))
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("overflow-1"))
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("overflow-2"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("overflow-1"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("overflow-2"))
 
                 // Then: the overflow events reached the fallback with the
                 //   queue-full reason; nothing blocked
@@ -274,7 +274,7 @@ class SendDispatcherTest {
 
             // When
             (1..4).forEach { i ->
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("e$i"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("e$i"))
             }
             dispatcher.close()
 
@@ -329,10 +329,10 @@ class SendDispatcherTest {
                     drainTimeoutMs = 100,
                 )
             dispatcher.setMetrics(metrics)
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("in-flight"))
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
             (1..3).forEach { i ->
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("queued-$i"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-$i"))
             }
 
             // When
@@ -372,7 +372,7 @@ class SendDispatcherTest {
             dispatcher.close()
 
             // When
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("late"))
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("late"))
 
             // Then
             pollUntil { recorder.events.size == 1 }
@@ -410,7 +410,7 @@ class SendDispatcherTest {
                 )
             try {
                 // When
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("doomed"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("doomed"))
 
                 // Then: death reported, item diverted exactly once
                 pollUntil { death.get() != null }
@@ -461,9 +461,9 @@ class SendDispatcherTest {
             dispatcher.setMetrics(metrics)
             try {
                 // When: one item in flight, one queued behind it
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("in-flight"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("queued"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued"))
                 release.countDown()
                 pollUntil { death.get() != null }
 
@@ -474,7 +474,7 @@ class SendDispatcherTest {
                     .containsExactlyInAnyOrder("in-flight", "queued")
 
                 // And: a dispatch after the death diverts on the caller
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("after-death"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("after-death"))
                 pollUntil { recorder.events.size == 3 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactlyInAnyOrder("in-flight", "queued", "after-death")
@@ -536,7 +536,7 @@ class SendDispatcherTest {
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyMap()), pending("pinned"))
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("pinned"))
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
 
             // When: forced shutdown claims and diverts, then the send unblocks

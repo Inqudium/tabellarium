@@ -4,6 +4,8 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
+import org.apache.kafka.common.header.Header
+import org.apache.kafka.common.header.internals.RecordHeader
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Nested
@@ -25,12 +27,13 @@ class MessageEnricherTest {
         )
 
     /**
-     * Decodes the pre-encoded UTF-8 header byte arrays back into Strings
-     * for human-readable assertions. The headers in [EnrichedRecord] are
-     * byte arrays to avoid per-event allocation in the hot path; tests
-     * still want to assert on their textual content.
+     * Decodes the pre-built headers back into a name-to-String map for
+     * human-readable assertions. The headers in [EnrichedRecord] are
+     * pre-built wrappers around UTF-8 byte arrays to avoid per-event
+     * allocation in the hot path; tests still want to assert on their
+     * textual content.
      */
-    private fun Map<String, ByteArray>.decoded(): Map<String, String> = mapValues { (_, v) -> String(v, Charsets.UTF_8) }
+    private fun List<Header>.decoded(): Map<String, String> = associate { it.key() to String(it.value(), Charsets.UTF_8) }
 
     @Nested
     inner class `Construction validation` {
@@ -124,7 +127,7 @@ class MessageEnricherTest {
             //   documented set (component, cmdbId, environment, agent name, agent
             //   version) - no more, no less.
             // How will the test case be deemed successful and why? Successful if
-            //   the headers map has exactly five entries with exactly those keys.
+            //   the headers list has exactly five entries with exactly those keys.
             //   This pins down the header contract so that downstream consumers can
             //   rely on it.
             // Why is it important to test this test case? An accidentally added or
@@ -139,7 +142,8 @@ class MessageEnricherTest {
             val result = enricher.enrich(event)
 
             // Then
-            assertThat(result.headers).containsOnlyKeys(
+            assertThat(result.headers).hasSize(5)
+            assertThat(result.headers.decoded()).containsOnlyKeys(
                 MessageEnricher.HEADER_COMPONENT,
                 MessageEnricher.HEADER_CMDB_ID,
                 MessageEnricher.HEADER_ENVIRONMENT,
@@ -149,13 +153,13 @@ class MessageEnricherTest {
         }
 
         @Test
-        fun `should return the same headers map instance across multiple calls`() {
-            // What is to be tested? Whether the static headers map is computed once
-            //   and shared across all enrich calls, rather than recomputed per event.
+        fun `should return the same headers list instance across multiple calls`() {
+            // What is to be tested? Whether the static headers list is built once
+            //   and shared across all enrich calls, rather than rebuilt per event.
             // How will the test case be deemed successful and why? Successful if two
-            //   independent calls return the exact same map reference. This confirms
+            //   independent calls return the exact same list reference. This confirms
             //   the documented no-per-event-allocation contract.
-            // Why is it important to test this test case? Recomputing the headers map
+            // Why is it important to test this test case? Rebuilding the headers list
             //   on every log event would multiply allocations in the hot path; an
             //   explicit test pins the contract down so a later "small refactor"
             //   cannot accidentally regress it.
@@ -172,17 +176,17 @@ class MessageEnricherTest {
         }
 
         @Test
-        fun `should return an immutable headers map`() {
+        fun `should return an immutable headers list`() {
             // Given
             val enricher = newEnricher()
 
             // When
             val result = enricher.enrich(newTestLoggingEvent())
 
-            // Then: attempting to mutate the returned map throws
+            // Then: attempting to mutate the returned list throws
             @Suppress("UNCHECKED_CAST")
             assertThatThrownBy {
-                (result.headers as MutableMap<String, ByteArray>)["intruder"] = ByteArray(0)
+                (result.headers as MutableList<Header>).add(RecordHeader("intruder", ByteArray(0)))
             }.isInstanceOf(UnsupportedOperationException::class.java)
         }
     }

@@ -12,6 +12,7 @@ import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.errors.SerializationException
 import org.apache.kafka.common.errors.TimeoutException
 import org.apache.kafka.common.errors.TopicAuthorizationException
+import org.apache.kafka.common.header.internals.RecordHeader
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
@@ -164,9 +165,9 @@ class ResilientMessageSenderTest {
         EnrichedRecord(
             partitioningKey = "trace-abc-123",
             headers =
-                mapOf(
-                    "meta.component" to "payment-service".toByteArray(Charsets.UTF_8),
-                    "meta.environment" to "prod".toByteArray(Charsets.UTF_8),
+                listOf(
+                    RecordHeader("meta.component", "payment-service".toByteArray(Charsets.UTF_8)),
+                    RecordHeader("meta.environment", "prod".toByteArray(Charsets.UTF_8)),
                 ),
         )
 
@@ -235,10 +236,10 @@ class ResilientMessageSenderTest {
         @Test
         fun `should attach the enrichment headers to the record as UTF-8 bytes`() {
             // What is to be tested? Whether all entries from the enrichment's
-            //   header map land on the Kafka record as proper headers with
+            //   header list land on the Kafka record as proper headers with
             //   UTF-8-encoded values.
             // How will the test case be deemed successful and why? Successful if
-            //   the record's headers reproduce the enrichment map exactly when
+            //   the record's headers reproduce the enrichment list exactly when
             //   each value is decoded as UTF-8. This pins down the contract that
             //   downstream consumers can rely on header names being plain strings
             //   and values being UTF-8 byte arrays.
@@ -266,8 +267,8 @@ class ResilientMessageSenderTest {
                     header.key() to String(header.value(), Charsets.UTF_8)
                 }
             val expectedHeaders =
-                basicEnrichment.headers.mapValues { (_, v) ->
-                    String(v, Charsets.UTF_8)
+                basicEnrichment.headers.associate { header ->
+                    header.key() to String(header.value(), Charsets.UTF_8)
                 }
             assertThat(actualHeaders).containsExactlyInAnyOrderEntriesOf(expectedHeaders)
         }

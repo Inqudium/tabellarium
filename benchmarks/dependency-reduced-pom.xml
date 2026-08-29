@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>eu.inqudium</groupId>
   <artifactId>tabellarium-benchmarks</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.1-SNAPSHOT</version>
   <build>
     <finalName>benchmarks</finalName>
     <plugins>

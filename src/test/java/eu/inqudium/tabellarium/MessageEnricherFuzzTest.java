@@ -53,11 +53,11 @@ class MessageEnricherFuzzTest {
         }
 
         if (record.getHeaders().size() != 5) {
-            throw new IllegalStateException("header set incomplete: " + record.getHeaders().keySet());
+            throw new IllegalStateException("header set incomplete: " + record.getHeaders());
         }
         for (String identity : new String[] {component, cmdbId, environment}) {
             byte[] utf8 = identity.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            boolean found = record.getHeaders().values().stream().anyMatch(v -> Arrays.equals(v, utf8));
+            boolean found = record.getHeaders().stream().anyMatch(h -> Arrays.equals(h.value(), utf8));
             if (!found) {
                 throw new IllegalStateException("identity value missing from headers: '" + identity + "'");
             }
