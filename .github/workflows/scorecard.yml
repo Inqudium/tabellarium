@@ -37,11 +37,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # Note: without an optional fine-grained PAT in repo_token, the
-      # Branch-Protection check cannot read every protection setting and
-      # scores conservatively. That is an accepted trade-off here - the
-      # rules are in place (see the repository settings) and no secret
-      # has to be provisioned and rotated for a score.
+      # Note: the Branch-Protection check reads the "protect-main"
+      # repository RULESET (deletion + force-push protection, required
+      # "build" status check), which the default token can see; the
+      # equivalent classic branch-protection rules remain configured but
+      # are unreadable without an admin-scoped PAT in repo_token.
+      # PR/review requirements are deliberately absent (single-maintainer,
+      # direct-push workflow), so the check scores partial by design -
+      # an accepted trade-off: no secret to provision and rotate.
       - name: Run analysis
         uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
