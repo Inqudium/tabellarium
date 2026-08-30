@@ -52,11 +52,11 @@ jobs:
         with:
           ref: ${{ steps.meta.outputs.tag }}
 
-      - name: Set up JDK 21
+      - name: Set up JDK 25
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 25
           cache: maven
 
       # Tests and coverage are skipped deliberately: CI already gated the
@@ -127,11 +127,11 @@ jobs:
       # server-id: github makes setup-java write a settings.xml server
       # entry that reads the credentials from GITHUB_ACTOR/GITHUB_TOKEN,
       # matching the distributionManagement repository id in pom.xml.
-      - name: Set up JDK 21 (with GitHub Packages credentials)
+      - name: Set up JDK 25 (with GitHub Packages credentials)
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 25
           cache: maven
           server-id: github
 

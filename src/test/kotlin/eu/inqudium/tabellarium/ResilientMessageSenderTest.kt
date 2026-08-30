@@ -360,8 +360,8 @@ class ResilientMessageSenderTest {
             )
 
             // Then: fallback received the original event
-            pollUntil { ctx.fallback!!.events.size == 1 }
-            assertThat(ctx.fallback!!.events[0].message).isEqualTo("delivery will fail")
+            pollUntil { ctx.fallback.events.size == 1 }
+            assertThat(ctx.fallback.events[0].message).isEqualTo("delivery will fail")
         }
     }
 
