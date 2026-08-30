@@ -68,7 +68,13 @@ Measures already in place, so you know what is expected behaviour:
   checks assume a multi-maintainer, pull-request-based project and score
   low by construction for a single-maintainer one. Where a deduction is
   a deliberate trade-off, the reason sits next to the decision — see the
-  `repo_token` note in `.github/workflows/scorecard.yml`.
+  `repo_token` note in `.github/workflows/scorecard.yml`. The **Fuzzing**
+  check in particular can read 0 despite the nightly Jazzer fuzzing
+  described above: Scorecard only scans for Jazzer targets when Java
+  holds a "prominent" share of the repository's bytes, and this
+  Kotlin-dominated codebase sits below that threshold — so that score
+  tracks the language ratio, not the actual fuzzing coverage. The Fuzz
+  workflow's run history is the authoritative signal.
 
 Things outside this library's control, which the consuming application
 owns: what it puts into MDC and log messages, its TLS configuration, and
