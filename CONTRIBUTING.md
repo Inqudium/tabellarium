@@ -6,7 +6,9 @@ a change merged.
 
 ## Building
 
-Standard Maven module, Java 21 and Kotlin:
+Standard Maven module, Java 21 and Kotlin (building needs JDK 24+ - CI uses
+25, and `.mvn/jvm.config` passes flags a pre-24 JVM rejects; the published
+artifact still targets Java 21):
 
 ```bash
 mvn verify                                      # build + run all tests + ktlint

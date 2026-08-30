@@ -137,6 +137,14 @@
             Surefire working when JaCoCo is skipped (-Djacoco.skip=true).
         -->
         <argLine></argLine>
+
+        <!--
+            Extra test-JVM flags, empty by default: the jdk-24-plus profile
+            below fills them so a modern JDK (CI runs 25, see the workflows)
+            does not spam Unsafe/native-access warnings, while an older build
+            JDK would reject the flags and therefore never sees them.
+        -->
+        <surefire.jvmCompatArgs></surefire.jvmCompatArgs>
     </properties>
 
     <dependencyManagement>
@@ -455,6 +463,7 @@
                         @{argLine}
                         --add-opens java.base/java.lang=ALL-UNNAMED
                         -XX:+EnableDynamicAgentLoading
+                        ${surefire.jvmCompatArgs}
                     </argLine>
                 </configuration>
             </plugin>
@@ -502,12 +511,9 @@
                         </goals>
                     </execution>
                 </executions>
-                <configuration>
-                    <sourceRoots>
-                        <sourceRoot>${project.basedir}/src/main/kotlin</sourceRoot>
-                        <sourceRoot>${project.basedir}/src/test/kotlin</sourceRoot>
-                    </sourceRoots>
-                </configuration>
+                <!-- No sourceRoots configuration: the parameter is read-only in this
+                     plugin version (it warned and was ignored); the defaults already
+                     cover the compile and test source roots. -->
             </plugin>
 
             <!--
@@ -604,6 +610,26 @@
     </build>
 
     <profiles>
+        <!--
+            JDK 24+ prints warnings when Jazzer's native agent touches
+            sun.misc.Unsafe / restricted native methods from the test JVM, and
+            the appended JaCoCo agent additionally triggers the CDS sharing
+            warning. These flags acknowledge the accesses; they do not exist
+            before JDK 23/24, hence the activation guard for older build JDKs
+            (CI runs 25). The MAVEN JVM gets the same acknowledgements from
+            .mvn/jvm.config - that silences the embedded Kotlin compiler's
+            Unsafe warning during ktlint/dokka runs.
+        -->
+        <profile>
+            <id>jdk-24-plus-test-jvm</id>
+            <activation>
+                <jdk>[24,)</jdk>
+            </activation>
+            <properties>
+                <surefire.jvmCompatArgs>--sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -Xshare:off</surefire.jvmCompatArgs>
+            </properties>
+        </profile>
+
         <!--
             Includes the external-contract characterization tests (see the
             surefire.excludedGroups property) in the test run:
