@@ -532,6 +532,26 @@
                     <outputFormat>json</outputFormat>
                     <schemaVersion>1.6</schemaVersion>
                 </configuration>
+                <!-- cyclonedx-core-java >= 13 registers the CycloneDX schema's
+                     meta:enum/deprecated annotation keywords with the JSON-schema
+                     validator (NonValidationKeyword), silencing the two
+                     "Unknown keyword" warnings the plugin's bundled 9.x emitted
+                     on every BOM validation. Remove the override once the plugin
+                     itself ships a >= 13 core. -->
+                <dependencies>
+                    <dependency>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-core-java</artifactId>
+                        <version>13.2.0</version>
+                    </dependency>
+                    <!-- The plugin used commons-io transitively via the 9.x core;
+                         the 13.x core no longer carries it. -->
+                    <dependency>
+                        <groupId>commons-io</groupId>
+                        <artifactId>commons-io</artifactId>
+                        <version>2.22.0</version>
+                    </dependency>
+                </dependencies>
             </plugin>
 
             <!--
