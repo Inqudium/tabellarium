@@ -83,6 +83,10 @@ internal class MetricsBindings(
     private var boundMetrics: MicrometerKafkaAppenderMetrics? = null
     private var boundRegistry: MeterRegistry? = null
 
+    /** True between a successful [bind] and the next [unbind]. */
+    val isBound: Boolean
+        get() = boundRegistry != null
+
     /**
      * Exactly the circuit-breaker meters THIS instance registered
      * (identity-compared: [Meter] does not override equals), so

@@ -12,7 +12,6 @@ import org.springframework.context.event.ContextRefreshedEvent
 import org.springframework.context.event.EventListener
 import java.util.Collections
 import java.util.IdentityHashMap
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Spring `@Configuration` class that binds every [KafkaAppender] in
@@ -74,8 +73,11 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Multiple [ContextRefreshedEvent] firings (which occur in some test
  * harnesses or context-reload scenarios) result in only one bind per
- * appender. The set of already-bound appenders is tracked by
- * reference identity.
+ * appender: an appender that already has a metrics binding is
+ * skipped. The decision is made on the appender's own bound state,
+ * not on instance identity - so a restarted appender (whose `stop()`
+ * unbound its metrics) is bound again on the next call, and a bind
+ * that failed is retried.
  *
  * ## Logback reconfiguration
  *
@@ -88,7 +90,8 @@ import java.util.concurrent.ConcurrentHashMap
  * in place (`LoggerContextListener.onStart` runs only for the initial
  * start, `onReset` before the new appenders exist), so this class
  * cannot rebind automatically. Compatibility: after a reconfiguration
- * the metrics stay dark until [bindAppenders] is called again - it is
+ * (and equally after a programmatic restart of an appender) the
+ * metrics stay dark until [bindAppenders] is called again - it is
  * public and idempotent for exactly this purpose (e.g. from an
  * application-side `LoggerContextListener` that defers to the next
  * scheduler tick, or from an operations endpoint).
@@ -104,14 +107,6 @@ open class KafkaAppenderMetricsBinding(
     private val commonTags: Iterable<Tag> = Tags.empty(),
 ) {
     private val log = LoggerFactory.getLogger(KafkaAppenderMetricsBinding::class.java)
-
-    /**
-     * Set of appenders already bound. Reference identity, not equality
-     * - two different appender instances with the same name should be
-     * bound separately. Concurrent-safe so the listener can run on
-     * any thread Spring chooses for event dispatch.
-     */
-    private val bound: MutableSet<KafkaAppender> = ConcurrentHashMap.newKeySet()
 
     /**
      * Triggered when the Spring context finishes wiring. Walks the
@@ -135,11 +130,6 @@ open class KafkaAppenderMetricsBinding(
         }
 
         val appenders = collectKafkaAppenders(loggerContext)
-        // Forget instances that are no longer part of the logger context
-        // (Logback reconfiguration replaces appender instances): the
-        // identity-set must not retain dead appenders for the bean's
-        // lifetime, and a same-identity re-appearance would be rebound.
-        bound.retainAll(appenders.toSet())
         if (appenders.isEmpty()) {
             log.debug("No KafkaAppender found in LoggerContext; nothing to bind.")
             return
@@ -147,18 +137,20 @@ open class KafkaAppenderMetricsBinding(
 
         for (appender in appenders) {
             if (!appender.isStarted) {
-                // bindMeterRegistry on a stopped appender is a no-op.
-                // Deliberately NOT marked as bound: a later context
-                // refresh, by which time the appender may have started,
-                // must retry instead of skipping it forever.
+                // bindMeterRegistry on a stopped appender is a no-op; a
+                // later call, by which time the appender may have
+                // started, retries instead of skipping it forever.
                 log.debug(
                     "KafkaAppender '{}' is not started; deferring metrics binding to a later refresh.",
                     appender.name ?: "<unnamed>",
                 )
                 continue
             }
-            if (!bound.add(appender)) {
-                // Already bound on a previous refresh.
+            if (appender.isMeterRegistryBound) {
+                // Already bound (by a previous call or manually); the
+                // appender's own state is the source of truth, so a
+                // restarted instance - unbound by its stop() - is not
+                // mistaken for a bound one.
                 continue
             }
             try {
@@ -168,10 +160,9 @@ open class KafkaAppenderMetricsBinding(
                     appender.name ?: "<unnamed>",
                 )
             } catch (e: Exception) {
-                // Release the slot so a transient failure (registry not
-                // ready, meter clash) is retried on the next refresh
-                // instead of leaving the appender unbound forever.
-                bound.remove(appender)
+                // A transient failure (registry not ready, meter clash)
+                // leaves the appender unbound, so the next call retries
+                // instead of leaving it dark forever.
                 log.warn(
                     "Failed to bind KafkaAppender '{}' to MeterRegistry: {}",
                     appender.name ?: "<unnamed>",

@@ -492,9 +492,10 @@ configuration is tuned for logging traffic:
 | `waitDurationInOpenState`            | `30s`            |
 | `permittedNumberOfCallsInHalfOpenState` | `10`          |
 
-To override the configuration for a specific class, register a named config
-on the `CircuitBreakerRegistry` under `kafka-appender-<class>` before the
-appender builds its pipeline.
+These values are fixed in code: the `CircuitBreakerRegistry` is an internal
+seam (ADR-0002) and not reachable through the operator surface, so there is
+currently no supported per-class override. A demonstrated tuning need should
+become an XML-bindable property with a follow-up ADR.
 
 **Ignored exceptions.** The breaker is an *infrastructure-health* signal
 ("is Kafka reachable?"), not a payload validator. Deterministic,
@@ -556,9 +557,10 @@ gate denies a probe, or a send fails (synchronously or via callback error).
   queue, further events are dropped (never blocked) and counted in the
   `kafka.appender.fallback.dropped` metric. The system is already degraded
   (Kafka delivery is failing); an unbounded queue would grow to OOM.
-- **Shutdown.** On `close()` the dispatcher gets up to **5 s** to drain
-  (a ~200 ms graceful window, then an interrupt); events still queued after
-  the timeout are dropped and counted.
+- **Shutdown.** On `close()` the worker keeps delivering for the whole
+  **5 s** budget; only then is it interrupted, with a further **0.5 s**
+  grace for a delivery parked in `doAppend`. Events still queued or in
+  flight after that are dropped and counted. Worst case 5.5 s.
 
 ---
 
@@ -758,7 +760,7 @@ bound.
 | Caller-data capture before async hand-off    | `false`                          | XML (`<includeCallerData>`) |
 | Send dispatcher drain on stop (parallel)     | `1 s` drain + margin, shared     | code |
 | Fallback dispatcher queue capacity           | `1024`                           | code |
-| Fallback dispatcher shutdown timeout         | `5 s`                            | code |
+| Fallback dispatcher shutdown timeout         | `5 s` drain + `0.5 s` interrupt grace | code |
 | Producer close timeout                       | `10 s`                           | code |
 | Metrics                                      | off (no-op) until bound          | code |
 

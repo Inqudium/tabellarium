@@ -203,11 +203,21 @@ internal class MessageEnricher(
 
         /**
          * Default partitioning key extractor: reads [TRACE_ID_MDC_KEY] from the
-         * event's MDC map. Returns null if the MDC map is absent, the key is
-         * absent, or the value is blank.
+         * event's MDC map. Returns null if the MDC map is absent or
+         * unreadable, the key is absent, or the value is blank.
+         *
+         * Safety: `getMDCPropertyMap` materializes lazily and throws in a
+         * `LoggerContext` without a bound MDC adapter (embedded setups);
+         * the appender pins an empty snapshot in that case, but the
+         * extractor must not depend on that - an unreadable MDC is "no
+         * key", never a hot-path failure.
          */
         val DEFAULT_TRACE_ID_EXTRACTOR: (ILoggingEvent) -> String? = { event ->
-            event.mdcPropertyMap?.get(TRACE_ID_MDC_KEY)?.takeIf { it.isNotBlank() }
+            try {
+                event.mdcPropertyMap?.get(TRACE_ID_MDC_KEY)?.takeIf { it.isNotBlank() }
+            } catch (_: RuntimeException) {
+                null
+            }
         }
     }
 }

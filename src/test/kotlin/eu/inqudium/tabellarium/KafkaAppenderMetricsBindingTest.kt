@@ -212,6 +212,55 @@ class KafkaAppenderMetricsBindingTest {
         }
 
         @Test
+        fun `should bind a restarted appender again when bindAppenders is called`() {
+            // What is to be tested? Whether the binding decides on the
+            //   appender's own bound state rather than on instance
+            //   identity: an appender that was stopped (which unbinds its
+            //   metrics) and started again is the same instance, and a
+            //   manual bindAppenders() call - the documented rebind path -
+            //   must bind it again instead of skipping it as "known".
+            // How will the test case be deemed successful and why? Successful
+            //   if after a stop/start cycle the appender's counters are
+            //   gone from the registry, and after bindAppenders() a
+            //   hot-path event moves the accepted counter by exactly one
+            //   again.
+            // Why is it important to test this test case? Finding R2-4 of
+            //   the 2026-09-07 follow-up: with the identity set, the
+            //   restarted appender stayed dark although the documentation
+            //   named bindAppenders() as the way to relight it.
+
+            ApplicationContextRunner()
+                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                .run { ctx ->
+                    val registry = ctx.getBean(MeterRegistry::class.java)
+                    val binding = ctx.getBean(KafkaAppenderMetricsBinding::class.java)
+                    assertThat(registry.find("kafka.appender.events.accepted").counters()).isNotEmpty
+
+                    // When: the appender is restarted (stop unbinds) and
+                    //   the binding is asked again
+                    appender.stop()
+                    assertThat(registry.find("kafka.appender.events.accepted").counters()).isEmpty()
+                    appender.start()
+                    assertThat(appender.isStarted).isTrue()
+                    binding.bindAppenders()
+
+                    // Then: bound again - the counters exist and count
+                    val before =
+                        registry
+                            .find("kafka.appender.events.accepted")
+                            .counters()
+                            .sumOf { it.count() }
+                    appender.doAppend(loggingEvent())
+                    val after =
+                        registry
+                            .find("kafka.appender.events.accepted")
+                            .counters()
+                            .sumOf { it.count() }
+                    assertThat(after - before).isEqualTo(1.0)
+                }
+        }
+
+        @Test
         fun `should bind only once even if the context publishes refresh multiple times`() {
             // What is to be tested? Whether the binding is idempotent
             //   on repeated ContextRefreshedEvent firings, which can
