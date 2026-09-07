@@ -90,6 +90,18 @@ class HalfOpenThrottleTest {
 
         @Test
         fun `should always allow probes when the breaker is OPEN`() {
+            // What is to be tested? Whether the throttle is transparent in OPEN
+            //   state: it gates only HALF_OPEN and leaves the denial of an open
+            //   breaker to tryAcquirePermission downstream.
+            // How will the test case be deemed successful and why? Successful
+            //   if a hundred calls on an OPEN breaker all return true with the
+            //   clock frozen - if the throttle gated here, the second call would
+            //   already be false.
+            // Why is it important to test this test case? If the throttle gated
+            //   OPEN, an event denied by it would be reported with reason
+            //   THROTTLE instead of BREAKER_OPEN, telling operators "Kafka is
+            //   recovering" during a full outage.
+
             // Given
             val breaker = newBreaker()
             breaker.transitionToOpenState()
@@ -104,6 +116,19 @@ class HalfOpenThrottleTest {
 
         @Test
         fun `should gate probes when the breaker is HALF_OPEN`() {
+            // What is to be tested? The core gating: in HALF_OPEN state the
+            //   first call claims the probe slot and every further call within
+            //   the same gap is denied.
+            // How will the test case be deemed successful and why? Successful
+            //   if the first call returns true and five follow-ups at the same
+            //   (non-advancing) instant return false. The frozen clock makes
+            //   "within the gap" exact.
+            // Why is it important to test this test case? This is the behavior
+            //   the class exists for: without it a busy logger would burn all
+            //   permitted half-open calls within microseconds and route
+            //   everything to the fallback for the whole Kafka round trip
+            //   although the cluster is back.
+
             // Given
             val breaker = newBreaker()
             breaker.transitionToOpenState()
@@ -280,6 +305,19 @@ class HalfOpenThrottleTest {
     inner class `Edge cases` {
         @Test
         fun `should reject a negative gap at construction time`() {
+            // What is to be tested? Input validation: a negative minProbeGap is
+            //   a configuration error and must be rejected in the constructor,
+            //   before any derived state is computed.
+            // How will the test case be deemed successful and why? Successful
+            //   if construction with -1 ms throws IllegalArgumentException whose
+            //   message names the "non-negative" requirement, so the operator
+            //   sees which constraint was violated.
+            // Why is it important to test this test case? A negative gap would
+            //   make `now - last < gap` false on every call, silently admitting
+            //   every event as a probe - the throttle would look configured but
+            //   be off. Failing fast at construction is the only place the error
+            //   is cheap to notice.
+
             // Given / When / Then
             assertThatThrownBy {
                 HalfOpenThrottle(newBreaker(), Duration.ofMillis(-1))

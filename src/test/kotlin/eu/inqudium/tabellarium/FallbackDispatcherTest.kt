@@ -115,6 +115,19 @@ class FallbackDispatcherTest {
 
         @Test
         fun `should deliver enqueued events to the fallback appender on the worker thread`() {
+            // What is to be tested? Whether enqueued events actually reach the
+            //   fallback appender's doAppend, complete and in enqueue order, via
+            //   the worker thread.
+            // How will the test case be deemed successful and why? Successful
+            //   if the recorder eventually holds both events in the order "one",
+            //   "two". pollUntil is needed because delivery is asynchronous;
+            //   containsExactly pins order and completeness.
+            // Why is it important to test this test case? The previous test
+            //   proves enqueue does not block; this one proves the queue is not
+            //   a black hole - without it, a worker that never drained would
+            //   satisfy every non-blocking assertion while every diverted event
+            //   was lost.
+
             // Given
             val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)
@@ -183,6 +196,19 @@ class FallbackDispatcherTest {
     inner class `Shutdown` {
         @Test
         fun `should drain remaining events when closed gracefully`() {
+            // What is to be tested? Whether close() delivers what is still
+            //   queued before returning: events enqueued moments before close()
+            //   must reach the fallback appender, not be counted as shutdown
+            //   drops.
+            // How will the test case be deemed successful and why? Successful
+            //   if, immediately after close() returns, the recorder holds both
+            //   events - no polling, because close() is synchronous and the
+            //   drain must have completed within it.
+            // Why is it important to test this test case? The events in the
+            //   fallback queue at shutdown are exactly the ones a Kafka outage
+            //   diverted; a close that discarded them would lose the logs of the
+            //   outage at the moment the pod goes away.
+
             // Given
             val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)
@@ -198,6 +224,19 @@ class FallbackDispatcherTest {
 
         @Test
         fun `should mark events enqueued after close as dropped`() {
+            // What is to be tested? The post-close contract: enqueue after
+            //   close() must return false and count the event as dropped, rather
+            //   than queue it for a worker that has already exited.
+            // How will the test case be deemed successful and why? Successful
+            //   if enqueue returns false and droppedEventCount is exactly 1.
+            //   Returning false alone would not be enough - the loss must be
+            //   visible in the counter.
+            // Why is it important to test this test case? The Kafka callback can
+            //   still fire after the appender's stop() (in-flight sends complete
+            //   during producer close); without this, those late events would
+            //   strand silently in a dead queue and vanish from the loss
+            //   accounting.
+
             // Given
             val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)

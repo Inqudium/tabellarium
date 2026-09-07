@@ -11,6 +11,15 @@ class TopicRouterTest {
     inner class `Default topic fallback` {
         @Test
         fun `should return the default topic when the marker list is empty`() {
+            // What is to be tested? Rule 1 of the resolution algorithm: an event without any
+            //   marker routes to the default topic, regardless of the configured mappings.
+            // How will the test case be deemed successful and why? Successful if route(emptyList())
+            //   returns "default-topic" although an AUDIT mapping is configured. This confirms that
+            //   mappings are never applied without a matching marker.
+            // Why is it important to test this test case? Marker-less events are the common case
+            //   for ordinary application logging; if they did not land on the default topic, the
+            //   bulk of every deployment's log stream would be misrouted.
+
             // Given
             val router =
                 TopicRouter(
@@ -27,6 +36,15 @@ class TopicRouterTest {
 
         @Test
         fun `should return the default topic when no marker name matches the configured mappings`() {
+            // What is to be tested? Rule 3: a marker whose name is not a configured key routes
+            //   to the default topic rather than to any mapped topic or to an error.
+            // How will the test case be deemed successful and why? Successful if a detached
+            //   UNKNOWN marker resolves to "default-topic" while only AUDIT is mapped. This
+            //   confirms the default is a true catch-all for unrecognized markers.
+            // Why is it important to test this test case? Applications attach markers the
+            //   operator never configured (library markers, ad-hoc ones); the router must
+            //   absorb them silently instead of dropping events or throwing in the hot path.
+
             // Given
             val router =
                 TopicRouter(
@@ -47,6 +65,15 @@ class TopicRouterTest {
     inner class `Single marker direct match` {
         @Test
         fun `should return the mapped topic when a single marker matches by name`() {
+            // What is to be tested? The basic positive case of rule 2: a marker whose name
+            //   equals a configured key routes to that key's topic.
+            // How will the test case be deemed successful and why? Successful if a detached
+            //   AUDIT marker resolves to "audit-topic" and not to the default. This confirms
+            //   the map lookup by marker name is wired to the returned topic.
+            // Why is it important to test this test case? This is the entire reason the
+            //   router exists - marker-driven topic separation; if it broke, every event
+            //   would collapse onto the default topic and AUDIT streams would lose isolation.
+
             // Given
             val router =
                 TopicRouter(
@@ -119,6 +146,15 @@ class TopicRouterTest {
     inner class `Multiple markers` {
         @Test
         fun `should return the topic of the first marker that matches when several markers are present`() {
+            // What is to be tested? The precedence rule for multi-marker events: the first
+            //   marker in list order that matches wins, later matches are ignored.
+            // How will the test case be deemed successful and why? Successful if [AUDIT,
+            //   PERFORMANCE] - both mapped - resolves to "audit-topic". This confirms the
+            //   documented "first match in iteration order" contract.
+            // Why is it important to test this test case? An event can only go to one topic;
+            //   without a stable order rule the winner would depend on implementation detail,
+            //   making routing non-deterministic from the operator's point of view.
+
             // Given
             val router =
                 TopicRouter(
@@ -141,6 +177,15 @@ class TopicRouterTest {
 
         @Test
         fun `should fall back to the default topic when none of the markers match`() {
+            // What is to be tested? Rule 3 for the multi-marker case: when several markers are
+            //   present and none of them is mapped, the default topic is returned.
+            // How will the test case be deemed successful and why? Successful if [UNKNOWN_A,
+            //   UNKNOWN_B] resolves to "default-topic". This confirms the loop over markers
+            //   exhausts without a match and falls through to the default.
+            // Why is it important to test this test case? The loop's fall-through is a separate
+            //   code path from the empty-list early return; a bug there (e.g. returning the last
+            //   marker's name) would only show up with several unmapped markers.
+
             // Given
             val router =
                 TopicRouter(
@@ -159,6 +204,15 @@ class TopicRouterTest {
 
         @Test
         fun `should skip earlier non-matching markers and return the topic of a later matching marker`() {
+            // What is to be tested? Whether the router keeps scanning past a non-matching
+            //   marker instead of falling back to the default at the first miss.
+            // How will the test case be deemed successful and why? Successful if [UNKNOWN,
+            //   AUDIT] resolves to "audit-topic". This confirms a miss only continues the
+            //   loop and never short-circuits to the default topic.
+            // Why is it important to test this test case? Events typically carry markers from
+            //   several layers (framework plus application); an early bail-out would silently
+            //   route AUDIT-marked events to the default topic whenever another marker came first.
+
             // Given
             val router =
                 TopicRouter(
@@ -180,6 +234,15 @@ class TopicRouterTest {
     inner class `Marker hierarchy` {
         @Test
         fun `should resolve via a referenced marker when the top-level marker has no direct mapping`() {
+            // What is to be tested? Hierarchical resolution: a marker that is not mapped itself
+            //   but references a mapped marker routes to the referenced marker's topic.
+            // How will the test case be deemed successful and why? Successful if an unmapped
+            //   TRANSACTION marker that contains AUDIT resolves to "audit-topic". This confirms
+            //   the router iterates the marker's references and matches them by name.
+            // Why is it important to test this test case? SLF4J marker hierarchies are how
+            //   applications compose categories; without reference resolution every composite
+            //   marker would need its own mapping and AUDIT events could escape the audit topic.
+
             // Given: a container marker that holds an AUDIT marker as a reference
             val router =
                 TopicRouter(
@@ -262,6 +325,14 @@ class TopicRouterTest {
     inner class `Construction validation` {
         @Test
         fun `should reject construction when the default topic is blank`() {
+            // What is to be tested? Whether a blank default topic is rejected at construction.
+            // How will the test case be deemed successful and why? Successful if the constructor
+            //   throws IllegalArgumentException with the message "Default topic must not be
+            //   blank". This confirms validation is eager and the error names the offending field.
+            // Why is it important to test this test case? The default topic is where every
+            //   marker-less event goes; a blank name would fail at the broker on every send
+            //   after a clean start() - the latent misconfiguration eager validation exists for.
+
             // When / Then
             assertThatThrownBy {
                 TopicRouter(
@@ -274,6 +345,15 @@ class TopicRouterTest {
 
         @Test
         fun `should reject construction when the default topic contains characters not permitted by Kafka`() {
+            // What is to be tested? Whether the default topic is checked against Kafka's
+            //   permitted character set [a-zA-Z0-9._-] at construction.
+            // How will the test case be deemed successful and why? Successful if a default
+            //   topic containing spaces throws IllegalArgumentException mentioning "not
+            //   permitted by Kafka". This confirms the broker's naming rule is enforced eagerly.
+            // Why is it important to test this test case? The broker answers such a name with
+            //   InvalidTopicException, which the circuit breaker deliberately ignores - the
+            //   pipeline would report healthy while every marker-less event is lost.
+
             // When / Then
             assertThatThrownBy {
                 TopicRouter(
@@ -286,6 +366,15 @@ class TopicRouterTest {
 
         @Test
         fun `should reject construction when a mapped marker name is blank`() {
+            // What is to be tested? Whether a blank marker name in the mappings is rejected at
+            //   construction.
+            // How will the test case be deemed successful and why? Successful if a mapping with
+            //   key "" throws IllegalArgumentException with "Marker name must not be blank".
+            //   This confirms each mapping key is validated, not only the default topic.
+            // Why is it important to test this test case? A blank key can never match a real
+            //   marker, so the mapping would be dead configuration - almost certainly an empty
+            //   <marker> element - and is better reported at start() than silently ignored.
+
             // When / Then
             assertThatThrownBy {
                 TopicRouter(
@@ -298,6 +387,15 @@ class TopicRouterTest {
 
         @Test
         fun `should reject construction when a mapped topic name is blank`() {
+            // What is to be tested? Whether a blank topic name in the mappings is rejected at
+            //   construction.
+            // How will the test case be deemed successful and why? Successful if mapping AUDIT
+            //   to "  " throws IllegalArgumentException containing "must not be blank". This
+            //   confirms mapping values are validated like the default topic.
+            // Why is it important to test this test case? A blank target would make every
+            //   AUDIT-marked event fail at send time with a name the broker rejects, after the
+            //   appender had already started - silent loss of the compliance-relevant stream.
+
             // When / Then
             assertThatThrownBy {
                 TopicRouter(
@@ -310,6 +408,15 @@ class TopicRouterTest {
 
         @Test
         fun `should reject construction when a mapped topic name contains characters not permitted by Kafka`() {
+            // What is to be tested? Whether mapped topic names, not only the default topic, are
+            //   checked against Kafka's permitted character set at construction.
+            // How will the test case be deemed successful and why? Successful if mapping AUDIT
+            //   to "topic with space" throws IllegalArgumentException mentioning "not permitted
+            //   by Kafka". This confirms requireKafkaValidTopicName runs for every mapping.
+            // Why is it important to test this test case? A mapped topic the broker rejects
+            //   would fail per send with InvalidTopicException, which the breaker ignores -
+            //   the AUDIT stream would vanish while the pipeline reports healthy.
+
             // When / Then
             assertThatThrownBy {
                 TopicRouter(
@@ -347,6 +454,15 @@ class TopicRouterTest {
 
         @Test
         fun `should reject construction when a topic name exceeds Kafka's maximum length`() {
+            // What is to be tested? Whether Kafka's maximum topic-name length of 249 is
+            //   enforced at construction, for the default topic and for mapped topics alike.
+            // How will the test case be deemed successful and why? Successful if a 250-character
+            //   name throws IllegalArgumentException mentioning "maximum length" in both
+            //   positions. This confirms the length rule mirrors Topic.validate on the broker.
+            // Why is it important to test this test case? An overlong name passes the character
+            //   pattern but is refused by the broker with InvalidTopicException - ignored by the
+            //   breaker - so it would survive start() and silently divert every affected event.
+
             // Given: 250 characters - one over Kafka's limit of 249
             val overlong = "a".repeat(250)
 
@@ -365,6 +481,15 @@ class TopicRouterTest {
 
         @Test
         fun `should accept a topic name at exactly Kafka's maximum length`() {
+            // What is to be tested? The boundary of the length rule: a name of exactly 249
+            //   characters is still valid.
+            // How will the test case be deemed successful and why? Successful if construction
+            //   succeeds and route(emptyList()) returns the 249-character name unchanged. This
+            //   confirms the check is "<= 249", not an off-by-one "< 249".
+            // Why is it important to test this test case? An off-by-one would reject a name
+            //   the broker accepts, failing start() for a legal configuration; the boundary
+            //   value is the only input that distinguishes the two comparisons.
+
             // Given: exactly 249 characters - the boundary value
             val maxLength = "a".repeat(249)
 

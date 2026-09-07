@@ -129,6 +129,19 @@ class JoranXmlConfigurationTest {
 
         @Test
         fun `should refuse to start via XML when a required element is missing`() {
+            // What is to be tested? Whether the appender's start() validation reaches
+            //   the operator through the declarative path: an XML document without
+            //   <component> must leave the appender stopped and put the reason into the
+            //   context's StatusManager, which Joran prints on startup.
+            // How will the test case be deemed successful and why? Successful if
+            //   isStarted is false and a status message names <component> and "blank";
+            //   Joran itself does not fail on a missing element, so the refusal has to
+            //   come from the appender and be visible where Joran reports.
+            // Why is it important to test this test case? A misconfigured appender that
+            //   started anyway would emit records nobody can attribute; one that refused
+            //   silently would make the logging outage a mystery. The status message is
+            //   the only diagnostic an operator gets from an XML typo.
+
             // Given: no <component>
             configure(
                 """

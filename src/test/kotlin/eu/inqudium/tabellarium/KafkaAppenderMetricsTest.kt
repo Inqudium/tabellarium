@@ -47,6 +47,18 @@ class KafkaAppenderMetricsTest {
 
         @Test
         fun `should always return the same NO_OP instance`() {
+            // What is to be tested? Whether KafkaAppenderMetrics.NO_OP is a true
+            //   singleton: two reads of the companion property yield the same object,
+            //   not a fresh instance per access.
+            // How will the test case be deemed successful and why? Successful if both
+            //   reads are the same reference (isSameAs); the backing type is a
+            //   file-level `object`, and reference identity is what proves that reading
+            //   the property allocates nothing.
+            // Why is it important to test this test case? The appender holds NO_OP as
+            //   its metrics field until a registry is bound, so the "allocates nothing"
+            //   promise of the unbound hot path depends on the property not
+            //   constructing anything per access.
+
             // Given / When: two reads of the companion-provided instance
             val first = KafkaAppenderMetrics.NO_OP
             val second = KafkaAppenderMetrics.NO_OP
@@ -61,6 +73,18 @@ class KafkaAppenderMetricsTest {
     inner class `Enum tag values` {
         @Test
         fun `should have distinct lowercase dot-friendly tag values for FallbackReason`() {
+            // What is to be tested? Whether every FallbackReason carries a tag value
+            //   that is unique, lowercase and free of whitespace and backslashes - the
+            //   shape an exporter can emit as a label value verbatim.
+            // How will the test case be deemed successful and why? Successful if the
+            //   six tags have no duplicates and each equals its own lowercase form with
+            //   no space or backslash; the reason tag is the only dimension that tells
+            //   breaker.open, throttle and send.error apart.
+            // Why is it important to test this test case? A duplicate tag would make
+            //   Micrometer merge two reasons into one series, so operators could no
+            //   longer tell which gate diverted their events; an odd character would
+            //   break the reason="..." selectors in the overview's alert rules.
+
             // Given / When
             val tags = KafkaAppenderMetrics.FallbackReason.entries.map { it.tag }
 
@@ -76,6 +100,17 @@ class KafkaAppenderMetricsTest {
 
         @Test
         fun `should have distinct lowercase tag values for SendOutcome`() {
+            // What is to be tested? Whether the two SendOutcome tags are distinct and
+            //   lowercase, matching the convention the reason and topic.class tags
+            //   follow.
+            // How will the test case be deemed successful and why? Successful if the
+            //   tag list has no duplicates and each entry equals its lowercase form -
+            //   the properties the send.duration timer keys its series on.
+            // Why is it important to test this test case? success and error are the
+            //   two series operators divide to get an error rate; a duplicate value
+            //   would fold them into one timer and hide every failed send inside the
+            //   success latency.
+
             // Given / When
             val tags = KafkaAppenderMetrics.SendOutcome.entries.map { it.tag }
 

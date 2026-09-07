@@ -72,6 +72,19 @@ class DocumentationContractTest {
 
         @Test
         fun `should state the circuit-breaker and throttle defaults exactly as the configuration defines them`() {
+            // What is to be tested? Whether both places the guide states the breaker
+            //   defaults - the circuit-breaker table and the defaults quick reference -
+            //   plus the half-open probe gap and the MDC key carry the values that
+            //   defaultCircuitBreakerConfig() and the constants actually use.
+            // How will the test case be deemed successful and why? Successful if every
+            //   Default cell equals the value formatted from the live configuration
+            //   (threshold, window, min calls, open-state wait, half-open permits);
+            //   equality rather than contains, so a stale extra number fails too.
+            // Why is it important to test this test case? Operators size fallback
+            //   capacity and alert thresholds from these numbers; a table that lags a
+            //   tuning change would send them diagnosing behavior the code no longer
+            //   has, and two tables can drift from each other as well as from the code.
+
             // Given: the production breaker configuration
             val config = ResilientMessageSender.defaultCircuitBreakerConfig()
 
@@ -160,6 +173,19 @@ class DocumentationContractTest {
 
         @Test
         fun `should state the series counts that the enum sizes imply`() {
+            // What is to be tested? Whether the cardinality table's per-metric series
+            //   counts and its total are the products of the enum sizes the pre-resolved
+            //   meter tables are built from (classes, classes x reasons, classes x
+            //   outcomes, 1 for the fallback-dispatcher meters).
+            // How will the test case be deemed successful and why? Successful if each
+            //   row's leading integer equals the formula for that metric and the bold
+            //   total equals their sum; adding an enum constant without updating the
+            //   table fails the build.
+            // Why is it important to test this test case? The series count is the
+            //   number operators multiply by their appender count to budget registry
+            //   cardinality; a stale figure understates the cost of every new
+            //   FallbackReason.
+
             // Given: the enum sizes the pre-resolved meter tables are built from
             val classes = TopicClass.entries.size
             val reasons = KafkaAppenderMetrics.FallbackReason.entries.size

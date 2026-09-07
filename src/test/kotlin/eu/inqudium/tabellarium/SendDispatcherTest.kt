@@ -121,6 +121,19 @@ class SendDispatcherTest {
 
         @Test
         fun `should deliver dispatched events to the send action in FIFO order`() {
+            // What is to be tested? Whether dispatched events reach the send
+            //   action at all and in dispatch order - the single worker draining
+            //   one queue is what makes FIFO per topic class hold.
+            // How will the test case be deemed successful and why? Successful
+            //   if all five topic names arrive at the send action exactly in the
+            //   order they were dispatched. containsExactly checks order and
+            //   completeness in one assertion.
+            // Why is it important to test this test case? Consumers of a
+            //   partition rely on the per-key ordering the appender promises by
+            //   handing records to the producer in log order; a second worker or
+            //   a non-FIFO queue would interleave events of one trace without
+            //   any error being raised.
+
             // Given
             val delivered = Collections.synchronizedList(mutableListOf<String>())
             val dispatcher =
@@ -356,6 +369,20 @@ class SendDispatcherTest {
 
         @Test
         fun `should divert events dispatched after close to the fallback`() {
+            // What is to be tested? The post-close contract: a dispatch after
+            //   close() is rejected on the caller and diverted to the fallback
+            //   with reason SHUTDOWN - not queued for a worker that has already
+            //   exited, and not silently dropped.
+            // How will the test case be deemed successful and why? Successful
+            //   if the late event reaches the fallback recorder and the only
+            //   recorded reason is SHUTDOWN - distinguishing it from the
+            //   SEND_ERROR a post-death dispatch carries.
+            // Why is it important to test this test case? Logback keeps
+            //   delivering events during context teardown after the appender's
+            //   stop(); without this path those last events (often the shutdown
+            //   diagnostics themselves) would strand in a dead queue or be lost
+            //   without a count.
+
             // Given
             val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
@@ -556,6 +583,18 @@ class SendDispatcherTest {
     inner class `Metrics wiring` {
         @Test
         fun `should register the send queue gauges for its topic class`() {
+            // What is to be tested? Whether setMetrics registers the send queue
+            //   gauges (depth and capacity) with the metrics implementation,
+            //   tagged with this dispatcher's own topic class.
+            // How will the test case be deemed successful and why? Successful
+            //   if registerSendQueueGauges is called exactly once with
+            //   TopicClass.AUDIT - the class the dispatcher was built for.
+            // Why is it important to test this test case? The queue depth is the
+            //   operator's early-warning signal before queue.full diversions
+            //   start; a dispatcher that never registered it, or registered it
+            //   under another class, would leave the outage dashboard blind for
+            //   that topic class.
+
             // Given
             val metrics = RecordingMetrics()
             val dispatcher =

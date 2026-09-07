@@ -11,6 +11,15 @@ class ProducerPropertiesBuilderTest {
     inner class `Base property handling` {
         @Test
         fun `should produce only default and mandatory overrides when the base is empty`() {
+            // What is to be tested? Whether an empty base still yields a complete AUDIT
+            //   configuration - both mandates plus the class defaults - without a violation.
+            // How will the test case be deemed successful and why? Successful if the result
+            //   carries acks=all, enable.idempotence=true, linger.ms=50 and compression lz4
+            //   and the violation list is empty: nothing user-set means nothing to overrule.
+            // Why is it important to test this test case? An operator who configures nothing
+            //   class-specific must still get the compliance mandates; the class itself, not
+            //   the operator, is the source of acks=all for AUDIT.
+
             // Given
             val builder = ProducerPropertiesBuilder(emptyMap())
 
@@ -28,6 +37,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should preserve a base property that has no matching override`() {
+            // What is to be tested? Whether a base property that neither the default nor the
+            //   mandatory layer mentions passes through the merge unchanged.
+            // How will the test case be deemed successful and why? Successful if
+            //   bootstrap.servers survives an AUDIT build with its original value. This pins
+            //   down that the override layers add to the base rather than replace it.
+            // Why is it important to test this test case? bootstrap.servers, SSL and SASL
+            //   settings all belong to this untouched category; dropping them would leave
+            //   the producer unable to reach or authenticate against the broker.
+
             // Given: a property that neither default nor mandatory touch
             val base = mapOf(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG to "kafka-broker:9092")
             val builder = ProducerPropertiesBuilder(base)
@@ -80,6 +98,15 @@ class ProducerPropertiesBuilderTest {
     inner class `Default overrides` {
         @Test
         fun `should apply a default override when the property is not set in the base`() {
+            // What is to be tested? Whether a class default fills in a property the operator
+            //   left unset.
+            // How will the test case be deemed successful and why? Successful if an AUDIT
+            //   build from an empty base carries linger.ms=50 - a default override, not a
+            //   mandate, so its presence proves the default layer ran.
+            // Why is it important to test this test case? The defaults are the appender's
+            //   tuned batching/compression baseline; if the layer silently stopped applying,
+            //   every deployment would fall back to Kafka's raw defaults with no warning.
+
             // Given
             val builder = ProducerPropertiesBuilder(emptyMap())
 
@@ -92,6 +119,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should preserve a user-set property when a default override exists for the same key`() {
+            // What is to be tested? Whether the default layer is putIfAbsent: an operator's
+            //   value for a key that also has a class default must win.
+            // How will the test case be deemed successful and why? Successful if linger.ms
+            //   stays at the operator's 999 instead of AUDIT's default 50, and no violation
+            //   is recorded - defaults are suggestions, never conflicts.
+            // Why is it important to test this test case? Defaults exist to be tunable; if
+            //   they overruled the operator, latency or throughput tuning would be silently
+            //   discarded, and a spurious violation would misreport it as a mandate clash.
+
             // Given: user sets linger.ms to 999
             val builder =
                 ProducerPropertiesBuilder(
@@ -111,6 +147,15 @@ class ProducerPropertiesBuilderTest {
     inner class `Mandatory overrides` {
         @Test
         fun `should apply a mandatory override regardless of any base value`() {
+            // What is to be tested? Whether the mandatory layer overrules an explicit,
+            //   conflicting operator value.
+            // How will the test case be deemed successful and why? Successful if AUDIT
+            //   yields acks=all although the base set acks=1: the enforced value, not the
+            //   operator's, ends up in the produced properties.
+            // Why is it important to test this test case? acks=all for AUDIT is the
+            //   compliance guarantee in regulated environments; an operator tuning acks for
+            //   throughput must not be able to weaken it, intentionally or by accident.
+
             // Given: user explicitly sets acks=1
             val builder =
                 ProducerPropertiesBuilder(
@@ -126,6 +171,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should record no violation when the user did not set a mandatory-override property`() {
+            // What is to be tested? Whether applying a mandate to a key the operator never
+            //   set is treated as a plain default, not as a conflict.
+            // How will the test case be deemed successful and why? Successful if an AUDIT
+            //   build from an empty base records no violation although acks and
+            //   enable.idempotence were both injected.
+            // Why is it important to test this test case? Violations become startup
+            //   warnings; reporting one for every mandate on every start would train
+            //   operators to ignore the warning that matters - a real overruled intent.
+
             // Given
             val builder = ProducerPropertiesBuilder(emptyMap())
 
@@ -138,6 +192,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should record no violation when the user value already matches the enforced value`() {
+            // What is to be tested? Whether an operator value that already equals the
+            //   mandated value passes without being reported as a conflict.
+            // How will the test case be deemed successful and why? Successful if a base
+            //   with acks=all yields no violation for AUDIT: a violation requires a
+            //   difference in value, not merely the presence of the key.
+            // Why is it important to test this test case? Operators who deliberately spell
+            //   out acks=all for documentation should not be warned that their intent was
+            //   overruled - it was not.
+
             // Given: user sets acks=all, which matches the mandatory value
             val builder =
                 ProducerPropertiesBuilder(
@@ -188,6 +251,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should record multiple violations when multiple user values conflict with mandatory overrides`() {
+            // What is to be tested? Whether every conflicting key yields its own violation
+            //   and every mandate is still applied when several conflicts occur at once.
+            // How will the test case be deemed successful and why? Successful if acks=0 and
+            //   enable.idempotence=false against AUDIT produce exactly two violations while
+            //   the properties carry acks=all and enable.idempotence=true.
+            // Why is it important to test this test case? A short-circuit after the first
+            //   conflict would leave one weakened setting unreported - the operator would
+            //   fix the warned key and never learn about the other.
+
             // Given: user sets both acks and enable.idempotence in conflicting ways
             val builder =
                 ProducerPropertiesBuilder(
@@ -212,6 +284,15 @@ class ProducerPropertiesBuilderTest {
     inner class `Per topic class enforcement` {
         @Test
         fun `should enforce acks all and idempotence for AUDIT topics`() {
+            // What is to be tested? The complete AUDIT mandate set: acks=all and
+            //   enable.idempotence=true, applied against an operator weakening both.
+            // How will the test case be deemed successful and why? Successful if both
+            //   enforced values appear in the properties and two violations are recorded,
+            //   one per overruled key.
+            // Why is it important to test this test case? AUDIT is the class for
+            //   compliance-relevant streams (BaFin/MaRisk); this test pins its exact
+            //   mandate set so a change to TopicClass cannot quietly drop one guarantee.
+
             // Given: a user attempting to weaken both audit guarantees
             val builder =
                 ProducerPropertiesBuilder(
@@ -233,6 +314,14 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should enforce acks all for FUNCTIONAL topics`() {
+            // What is to be tested? The FUNCTIONAL mandate set: acks=all, and nothing more.
+            // How will the test case be deemed successful and why? Successful if acks=0 is
+            //   replaced by acks=all with exactly one violation - idempotence is not
+            //   mandated here, so no second violation may appear.
+            // Why is it important to test this test case? FUNCTIONAL sits between AUDIT and
+            //   TECHNICAL: durability is enforced, idempotence stays tunable. Pinning the
+            //   count guards both the guarantee and the deliberate absence of the second.
+
             // Given
             val builder =
                 ProducerPropertiesBuilder(
@@ -249,6 +338,16 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should not enforce any mandatory overrides for TECHNICAL topics`() {
+            // What is to be tested? Whether TECHNICAL has no mandates at all: an operator's
+            //   weak acks value must be kept verbatim.
+            // How will the test case be deemed successful and why? Successful if acks=0
+            //   survives the build and no violation is recorded - the same input AUDIT
+            //   would overrule and report.
+            // Why is it important to test this test case? TECHNICAL is the high-volume
+            //   debug class where throughput tuning (acks=0/1) is legitimate; a mandate
+            //   creeping in would cut every deployment's log throughput for no compliance
+            //   gain.
+
             // Given: user sets a weak acks value that would be a mandate conflict elsewhere
             val builder =
                 ProducerPropertiesBuilder(
@@ -265,6 +364,14 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should not enforce any mandatory overrides for PERFORMANCE topics`() {
+            // What is to be tested? Whether PERFORMANCE, like TECHNICAL, carries no
+            //   mandates and keeps an operator's acks=0.
+            // How will the test case be deemed successful and why? Successful if acks=0 is
+            //   returned unchanged and the violation list is empty.
+            // Why is it important to test this test case? PERFORMANCE is the very-high-
+            //   volume metrics class whose default acks=1 is documented as a balance, not a
+            //   requirement; the operator must retain full control over the trade-off.
+
             // Given
             val builder =
                 ProducerPropertiesBuilder(
@@ -311,6 +418,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should return an immutable properties map`() {
+            // What is to be tested? Whether the properties map handed out in the result is
+            //   read-only rather than the builder's internal working map.
+            // How will the test case be deemed successful and why? Successful if a cast to
+            //   MutableMap followed by a put throws UnsupportedOperationException - the
+            //   observable signature of java.util.Map.copyOf.
+            // Why is it important to test this test case? The same result is shared with
+            //   the producer factory and the registry's effectiveProperties diagnostics; a
+            //   mutable map would let one consumer alter what another one reports or uses.
+
             // Given
             val builder = ProducerPropertiesBuilder(emptyMap())
 
@@ -356,6 +472,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should reject more than five in-flight requests when the class mandates idempotence`() {
+            // What is to be tested? Whether the second idempotence precondition - at most
+            //   five in-flight requests per connection - is validated with a named message.
+            // How will the test case be deemed successful and why? Successful if AUDIT with
+            //   max.in.flight.requests.per.connection=6 throws an IllegalArgumentException
+            //   quoting the offending value and the "at most 5" limit.
+            // Why is it important to test this test case? Raising in-flight requests is a
+            //   common throughput tweak; without this check the Kafka constructor rejects it
+            //   with a ConfigException the appender withholds unless <debug> is on.
+
             // Given
             val builder =
                 ProducerPropertiesBuilder(
@@ -434,6 +559,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should not apply the idempotence checks to classes without the mandate`() {
+            // What is to be tested? Whether the idempotence validation is conditional on
+            //   idempotence actually being in effect, not applied to every class.
+            // How will the test case be deemed successful and why? Successful if TECHNICAL
+            //   accepts retries=0 and six in-flight requests verbatim - the very tuning
+            //   AUDIT refuses - without throwing.
+            // Why is it important to test this test case? Without idempotence those values
+            //   are valid Kafka configuration; refusing them for TECHNICAL would block
+            //   legitimate fire-and-forget throughput tuning on the high-volume class.
+
             // Given: the same tuning that AUDIT rejects
             val builder =
                 ProducerPropertiesBuilder(
@@ -518,6 +652,15 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should apply the tighter PERFORMANCE cap`() {
+            // What is to be tested? Whether the max.block.ms cap is read per class: 400 ms
+            //   is fine for TECHNICAL (500) but must be clamped for PERFORMANCE (200).
+            // How will the test case be deemed successful and why? Successful if the
+            //   PERFORMANCE build carries max.block.ms=200 and records a violation with that
+            //   enforced value.
+            // Why is it important to test this test case? A cap hard-wired to 500 would
+            //   pass this input untouched; the per-class value is what keeps the dispatcher
+            //   stall on the highest-volume class shortest during a broker outage.
+
             // Given: below the TECHNICAL cap but above PERFORMANCE's 200 ms
             val builder =
                 ProducerPropertiesBuilder(
@@ -624,6 +767,16 @@ class ProducerPropertiesBuilderTest {
 
         @Test
         fun `should set no client id when no prefix is configured`() {
+            // What is to be tested? Whether the client.id default is opt-in: without a
+            //   defaultClientIdPrefix the builder must not invent one.
+            // How will the test case be deemed successful and why? Successful if the built
+            //   properties contain no client.id key at all, so Kafka's own producer-N
+            //   auto-generation applies.
+            // Why is it important to test this test case? Deployments that never set the
+            //   prefix must keep the client ids they had before the feature existed; an
+            //   unconditional default would change broker-side metrics and quota keys on
+            //   upgrade.
+
             // Given
             val builder = ProducerPropertiesBuilder(emptyMap())
 

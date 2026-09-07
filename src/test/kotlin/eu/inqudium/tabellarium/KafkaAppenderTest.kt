@@ -95,6 +95,19 @@ class KafkaAppenderTest {
     inner class `Configuration validation` {
         @Test
         fun `should refuse to start when no encoder is configured`() {
+            // What is to be tested? Whether start() rejects a configuration
+            //   without an <encoder> - the validateConfiguration gate that runs
+            //   before any producer is built.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted and the status manager carries
+            //   the "No <encoder> configured" error. The hot path relies on
+            //   checkNotNull(encoder); refusing at start is what keeps that
+            //   check from ever firing.
+            // Why is it important to test this test case? Without the gate a
+            //   missing encoder would surface as the first (and then suppressed)
+            //   hot-path error on the first log event instead of as a clear
+            //   startup error next to the offending configuration.
+
             // Given
             val appender = newAppender(encoder = null)
 
@@ -109,6 +122,19 @@ class KafkaAppenderTest {
 
         @Test
         fun `should refuse to start when component is blank`() {
+            // What is to be tested? Whether a blank <component> is rejected by
+            //   validateConfiguration before the pipeline is built.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted and a status error names
+            //   <component> as blank. The component feeds the derived client.id
+            //   prefix and the meta.component record header, so it cannot be
+            //   defaulted away.
+            // Why is it important to test this test case? A blank component
+            //   would yield a "tabellarium--technical" client.id and records
+            //   nobody can attribute to a service; MessageEnricher would reject
+            //   it anyway, but as an opaque pipeline failure rather than a
+            //   startup error that points at the missing element.
+
             // Given
             val appender = newAppender(component = "  ")
 
@@ -123,6 +149,17 @@ class KafkaAppenderTest {
 
         @Test
         fun `should refuse to start when cmdbId is blank`() {
+            // What is to be tested? Whether a blank <cmdbId> is rejected by
+            //   validateConfiguration before the pipeline is built.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted and a status error names
+            //   <cmdbId> as blank. The value becomes the meta.cmdbId header on
+            //   every record, so an empty one would be stamped onto all events.
+            // Why is it important to test this test case? The CMDB id is what
+            //   ties audit records to the deploying instance; shipping events
+            //   without it would break attribution silently. The startup error
+            //   is the only signal that points at the missing element.
+
             // Given
             val appender = newAppender(cmdbId = "")
 
@@ -137,6 +174,17 @@ class KafkaAppenderTest {
 
         @Test
         fun `should refuse to start when environment is blank`() {
+            // What is to be tested? Whether a blank <environment> is rejected
+            //   by validateConfiguration before the pipeline is built.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted and a status error names
+            //   <environment> as blank. The value becomes the meta.environment
+            //   header on every record and cannot be defaulted.
+            // Why is it important to test this test case? Consumers separate
+            //   prod from staging traffic by this header; an empty value would
+            //   let events from one environment blend into another without any
+            //   startup signal that the configuration was incomplete.
+
             // Given
             val appender = newAppender(environment = "  ")
 
@@ -182,6 +230,19 @@ class KafkaAppenderTest {
     inner class `Pipeline construction` {
         @Test
         fun `should mark the appender as started after a successful start`() {
+            // What is to be tested? Whether a valid minimal configuration
+            //   completes start() end to end - validation, encoder start,
+            //   pipeline build - and finally flips Logback's isStarted flag.
+            // How will the test case be deemed successful and why? Successful
+            //   if isStarted is true afterwards. super.start() is the last step
+            //   of start(); every early return before it leaves the flag false,
+            //   so the flag proves that none of the guards fired on a healthy
+            //   configuration.
+            // Why is it important to test this test case? isStarted is the
+            //   ingress gate doAppend checks; a regression that made start()
+            //   bail out on valid input would silently drop every event while
+            //   the configuration looks correct to the operator.
+
             // Given
             val appender = newAppender()
 
@@ -194,6 +255,19 @@ class KafkaAppenderTest {
 
         @Test
         fun `should start the encoder when starting the appender`() {
+            // What is to be tested? Whether start() starts the configured
+            //   encoder itself instead of relying on Logback's outer
+            //   initialization order to have done so.
+            // How will the test case be deemed successful and why? Successful
+            //   if the encoder reports isStarted after appender.start(). The
+            //   encoder is started before the pipeline is built, so a failing
+            //   encoder aborts startup while nothing needs rolling back.
+            // Why is it important to test this test case? An unstarted encoder
+            //   (e.g. LogstashEncoder without its initialized formatter) throws
+            //   on the first encode - a hot-path error on every event rather than
+            //   a startup failure, in deployments where Logback's own start order
+            //   did not reach the nested encoder.
+
             // Given
             val encoder = RecordingEncoder()
             val appender = newAppender(encoder = encoder)
@@ -288,6 +362,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should let an operator-supplied client id win`() {
+            // What is to be tested? Whether an explicit client.id in
+            //   <kafkaProducerProperties> is respected - the derived
+            //   tabellarium-<component>-<class> id is only a putIfAbsent default.
+            // How will the test case be deemed successful and why? Successful
+            //   if the created producer carries the operator's "pinned-id"
+            //   instead of the derived value. This pins the precedence rule of
+            //   ProducerPropertiesBuilder for the client.id default.
+            // Why is it important to test this test case? Operators pin the
+            //   client.id for broker quotas, ACLs and existing dashboards; an
+            //   appender that overruled it would break those silently, with
+            //   the mismatch only visible on the broker side.
+
             // Given: the operator pins client.id in kafkaProducerProperties
             val factory = RecordingProducerFactory()
             val appender =
@@ -442,6 +528,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should emit no override warning with the minimal configuration`() {
+            // What is to be tested? Whether the mandatory-override warning is
+            //   emitted only on actual conflicts: with the default-topic-only
+            //   configuration every topic is TECHNICAL, a class without mandates.
+            // How will the test case be deemed successful and why? Successful
+            //   if no "Mandatory override applied" status message exists after
+            //   start(). Together with the previous test this pins the warning
+            //   to the presence of a real violation record.
+            // Why is it important to test this test case? A warning that fires
+            //   on every plain deployment would train operators to ignore it -
+            //   and with it the one signal that tells them their acks or
+            //   idempotence setting was overruled on an audit topic.
+
             // Given: the minimal configuration (everything TECHNICAL, no
             //   mandates) - the baseline the previous test's setup departs from
             val appender = newAppender()
@@ -498,6 +596,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not warn when the graded class is configured for SSL`() {
+            // What is to be tested? Whether the cleartext warning is keyed on
+            //   the effective security.protocol: the same AUDIT mapping as the
+            //   previous test, but with SSL configured, must stay quiet.
+            // How will the test case be deemed successful and why? Successful
+            //   if no "cleartext transport" status message exists after start().
+            //   This pins the negative half of the check - PLAINTEXT (explicit
+            //   or absent) warns, an encrypted protocol does not.
+            // Why is it important to test this test case? A warning that also
+            //   fires for correctly secured deployments would be noise, and
+            //   operators who learn to ignore it would miss the case where the
+            //   graded class really does travel in the clear.
+
             // Given: the same AUDIT mapping, but SSL configured
             val appender =
                 newAppender(
@@ -584,6 +694,19 @@ class KafkaAppenderTest {
 
         @Test
         fun `should include the cause when debug is enabled`() {
+            // What is to be tested? Whether <debug>true</debug> opts the operator
+            //   into the full pipeline-build failure message - the exception text
+            //   that the non-debug path deliberately withholds.
+            // How will the test case be deemed successful and why? Successful
+            //   if the status error contains the injected "diagnostic-detail"
+            //   cause. Together with the previous test this pins the two-tier
+            //   reporting: type only by default, message and stack trace behind
+            //   the explicit flag.
+            // Why is it important to test this test case? The withheld message
+            //   is usually the only clue to a failing producer configuration;
+            //   if the opt-in did not surface it, operators would have no way at
+            //   all to diagnose a refused start.
+
             // Given
             val failingFactory =
                 ProducerFactory { _ -> throw IllegalStateException("diagnostic-detail") }
@@ -628,6 +751,17 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not emit the diagnostics note when debug is disabled`() {
+            // What is to be tested? Whether the startup diagnostics block
+            //   (including the "Debug mode enabled" note) is emitted only when
+            //   <debug> is actually set - the default start is silent about it.
+            // How will the test case be deemed successful and why? Successful
+            //   if no "Debug mode enabled" status message exists after a
+            //   default start. This pins the gate around emitDebugDiagnostics().
+            // Why is it important to test this test case? The diagnostics list
+            //   active classes, fallback wiring and generated producer settings;
+            //   emitting them unconditionally would clutter every startup log
+            //   and defeat the purpose of the opt-in.
+
             // Given
             val appender = newAppender(debug = false)
 
@@ -717,6 +851,19 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not emit generated producer settings when debug is disabled`() {
+            // What is to be tested? Whether the per-class "Generated producer
+            //   settings" lines are part of the debug-only diagnostics and never
+            //   appear on a default start.
+            // How will the test case be deemed successful and why? Successful
+            //   if no status message starts with "Generated producer settings"
+            //   after a start with debug=false. This pins the gate for the one
+            //   diagnostics line that enumerates effective producer properties.
+            // Why is it important to test this test case? Those lines are
+            //   credential-safe by construction, but they still describe the
+            //   producer configuration in detail; they must stay behind the
+            //   explicit opt-in rather than land in every deployment's status
+            //   output.
+
             // Given
             val appender = newAppender(debug = false)
 
@@ -778,6 +925,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should deliver events from ordinary threads`() {
+            // What is to be tested? Whether the self-logging guard is narrow
+            //   enough: an event from a regular application thread (here a
+            //   Tomcat worker) must pass through to the producer.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after the draining stop(), the producer history holds
+            //   exactly the one appended record. This is the positive control
+            //   for the guard test above it.
+            // Why is it important to test this test case? A guard that matched
+            //   too broadly (or unconditionally) would silently discard
+            //   application logging - the worst failure mode for a log appender,
+            //   because nothing reports what was never sent.
+
             // Given
             val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
@@ -874,6 +1033,17 @@ class KafkaAppenderTest {
     inner class `Hot path` {
         @Test
         fun `should encode and send the event when appended`() {
+            // What is to be tested? The basic hot path: an appended event is
+            //   encoded by the configured encoder, routed to the default topic
+            //   and handed to the producer of the active class.
+            // How will the test case be deemed successful and why? Successful
+            //   if the encoder saw exactly one event and the MockProducer history
+            //   holds exactly one record addressed to "default.topic". The
+            //   draining stop() makes the asynchronous send observable.
+            // Why is it important to test this test case? This is the contract
+            //   every other hot-path test builds on; if encode-route-send broke,
+            //   the appender would start cleanly and deliver nothing.
+
             // Given
             val encoder = RecordingEncoder()
             val factory = RecordingProducerFactory()
@@ -943,6 +1113,17 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not invoke the fallback when the send succeeds`() {
+            // What is to be tested? Whether a successful send leaves the
+            //   fallback appender untouched - the fallback is an error path,
+            //   not a second delivery channel.
+            // How will the test case be deemed successful and why? Successful
+            //   if the fallback recorder holds no events after the draining
+            //   stop() - the drained pipeline delivered to Kafka only.
+            // Why is it important to test this test case? A fallback that also
+            //   received successful events would double-write every log line to
+            //   the local file and make the fallback's metrics useless as an
+            //   outage signal.
+
             // Given
             val fallback = RecordingAppender()
             val appender = newAppender(fallback = fallback)
@@ -991,6 +1172,19 @@ class KafkaAppenderTest {
     inner class `Hot path failure handling` {
         @Test
         fun `should route to the fallback appender when the encoder throws`() {
+            // What is to be tested? Whether a hot-path exception (here an
+            //   encoder that always throws) diverts the original event to the
+            //   configured fallback appender instead of losing it.
+            // How will the test case be deemed successful and why? Successful
+            //   if the fallback recorder holds exactly that event, identified by
+            //   its message, after the draining stop(). This pins the catch
+            //   branch of append(): count, then enqueue on the fallback
+            //   dispatcher.
+            // Why is it important to test this test case? Encoder bugs are the
+            //   most likely hot-path failure; without the diversion each such
+            //   event would vanish, and the local fallback file - the operator's
+            //   last resort during an incident - would show nothing.
+
             // Given
             val fallback = RecordingAppender()
             val appender =
@@ -1226,6 +1420,16 @@ class KafkaAppenderTest {
     inner class `Shutdown` {
         @Test
         fun `should close all producers when stopping`() {
+            // What is to be tested? Whether stop() closes the producer registry
+            //   and with it every Kafka producer the appender created.
+            // How will the test case be deemed successful and why? Successful
+            //   if the single MockProducer reports closed() after stop(). This
+            //   pins the registry close step of the shutdown sequence.
+            // Why is it important to test this test case? An unclosed producer
+            //   keeps its network thread, buffers and MBeans alive; on every
+            //   Logback reconfiguration the leaked producers would accumulate
+            //   and the JVM would not exit cleanly.
+
             // Given
             val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
@@ -1240,6 +1444,17 @@ class KafkaAppenderTest {
 
         @Test
         fun `should stop the encoder when stopping`() {
+            // What is to be tested? Whether stop() also stops the encoder the
+            //   appender started in start() - the lifecycle is symmetric.
+            // How will the test case be deemed successful and why? Successful
+            //   if the encoder reports isStarted == false after stop(). The
+            //   encoder stop is the last step of the teardown, so it also shows
+            //   the sequence ran to completion.
+            // Why is it important to test this test case? Encoders may hold
+            //   resources of their own (formatter pools, buffers); the appender
+            //   owns the encoder it started, and skipping the stop would leak
+            //   those across reconfiguration cycles.
+
             // Given
             val encoder = RecordingEncoder()
             val appender = newAppender(encoder = encoder)
@@ -2020,6 +2235,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not duplicate meters when bound twice`() {
+            // What is to be tested? Whether a repeated bindMeterRegistry call
+            //   (context refresh, manual re-wiring) replaces the previous
+            //   registration rather than adding a second set of meters.
+            // How will the test case be deemed successful and why? Successful
+            //   if the number of kafka.appender.* meters is identical after the
+            //   first and the second bind. MetricsBindings.bind() unbinds the
+            //   previous registration first; this pins that replace semantics.
+            // Why is it important to test this test case? Duplicate meters
+            //   either fail registration or double-count in the registry; both
+            //   corrupt the dashboards operators rely on for outage detection,
+            //   and the leak grows with every application context refresh.
+
             // Given
             val registry = SimpleMeterRegistry()
             val appender = newAppender()
@@ -2275,6 +2502,18 @@ class KafkaAppenderTest {
 
         @Test
         fun `should report the attached appender via iteratorForAppenders and getAppender`() {
+            // What is to be tested? Whether the AppenderAttachable read
+            //   accessors - iteratorForAppenders, getAppender(name) and
+            //   isAttached - reflect the single fallback slot consistently.
+            // How will the test case be deemed successful and why? Successful
+            //   if the iterator yields exactly the attached appender, lookup by
+            //   its name returns the same instance, an unknown name yields null
+            //   and isAttached is true. This pins the slot-as-collection view.
+            // Why is it important to test this test case? Logback's
+            //   configuration tooling and Joran walk appenders through these
+            //   accessors; a slot that is invisible to them cannot be inspected
+            //   or cleaned up by the framework.
+
             // Given
             val fallback = RecordingAppender().apply { name = "MY_FALLBACK" }
             val appender = newAppender()
@@ -2290,6 +2529,19 @@ class KafkaAppenderTest {
 
         @Test
         fun `should detach the appender and free the slot when detachAppender is called`() {
+            // What is to be tested? Whether detachAppender(instance) clears the
+            //   fallback slot, reports success and makes the slot reusable for a
+            //   subsequent addAppender.
+            // How will the test case be deemed successful and why? Successful
+            //   if detach returns true, fallbackAppender is null afterwards and
+            //   a replacement can then be attached (rather than being ignored by
+            //   the first-wins rule).
+            // Why is it important to test this test case? Programmatic
+            //   re-wiring of the fallback depends on detach actually freeing
+            //   the slot; if it did not, every later addAppender would be
+            //   silently ignored and the old, possibly stopped appender would
+            //   keep receiving diverted events.
+
             // Given
             val fallback = RecordingAppender().apply { name = "FALLBACK" }
             val appender = newAppender()

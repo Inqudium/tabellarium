@@ -22,6 +22,19 @@ import java.util.Arrays;
 class MessageEnricherFuzzTest {
     @FuzzTest(maxDuration = "10m")
     void enrichmentUpholdsItsContract(FuzzedDataProvider data) {
+        // What is to be tested? MessageEnricher construction and enrich() for
+        //   arbitrary identity strings and arbitrary partitioning-key values.
+        // How will the test case be deemed successful and why? Successful if
+        //   construction rejects exactly the blank identities, enrich() never
+        //   throws, the key is passed through verbatim only when non-blank and
+        //   within MAX_PARTITIONING_KEY_LENGTH (absent otherwise, never truncated),
+        //   and the five headers carry the identity as UTF-8.
+        // Why is it important to test this test case? The key originates in the
+        //   MDC and can be attacker-influenced (SECURITY.md): the length bound is
+        //   what keeps a bridged request header from inflating every record, and
+        //   'absent, not truncated' is what keeps an attacker from steering the
+        //   partition with a chosen prefix.
+
         String component = data.consumeString(24);
         String cmdbId = data.consumeString(24);
         String environment = data.consumeString(24);

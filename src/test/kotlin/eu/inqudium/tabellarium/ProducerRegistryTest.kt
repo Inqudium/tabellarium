@@ -36,6 +36,15 @@ class ProducerRegistryTest {
     inner class `Construction` {
         @Test
         fun `should reject construction when the active topic classes set is empty`() {
+            // What is to be tested? Whether the registry refuses to exist without at least
+            //   one active topic class.
+            // How will the test case be deemed successful and why? Successful if create()
+            //   throws an IllegalArgumentException with the "At least one active topic
+            //   class" message before any producer is built.
+            // Why is it important to test this test case? A registry with no producers
+            //   would make every producerFor lookup fail at the first log event; failing at
+            //   configuration time turns a runtime surprise into a clear startup error.
+
             // When / Then
             assertThatThrownBy {
                 ProducerRegistry.create(
@@ -49,6 +58,15 @@ class ProducerRegistryTest {
 
         @Test
         fun `should create exactly one producer per active topic class`() {
+            // What is to be tested? Whether the registry drives the factory exactly once
+            //   per active class and reports the same set back as activeTopicClasses.
+            // How will the test case be deemed successful and why? Successful if two active
+            //   classes yield exactly two factory calls and activeTopicClasses contains
+            //   precisely AUDIT and TECHNICAL.
+            // Why is it important to test this test case? Each KafkaProducer owns a network
+            //   thread and buffer memory; creating extras (or producers for inactive
+            //   classes) would leak resources, creating too few would fail sends.
+
             // Given
             val factory = RecordingProducerFactory()
 
@@ -105,6 +123,15 @@ class ProducerRegistryTest {
 
         @Test
         fun `should aggregate mandatory override violations across all active topic classes`() {
+            // What is to be tested? Whether the violations of every active class are
+            //   collected into the registry's single mandatoryOverrideViolations list.
+            // How will the test case be deemed successful and why? Successful if acks=0
+            //   against AUDIT, FUNCTIONAL and TECHNICAL yields exactly two violations,
+            //   attributed to AUDIT and FUNCTIONAL - TECHNICAL has no mandate to violate.
+            // Why is it important to test this test case? The appender emits this list as
+            //   startup warnings; if only the last class's violations survived, an operator
+            //   would learn about one overruled setting and miss the other.
+
             // Given: a base that conflicts with mandates of two classes
             val builder =
                 newBuilder(
@@ -138,6 +165,14 @@ class ProducerRegistryTest {
     inner class `Producer lookup` {
         @Test
         fun `should return the producer instance that was created for the given topic class`() {
+            // What is to be tested? Whether producerFor hands back the very object the
+            //   factory created for that class, not a wrapper or a copy.
+            // How will the test case be deemed successful and why? Successful if the lookup
+            //   result is the same instance (isSameAs) as the factory's first product.
+            // Why is it important to test this test case? The dispatcher sends through this
+            //   instance and close() closes the stored one; if they diverged, records would
+            //   go to a producer nobody ever closes.
+
             // Given
             val factory = RecordingProducerFactory()
             val registry =
@@ -156,6 +191,15 @@ class ProducerRegistryTest {
 
         @Test
         fun `should throw when looking up a producer for a topic class that is not active`() {
+            // What is to be tested? Whether a lookup for an inactive class fails loudly
+            //   instead of returning null or a producer of another class.
+            // How will the test case be deemed successful and why? Successful if
+            //   producerFor(PERFORMANCE) on an AUDIT-only registry throws an
+            //   IllegalStateException naming the requested class.
+            // Why is it important to test this test case? The appender only routes to
+            //   active classes; if this contract broke, a routing bug would surface as an
+            //   NPE deep in the send path rather than as a named error at the lookup.
+
             // Given
             val registry =
                 ProducerRegistry.create(
@@ -226,6 +270,14 @@ class ProducerRegistryTest {
     inner class `Closing` {
         @Test
         fun `should close all producers when the registry is closed`() {
+            // What is to be tested? Whether close() reaches every producer the registry
+            //   owns, not only the first or the last.
+            // How will the test case be deemed successful and why? Successful if all four
+            //   MockProducers created for the full class set report closed() afterwards.
+            // Why is it important to test this test case? Producers are closed in parallel
+            //   on their own threads; a producer skipped here keeps its Kafka network
+            //   thread alive past appender stop and blocks a clean JVM shutdown.
+
             // Given
             val factory = RecordingProducerFactory()
             val registry =

@@ -11,6 +11,16 @@ class TopicMappingConfigTest {
     inner class `Default topic setter` {
         @Test
         fun `should default to an empty default topic`() {
+            // What is to be tested? The initial state of a freshly constructed TopicMappingConfig
+            //   before Joran has bound any <defaultTopic> element.
+            // How will the test case be deemed successful and why? Successful if defaultTopic is
+            //   the empty string, not null or a made-up name. This pins the state that
+            //   toTopicRouter() later rejects as "must not be blank".
+            // Why is it important to test this test case? A non-empty built-in default would let
+            //   a configuration that forgot <defaultTopic> start cleanly and route all events to
+            //   an unintended topic; the empty default is what turns the omission into a startup
+            //   error.
+
             // Given / When
             val config = TopicMappingConfig()
 
@@ -48,6 +58,15 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should accept subsequent setter calls and use the last value`() {
+            // What is to be tested? Whether the defaultTopic setter is a plain overwrite - the
+            //   last value assigned wins, earlier values are not retained or concatenated.
+            // How will the test case be deemed successful and why? Successful if after setting
+            //   "first.topic" then "second.topic" the property reads "second.topic". This confirms
+            //   the custom trimming setter did not change the property into an append-only one.
+            // Why is it important to test this test case? A repeated <defaultTopic> element makes
+            //   Joran call the setter twice; last-wins is the behavior Logback users expect from
+            //   repeated properties, and a surprising deviation would silently ignore an override.
+
             // Given
             val config = TopicMappingConfig()
 
@@ -64,6 +83,15 @@ class TopicMappingConfigTest {
     inner class `Topic router construction` {
         @Test
         fun `should build a TopicRouter routing all events to the configured default`() {
+            // What is to be tested? The minimal configuration path: a config with only a
+            //   <defaultTopic> builds a working TopicRouter.
+            // How will the test case be deemed successful and why? Successful if toTopicRouter()
+            //   returns a router whose route(emptyList()) yields "default.topic". This confirms
+            //   the property value reaches the router's defaultTopic unchanged.
+            // Why is it important to test this test case? This is the smallest logback.xml that
+            //   should work; if the config-to-router hand-off dropped or altered the name, every
+            //   deployment without marker mappings would start but publish to the wrong topic.
+
             // Given
             val config =
                 TopicMappingConfig().apply {
@@ -108,6 +136,16 @@ class TopicMappingConfigTest {
     inner class `Topic table construction` {
         @Test
         fun `should build a TopicTable with TECHNICAL as the fallback class`() {
+            // What is to be tested? Whether toTopicTable() applies TECHNICAL as the fallback
+            //   class when <defaultTopicClass> is not configured.
+            // How will the test case be deemed successful and why? Successful if the built
+            //   table's fallbackClass is TopicClass.TECHNICAL. This confirms the property's
+            //   built-in default survives the case-insensitive resolution into the enum.
+            // Why is it important to test this test case? TECHNICAL is the deliberately neutral
+            //   class - no compliance mandates, tolerable producer defaults; a different implicit
+            //   fallback would impose AUDIT-grade overrides (or weaker ones) on operators who
+            //   never asked for them.
+
             // Given
             val config =
                 TopicMappingConfig().apply {
@@ -123,6 +161,15 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should build a TopicTable that resolves any topic to the fallback class`() {
+            // What is to be tested? Whether a table built without any <mapping> classifies every
+            //   topic - the default topic and arbitrary unknown names - via the fallback class.
+            // How will the test case be deemed successful and why? Successful if classFor() returns
+            //   TECHNICAL for "default.topic" and for "any.other.topic". This confirms the default
+            //   topic is not registered as an explicit entry but handled by the fallback.
+            // Why is it important to test this test case? The fallback is the safety net that
+            //   lets a topic the operator forgot to classify still reach a producer; if lookups
+            //   for unmapped names failed instead, a routing typo would crash the log pipeline.
+
             // Given: no explicit topic-to-class mappings configured
             val config =
                 TopicMappingConfig().apply {
@@ -226,6 +273,16 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should trim whitespace on all entry properties`() {
+            // What is to be tested? Whether TopicMappingEntry trims marker, topic and topicClass
+            //   on assignment, so XML indentation never becomes part of the configured values.
+            // How will the test case be deemed successful and why? Successful if an entry set with
+            //   padded values routes the bare SECURITY marker to "audit.security" and classifies
+            //   that topic as AUDIT. This confirms trimming on all three setters, end to end.
+            // Why is it important to test this test case? Joran passes element text verbatim;
+            //   without trimming, "  SECURITY  " would never match a real marker and "  AUDIT  "
+            //   would fail class resolution - both showing up as puzzling errors for a
+            //   configuration that looks correct.
+
             // Given: XML-typical indentation whitespace on every value
             val config = configWith(entry("  SECURITY  ", "  audit.security  ", "  AUDIT  "))
 
@@ -240,6 +297,15 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should reject an unknown topic class with a named error`() {
+            // What is to be tested? Whether a <topicClass> that is not a TopicClass constant
+            //   fails at toTopicTable() with a message that lets the operator find the mistake.
+            // How will the test case be deemed successful and why? Successful if the exception
+            //   names the bad value ("AUDIT_LOGS"), the mapping's marker ("SECURITY") and the
+            //   valid constants. This confirms the error is actionable, not a bare enum failure.
+            // Why is it important to test this test case? The class decides producer tuning and
+            //   compliance overrides; a typo here must abort start() with a clear pointer
+            //   instead of a generic "No enum constant" from deep inside the enum lookup.
+
             // Given
             val config = configWith(entry("SECURITY", "audit.security", "AUDIT_LOGS"))
 
@@ -278,6 +344,15 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should reject the same topic assigned two different classes`() {
+            // What is to be tested? Whether two <mapping> elements that route to one topic but
+            //   declare different classes are rejected at toTopicTable().
+            // How will the test case be deemed successful and why? Successful if the exception
+            //   is an IllegalArgumentException naming 'shared.topic'. This confirms that the
+            //   grouping by topic detects the conflict instead of picking one class arbitrarily.
+            // Why is it important to test this test case? A topic has exactly one producer class;
+            //   silently choosing AUDIT or FUNCTIONAL would give part of the stream different
+            //   delivery guarantees than the operator declared - invisible at runtime.
+
             // Given: two markers routing to one topic with conflicting classes
             val config =
                 configWith(
@@ -325,6 +400,16 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should reject an unknown defaultTopicClass with a named error`() {
+            // What is to be tested? Whether an invalid <defaultTopicClass> value fails at
+            //   toTopicTable() with an error that points at the element.
+            // How will the test case be deemed successful and why? Successful if the exception
+            //   mentions "<defaultTopicClass>", the bad value "IMPORTANT" and the list of valid
+            //   constants. This confirms the fallback class goes through the same named
+            //   validation as per-mapping classes.
+            // Why is it important to test this test case? The fallback class governs every
+            //   unmapped topic; an unrecognized value must not quietly degrade to TECHNICAL when
+            //   the operator meant AUDIT, and the error must say which element to fix.
+
             // Given
             val config =
                 TopicMappingConfig().apply {
@@ -377,6 +462,16 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should accept a mapping that names the default topic with the same class`() {
+            // What is to be tested? The positive counterpart of the conflict check: a <mapping>
+            //   may route a marker to the default topic when its class agrees with
+            //   <defaultTopicClass>.
+            // How will the test case be deemed successful and why? Successful if toTopicTable()
+            //   builds without throwing and classifies "audit.trail" as AUDIT. This confirms the
+            //   agreement check compares classes, not merely the presence of the topic.
+            // Why is it important to test this test case? Routing an explicit marker to the
+            //   default stream is a legitimate setup; rejecting it would force operators into
+            //   a duplicate topic just to satisfy validation.
+
             // Given: defaultTopicClass and the mapping agree on AUDIT
             val config =
                 TopicMappingConfig().apply {
@@ -398,6 +493,15 @@ class TopicMappingConfigTest {
 
         @Test
         fun `should accept two markers sharing one topic with the same class`() {
+            // What is to be tested? Whether fan-in - several markers routing to one topic with
+            //   an identical class - passes the same-topic conflict check.
+            // How will the test case be deemed successful and why? Successful if router and table
+            //   build without error, MONEY routes to "audit.events" and the topic is AUDIT. This
+            //   confirms the conflict check compares the set of classes, not the number of mappings.
+            // Why is it important to test this test case? Collecting several audit-relevant
+            //   markers into one AUDIT topic is the expected way to use the mapping; an
+            //   over-strict check would reject the most common compliance layout.
+
             // Given: a legal fan-in - both markers route to one AUDIT topic
             val config =
                 configWith(
