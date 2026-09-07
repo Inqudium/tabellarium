@@ -119,10 +119,11 @@ import java.util.concurrent.TimeUnit
  *                         topic class. Must outlive this sender.
  * @param circuitBreakerRegistry Resilience4j registry from which one
  *                               breaker per active topic class is
- *                               acquired by name. The naming convention
- *                               is exposed via [circuitBreakerName]
- *                               so operators can override the default
- *                               configuration for individual breakers.
+ *                               acquired by name ([circuitBreakerName]).
+ *                               The appender always supplies a registry
+ *                               built from [defaultCircuitBreakerConfig];
+ *                               per-class tuning is not part of the
+ *                               operator surface (ADR-0002).
  * @param fallbackDispatcher Asynchronous bridge to the fallback
  *                           [ch.qos.logback.core.Appender]. Null means
  *                           "drop events on Kafka delivery failure".
@@ -345,9 +346,10 @@ internal class ResilientMessageSender(
     companion object {
         /**
          * Returns the Resilience4j circuit-breaker name used for the given
-         * topic class. Exposed so operators can register a class-specific
-         * configuration on the [CircuitBreakerRegistry] before constructing
-         * the sender.
+         * topic class - the `name` tag of the breaker metrics, and the key
+         * under which tests and the appender's restart path find a
+         * breaker in the registry. Not an operator override hook: the
+         * registry is an internal seam (ADR-0002).
          */
         fun circuitBreakerName(topicClass: TopicClass): String = "kafka-appender-${topicClass.name.lowercase()}"
 

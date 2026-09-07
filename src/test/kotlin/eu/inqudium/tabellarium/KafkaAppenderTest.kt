@@ -954,6 +954,54 @@ class KafkaAppenderTest {
         }
 
         @Test
+        fun `should deliver an event whose MDC cannot be materialized instead of failing every event`() {
+            // What is to be tested? The embedded-context path: a
+            //   LoggerContext without a bound MDC adapter makes
+            //   LoggingEvent.getMDCPropertyMap() throw. append() swallows
+            //   that from prepareForDeferredProcessing, but the default
+            //   partitioning-key extractor read the same getter one step
+            //   later - and turned every event into a hot-path failure.
+            // How will the test case be deemed successful and why? Successful
+            //   if an event built on a bare LoggerContext (no MDC map set,
+            //   unlike the shared test helper) reaches the producer with
+            //   no partitioning key, nothing lands in the fallback, and no
+            //   hot-path error is reported.
+            // Why is it important to test this test case? Before the fix
+            //   (finding R2-1 in the 2026-09-07 follow-up analysis) such a
+            //   setup started cleanly, reported one error, and shipped
+            //   nothing to Kafka - every event diverted as encoder.error.
+
+            // Given: an appender with a fallback recorder
+            val factory = TestProducerFactory()
+            val fallback = RecordingAppender()
+            val appender = newAppender(producerFactory = factory, fallback = fallback)
+            appender.start()
+            // And: an event on a bare LoggerContext whose MDC is unreadable
+            //   (the helper sets the map explicitly; here it deliberately
+            //   stays unset, so materialization throws)
+            val bareContext = LoggerContext()
+            val event =
+                LoggingEvent(
+                    "fqcn.dummy",
+                    bareContext.getLogger("embedded"),
+                    Level.INFO,
+                    "no mdc adapter here",
+                    null,
+                    null,
+                )
+
+            // When
+            appender.doAppend(event)
+
+            // Then: delivered to Kafka without a key, not diverted
+            appender.stop()
+            assertThat(factory.createdProducers[0].history()).hasSize(1)
+            assertThat(factory.createdProducers[0].history()[0].key()).isNull()
+            assertThat(fallback.events).isEmpty()
+            assertThat(appender.statusMessages()).noneMatch { it.contains("Hot path error") }
+        }
+
+        @Test
         fun `should not invoke the fallback when the send succeeds`() {
             // Given
             val fallback = RecordingAppender()
@@ -1464,6 +1512,50 @@ class KafkaAppenderTest {
             //   was reported once per lifecycle
             assertThat(fallback.events.map { it.formattedMessage }).containsExactly("first life", "second life")
             assertThat(appender.statusMessages().filter { it.contains("Hot path error") }).hasSize(2)
+        }
+
+        @Test
+        fun `should reset a breaker left open by the previous life when restarted`() {
+            // What is to be tested? Whether a restart rebuilds the
+            //   resilience state as well as the pipeline: the breaker
+            //   registry lives as long as the appender, so without a reset
+            //   the new sender would inherit an OPEN breaker from the
+            //   previous life and divert against a possibly replaced,
+            //   healthy cluster for the rest of the open-state wait.
+            // How will the test case be deemed successful and why? Successful
+            //   if a breaker forced OPEN before stop() reads CLOSED after
+            //   start() and the first event of the new life reaches the
+            //   producer instead of the fallback.
+            // Why is it important to test this test case? The restart
+            //   support (finding 4 of the 2026-09-07 analysis) made this
+            //   path real; finding R2-5 of the follow-up found the
+            //   carried-over state.
+
+            // Given: a started appender whose TECHNICAL breaker is OPEN
+            val factory = TestProducerFactory()
+            val fallback = RecordingAppender()
+            val appender = newAppender(producerFactory = factory, fallback = fallback)
+            appender.start()
+            val breaker =
+                appender.circuitBreakerRegistry
+                    .circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.TECHNICAL))
+            breaker.transitionToOpenState()
+            appender.stop()
+
+            // When: restarted
+            appender.start()
+            appender.doAppend(newTestLoggingEvent(message = "second life"))
+            appender.stop()
+
+            // Then: the breaker was reset and the event was sent, not diverted
+            assertThat(breaker.state).isEqualTo(CircuitBreaker.State.CLOSED)
+            assertThat(
+                factory.createdProducers
+                    .last()
+                    .history()
+                    .map { String(it.value()) },
+            ).containsExactly("second life")
+            assertThat(fallback.events).isEmpty()
         }
     }
 

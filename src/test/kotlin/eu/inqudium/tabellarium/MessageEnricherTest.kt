@@ -243,6 +243,45 @@ class MessageEnricherTest {
         }
 
         @Test
+        fun `should return a null partitioning key when getMDCPropertyMap throws`() {
+            // What is to be tested? Whether the default extractor treats an
+            //   UNREADABLE MDC as "no key" instead of letting the exception
+            //   escape into the appender's hot path. Logback's
+            //   LoggingEvent.getMDCPropertyMap() materializes lazily and
+            //   throws in a LoggerContext without a bound MDC adapter.
+            // How will the test case be deemed successful and why? Successful
+            //   if an event whose getter throws yields a null partitioning
+            //   key and the enrichment completes normally.
+            // Why is it important to test this test case? The extractor runs
+            //   on every event right after the appender swallowed exactly
+            //   this exception from prepareForDeferredProcessing; before the
+            //   fix (finding R2-1, 2026-09-07 follow-up) it re-raised it and
+            //   turned every event of an embedded setup into a hot-path
+            //   failure.
+
+            // Given: a custom event whose getMDCPropertyMap throws
+            val context = LoggerContext()
+            val logger = context.getLogger("test-logger")
+            val event =
+                object : LoggingEvent(
+                    "fqcn.dummy",
+                    logger,
+                    Level.INFO,
+                    "test message",
+                    null,
+                    null,
+                ) {
+                    override fun getMDCPropertyMap(): Map<String, String> = throw NullPointerException("no MDC adapter bound")
+                }
+
+            // When
+            val result = newEnricher().enrich(event)
+
+            // Then
+            assertThat(result.partitioningKey).isNull()
+        }
+
+        @Test
         fun `should return a null partitioning key when the MDC does not contain a traceId`() {
             // Given
             val enricher = newEnricher()

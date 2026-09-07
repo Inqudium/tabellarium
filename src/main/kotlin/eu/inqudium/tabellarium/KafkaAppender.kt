@@ -1,6 +1,7 @@
 package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.Appender
 import ch.qos.logback.core.UnsynchronizedAppenderBase
 import ch.qos.logback.core.encoder.Encoder
@@ -469,6 +470,18 @@ class KafkaAppender :
                         },
                     )
                 }
+            // Rationale: the breaker registry lives as long as the appender,
+            // so on a restart the sender would look up the SAME breakers
+            // the previous life left behind - possibly OPEN against a
+            // cluster the operator has since replaced. Everything else in
+            // the pipeline is rebuilt fresh; the breakers follow suit by
+            // being reset to CLOSED (identity kept, so the metrics binding's
+            // per-breaker consumers stay valid). A first start finds none.
+            registry.activeTopicClasses.forEach { topicClass ->
+                circuitBreakerRegistry
+                    .find(ResilientMessageSender.circuitBreakerName(topicClass))
+                    .ifPresent { breaker -> breaker.reset() }
+            }
             val sender =
                 ResilientMessageSender(
                     producerRegistry = registry,
@@ -658,8 +671,17 @@ class KafkaAppender :
             } catch (_: RuntimeException) {
                 // A LoggerContext without a bound MDC adapter (possible
                 // in embedded setups) throws from the MDC
-                // materialization; deliver the event as-is rather than
-                // failing the hot path.
+                // materialization. Safety: pin an empty MDC snapshot on
+                // the event so that no later reader - the encoder, the
+                // partitioning-key extractor, a fallback layout - runs
+                // into the same failure again; only then can the event
+                // be delivered as-is instead of failing the hot path
+                // (finding R2-1 in the 2026-09-07 analysis). The setter
+                // refuses an already-materialized map; that case cannot
+                // be the one that just failed, so the refusal is ignored.
+                (event as? LoggingEvent)?.let { mutable ->
+                    runCatching { mutable.mdcPropertyMap = emptyMap() }
+                }
             }
             if (includeCallerData) {
                 event.callerData
@@ -835,6 +857,15 @@ class KafkaAppender :
     }
 
     // -- Public API: metrics integration --------------------------------
+
+    /**
+     * Whether a [bindMeterRegistry] binding is currently in place. The
+     * [KafkaAppenderMetricsBinding] decides on this - not on appender
+     * identity - so a restarted instance (whose stop() unbound the
+     * metrics) is bound again on the next `bindAppenders()` call.
+     */
+    internal val isMeterRegistryBound: Boolean
+        get() = bindLock.withLock { metricsBindings.isBound }
 
     /**
      * Wires the appender to a Micrometer [MeterRegistry].

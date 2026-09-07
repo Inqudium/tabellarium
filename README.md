@@ -292,10 +292,11 @@ Three resilience mechanisms run independently per topic class:
    [configuration guide](docs/config/kafka-appender-config-guide.md)):
    50% failure rate over a sliding window of 20 calls, 30 second
    cooldown in open state, 10 probe calls in half-open, probes spread
-   5 ms apart. Operators can override per class by
-   pre-registering a `CircuitBreakerConfig` under the name
-   `kafka-appender-audit` / `-functional` / `-technical` / `-performance`
-   on the registry.
+   5 ms apart. These thresholds are fixed in code - the breaker
+   registry is an internal seam (ADR-0002), so there is currently no
+   supported way to tune them per deployment; if a real tuning need
+   comes up, open an issue so it can become an XML-bindable property
+   with a follow-up ADR instead of an ad-hoc hook.
 
 2. **Asynchronous delivery with callback-driven outcome tracking.**
    Kafka's `producer.send` is invoked with a callback that feeds the
