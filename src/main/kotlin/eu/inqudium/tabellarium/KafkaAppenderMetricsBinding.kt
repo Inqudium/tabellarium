@@ -156,9 +156,9 @@ open class KafkaAppenderMetricsBinding(
                     appender.name ?: "<unnamed>",
                 )
             } catch (e: Exception) {
-                // A transient failure (registry not ready, meter clash)
-                // leaves the appender unbound, so the next call retries
-                // instead of leaving it dark forever.
+                // Rationale: a transient failure (registry not ready,
+                // meter clash) leaves the appender unbound, so the next
+                // call retries instead of leaving it dark forever.
                 log.warn(
                     "Failed to bind KafkaAppender '{}' to MeterRegistry: {}",
                     appender.name ?: "<unnamed>",

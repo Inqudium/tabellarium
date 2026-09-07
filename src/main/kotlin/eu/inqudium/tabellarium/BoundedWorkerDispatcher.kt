@@ -120,25 +120,21 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
      */
     private val closeExecuted = AtomicBoolean(false)
 
-    private val worker: Thread
-
-    init {
-        worker =
-            Thread(::runWorker, threadName).apply {
-                isDaemon = true
-                setUncaughtExceptionHandler { _, throwable ->
-                    workerDied = true
-                    running = false
-                    inFlight.getAndSet(null)?.let { reject(it, Rejection.WORKER_DEATH) }
-                    while (true) {
-                        val item = queue.poll() ?: break
-                        reject(item, Rejection.WORKER_DEATH)
-                    }
-                    onWorkerDeath(throwable)
+    private val worker: Thread =
+        Thread(::runWorker, threadName).apply {
+            isDaemon = true
+            setUncaughtExceptionHandler { _, throwable ->
+                workerDied = true
+                running = false
+                inFlight.getAndSet(null)?.let { reject(it, Rejection.WORKER_DEATH) }
+                while (true) {
+                    val item = queue.poll() ?: break
+                    reject(item, Rejection.WORKER_DEATH)
                 }
-                start()
+                onWorkerDeath(throwable)
             }
-    }
+            start()
+        }
 
     /** Current queue depth, for the gauges a subclass registers. */
     protected fun queueSize(): Int = queue.size
@@ -175,8 +171,9 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         running = false
         // Phase 1: graceful drain. The worker's poll(100, MS) wakes up on
         // its next timeout, sees running=false, enters the drain loop and
-        // keeps delivering until the queue is empty - with the whole
-        // budget (see the class KDoc for why the interrupt must wait).
+        // keeps delivering until the queue is empty.
+        // Invariant: the drain gets the whole budget before any interrupt
+        // - the interrupt ends the drain (see the class KDoc).
         var interrupted = false
         try {
             worker.join(drainTimeoutMs)
@@ -186,10 +183,10 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         if (worker.isAlive) {
             // Phase 2: forced exit. Interrupt to wake the worker from
             // poll() or from an interruptible delivery, and give the
-            // interrupt a bounded grace to take effect. Whatever the
-            // worker is still doing after that (parked in
-            // non-interruptible I/O) is its own problem now; it is a
-            // daemon thread, so the JVM can still exit.
+            // interrupt a bounded grace to take effect.
+            // Rationale: whatever the worker is still doing after that
+            // (parked in non-interruptible I/O) is its own problem - it
+            // is a daemon thread, so the JVM can still exit.
             worker.interrupt()
             // CAUTION: Thread.join(0) means "wait forever", not "do not
             // wait" - the grace is a positive constant. Skip the wait if
@@ -202,12 +199,12 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
                 }
             }
         }
-        // Claim the in-flight item (exactly once via the compare-and-set;
-        // if the surviving worker still completes the delivery, its own
-        // CAS fails and nothing is accounted twice - the conservative
-        // direction), then everything still queued. Drain rather than
-        // read queue.size, so the items are released and cannot be
-        // re-accounted by a later call.
+        // Claim the in-flight item, then everything still queued.
+        // Invariant: each item is accounted exactly once - if the
+        // surviving worker still completes the delivery, its own CAS
+        // fails and nothing is counted twice (the conservative direction).
+        // Rationale: drain rather than read queue.size, so the items are
+        // released and cannot be re-accounted by a later call.
         inFlight.getAndSet(null)?.let { reject(it, Rejection.SHUTDOWN_REMAINDER) }
         while (true) {
             val item = queue.poll() ?: break
@@ -219,7 +216,9 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
     }
 
     private fun runWorker() {
-        // Set once - the worker never legitimately logs through the appender.
+        // Safety: set once for the worker's lifetime - it never
+        // legitimately logs through the appender, so everything raised on
+        // this thread is a loop and must be dropped.
         reentryGuard?.set(true)
         while (running) {
             val item =
@@ -254,10 +253,10 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
             deliver(item)
             inFlight.compareAndSet(item, null)
         } catch (e: Exception) {
-            // A failing delivery must not kill the worker: account for
-            // the item (unless a forced close already claimed it) and
-            // keep going. An InterruptedException converted from a
-            // blocking delivery is the shutdown signal - preserve it.
+            // Safety: a failing delivery must not kill the worker -
+            // account for the item (unless a forced close already claimed
+            // it) and keep going. An InterruptedException converted from
+            // a blocking delivery is the shutdown signal - preserve it.
             if (inFlight.compareAndSet(item, null)) {
                 reject(item, Rejection.DELIVERY_FAILED)
             }

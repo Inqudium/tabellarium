@@ -241,20 +241,21 @@ internal class ResilientMessageSender(
         val callback = SendCallback(topicClass, circuitBreaker, m, originalEvent, claimDiversion)
 
         try {
-            // The Future returned here is intentionally discarded; the callback
-            // is the single source of truth for delivery outcome. The callback
-            // runs on the Kafka producer's I/O thread - or, for the client's
-            // synchronous ApiException path, right here on the calling thread
-            // before send returns - so sendToFallback must be non-blocking
+            // Rationale: the Future returned here is intentionally
+            // discarded - the callback is the single source of truth for
+            // the delivery outcome. Safety: the callback runs on the Kafka
+            // producer's I/O thread - or, for the client's synchronous
+            // ApiException path, right here on the calling thread before
+            // send returns - so sendToFallback must be non-blocking
             // (handled by FallbackDispatcher).
             producer.send(record, callback)
-            // Count "handed to producer.send" only after the call returns and
-            // only when the callback has not already reported the failure
-            // synchronously: an event that ended in the fallback before send
-            // returned was never dispatched. A synchronous throw below means
-            // the dispatch did not happen either. Invariant: every event
-            // leaving this method is counted exactly once as dispatched or
-            // as fallback.
+            // Invariant: every event leaving this method is counted
+            // exactly once as dispatched or as fallback. Hence "handed to
+            // producer.send" counts only after the call returns and only
+            // when the callback has not already reported the failure
+            // synchronously - an event that ended in the fallback before
+            // send returned was never dispatched, and a synchronous throw
+            // below means the dispatch did not happen either.
             if (!callback.errorReported) {
                 m.eventDispatched(topicClass)
             }

@@ -4,7 +4,9 @@ package eu.inqudium.tabellarium
  * Runs independent close tasks concurrently and waits for all of them
  * within one overall budget - the shape both parallel teardowns of the
  * pipeline need ([ProducerRegistry.close] for the producers,
- * [KafkaAppender.stop] for the send dispatchers), written once.
+ * [KafkaAppender.stop] for the send dispatchers), written once. A
+ * top-level function, like the module's other stateless helper
+ * ([parseKafkaProducerProperties]).
  *
  * Rationale: closing N resources sequentially stacks their individual
  * timeouts (`N × timeout`, up to 40 s for four producers), which
@@ -19,39 +21,36 @@ package eu.inqudium.tabellarium
  * early, leaves the daemon closers to finish on their own, and is
  * restored before returning. CAUTION: `Thread.join(0)` means "wait
  * forever" - the loop stops before the remaining budget reaches zero.
+ *
+ * @param budgetMs Overall wait for all tasks together.
+ * @param tasks Thread name to task; names should be distinct for
+ *              thread dumps, the order is the join order.
  */
-internal object ParallelClose {
-    /**
-     * @param budgetMs Overall wait for all tasks together.
-     * @param tasks Thread name to task; names should be distinct for
-     *              thread dumps, the order is the join order.
-     */
-    fun runWithin(
-        budgetMs: Long,
-        tasks: List<Pair<String, () -> Unit>>,
-    ) {
-        if (tasks.isEmpty()) return
-        val closers =
-            tasks.map { (name, task) ->
-                Thread(task, name).apply {
-                    isDaemon = true
-                    start()
-                }
-            }
-        var interrupted = false
-        val deadlineNanos = System.nanoTime() + budgetMs * 1_000_000
-        for (closer in closers) {
-            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-            if (remainingMs <= 0) break
-            try {
-                closer.join(remainingMs)
-            } catch (_: InterruptedException) {
-                interrupted = true
-                break
+internal fun closeInParallel(
+    budgetMs: Long,
+    tasks: List<Pair<String, () -> Unit>>,
+) {
+    if (tasks.isEmpty()) return
+    val closers =
+        tasks.map { (name, task) ->
+            Thread(task, name).apply {
+                isDaemon = true
+                start()
             }
         }
-        if (interrupted) {
-            Thread.currentThread().interrupt()
+    var interrupted = false
+    val deadlineNanos = System.nanoTime() + budgetMs * 1_000_000
+    for (closer in closers) {
+        val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+        if (remainingMs <= 0) break
+        try {
+            closer.join(remainingMs)
+        } catch (_: InterruptedException) {
+            interrupted = true
+            break
         }
+    }
+    if (interrupted) {
+        Thread.currentThread().interrupt()
     }
 }

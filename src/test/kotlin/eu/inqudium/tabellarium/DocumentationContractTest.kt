@@ -1,6 +1,7 @@
 package eu.inqudium.tabellarium
 
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,55 +38,60 @@ class DocumentationContractTest {
         return row.split("|")[2].trim()
     }
 
-    @Test
-    fun `should state the dispatcher and producer budgets exactly as the constants define them`() {
-        // What is to be tested? Whether the guide's defaults quick
-        //   reference carries the queue capacities and the shutdown
-        //   budgets that the code actually uses.
-        // How will the test case be deemed successful and why? Successful
-        //   if each "code" row's Default cell contains the value formatted
-        //   from the corresponding constant - so a constant change without
-        //   a table update fails the build.
-        // Why is it important to test this test case? These numbers drifted
-        //   three times on 2026-09-07 alone (the 200 ms drain window that
-        //   fix 3 removed survived in the guide); operators size
-        //   termination grace periods from this table.
-        assertThat(defaultOf("Send dispatcher queue capacity (per class)"))
-            .contains("`${SendDispatcher.DEFAULT_QUEUE_CAPACITY}`")
-        assertThat(defaultOf("Send dispatcher drain on stop (parallel)"))
-            .contains("`${SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS / 1000} s` drain")
-        assertThat(defaultOf("Fallback dispatcher queue capacity"))
-            .contains("`${FallbackDispatcher.DEFAULT_QUEUE_CAPACITY}`")
-        assertThat(defaultOf("Fallback dispatcher shutdown timeout"))
-            .contains("`${FallbackDispatcher.DEFAULT_SHUTDOWN_TIMEOUT_MS / 1000} s` drain")
-            .contains("`${BoundedWorkerDispatcher.INTERRUPT_GRACE_MS / 1000.0} s` interrupt grace")
-        assertThat(defaultOf("Producer close timeout"))
-            .contains("`${ProducerRegistry.DEFAULT_CLOSE_TIMEOUT.toSeconds()} s`")
-    }
+    @Nested
+    inner class `Defaults quick reference` {
+        @Test
+        fun `should state the dispatcher and producer budgets exactly as the constants define them`() {
+            // What is to be tested? Whether the guide's defaults quick
+            //   reference carries the queue capacities and the shutdown
+            //   budgets that the code actually uses.
+            // How will the test case be deemed successful and why? Successful
+            //   if each "code" row's Default cell contains the value formatted
+            //   from the corresponding constant - so a constant change without
+            //   a table update fails the build.
+            // Why is it important to test this test case? These numbers drifted
+            //   three times on 2026-09-07 alone (the 200 ms drain window that
+            //   fix 3 removed survived in the guide); operators size
+            //   termination grace periods from this table.
 
-    @Test
-    fun `should state the circuit-breaker and throttle defaults exactly as the configuration defines them`() {
-        // Given: the production breaker configuration
-        val config = ResilientMessageSender.defaultCircuitBreakerConfig()
+            // Given / When: the guide as checked in; Then: every row matches its constant
+            assertThat(defaultOf("Send dispatcher queue capacity (per class)"))
+                .contains("`${SendDispatcher.DEFAULT_QUEUE_CAPACITY}`")
+            assertThat(defaultOf("Send dispatcher drain on stop (parallel)"))
+                .contains("`${SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS / 1000} s` drain")
+            assertThat(defaultOf("Fallback dispatcher queue capacity"))
+                .contains("`${FallbackDispatcher.DEFAULT_QUEUE_CAPACITY}`")
+            assertThat(defaultOf("Fallback dispatcher shutdown timeout"))
+                .contains("`${FallbackDispatcher.DEFAULT_SHUTDOWN_TIMEOUT_MS / 1000} s` drain")
+                .contains("`${BoundedWorkerDispatcher.INTERRUPT_GRACE_MS / 1000.0} s` interrupt grace")
+            assertThat(defaultOf("Producer close timeout"))
+                .contains("`${ProducerRegistry.DEFAULT_CLOSE_TIMEOUT.toSeconds()} s`")
+        }
 
-        // Then: both guide tables (the breaker section and the quick reference) match it
-        assertThat(breakerDefaultOf("failureRateThreshold")).isEqualTo("`${config.failureRateThreshold.toInt()}%`")
-        assertThat(breakerDefaultOf("slidingWindowSize")).isEqualTo("`${config.slidingWindowSize}` calls")
-        assertThat(breakerDefaultOf("minimumNumberOfCalls")).isEqualTo("`${config.minimumNumberOfCalls}`")
-        assertThat(breakerDefaultOf("waitDurationInOpenState"))
-            .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
-        assertThat(breakerDefaultOf("permittedNumberOfCallsInHalfOpenState"))
-            .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
+        @Test
+        fun `should state the circuit-breaker and throttle defaults exactly as the configuration defines them`() {
+            // Given: the production breaker configuration
+            val config = ResilientMessageSender.defaultCircuitBreakerConfig()
 
-        assertThat(defaultOf("Circuit breaker: failure-rate threshold")).isEqualTo("`${config.failureRateThreshold.toInt()}%`")
-        assertThat(defaultOf("Circuit breaker: sliding window / min calls"))
-            .isEqualTo("`${config.slidingWindowSize}` / `${config.minimumNumberOfCalls}`")
-        assertThat(defaultOf("Circuit breaker: open-state wait"))
-            .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
-        assertThat(defaultOf("Circuit breaker: half-open permitted calls"))
-            .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
-        assertThat(defaultOf("Half-open probe gap"))
-            .isEqualTo("`${ResilientMessageSender.DEFAULT_HALF_OPEN_PROBE_GAP.toMillis()} ms`")
-        assertThat(defaultOf("Partitioning key MDC source")).isEqualTo("`${MessageEnricher.TRACE_ID_MDC_KEY}`")
+            // Then: both guide tables (the breaker section and the quick reference) match it
+            assertThat(breakerDefaultOf("failureRateThreshold")).isEqualTo("`${config.failureRateThreshold.toInt()}%`")
+            assertThat(breakerDefaultOf("slidingWindowSize")).isEqualTo("`${config.slidingWindowSize}` calls")
+            assertThat(breakerDefaultOf("minimumNumberOfCalls")).isEqualTo("`${config.minimumNumberOfCalls}`")
+            assertThat(breakerDefaultOf("waitDurationInOpenState"))
+                .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
+            assertThat(breakerDefaultOf("permittedNumberOfCallsInHalfOpenState"))
+                .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
+
+            assertThat(defaultOf("Circuit breaker: failure-rate threshold")).isEqualTo("`${config.failureRateThreshold.toInt()}%`")
+            assertThat(defaultOf("Circuit breaker: sliding window / min calls"))
+                .isEqualTo("`${config.slidingWindowSize}` / `${config.minimumNumberOfCalls}`")
+            assertThat(defaultOf("Circuit breaker: open-state wait"))
+                .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
+            assertThat(defaultOf("Circuit breaker: half-open permitted calls"))
+                .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
+            assertThat(defaultOf("Half-open probe gap"))
+                .isEqualTo("`${ResilientMessageSender.DEFAULT_HALF_OPEN_PROBE_GAP.toMillis()} ms`")
+            assertThat(defaultOf("Partitioning key MDC source")).isEqualTo("`${MessageEnricher.TRACE_ID_MDC_KEY}`")
+        }
     }
 }
