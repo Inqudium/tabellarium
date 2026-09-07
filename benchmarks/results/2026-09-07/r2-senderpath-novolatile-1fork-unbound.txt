@@ -1,0 +1,91 @@
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: <none>
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 2 iterations, 1 s each
+# Measurement: 3 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent
+# Parameters: (metricsBound = false)
+
+# Run progress: 0,00% complete, ETA 00:00:05
+# Fork: 1 of 1
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 75,637 ns/op
+# Warmup Iteration   2: 72,648 ns/op
+Iteration   1: 70,938 ns/op
+                 gc.alloc.rate:      1505,138 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            5,000 ms
+
+Iteration   2: 64,812 ns/op
+                 gc.alloc.rate:      1647,517 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           1,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   3: 64,874 ns/op
+                 gc.alloc.rate:      1645,664 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+
+
+Result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent":
+  66,875 ±(99.9%) 64,203 ns/op [Average]
+  (min, avg, max) = (64,812, 66,875, 70,938), stdev = 3,519
+  CI (99.9%): [2,672, 131,078] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate":
+  1599,440 ±(99.9%) 1490,017 MB/sec [Average]
+  (min, avg, max) = (1505,138, 1599,440, 1647,517), stdev = 81,673
+  CI (99.9%): [109,423, 3089,457] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm":
+  112,000 ±(99.9%) 0,001 B/op [Average]
+  (min, avg, max) = (112,000, 112,000, 112,000), stdev = 0,001
+  CI (99.9%): [112,000, 112,001] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.count":
+  5,000 ±(99.9%) 0,001 counts [Sum]
+  (min, avg, max) = (1,000, 1,667, 2,000), stdev = 0,577
+  CI (99.9%): [5,000, 5,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.time":
+  9,000 ±(99.9%) 0,001 ms [Sum]
+  (min, avg, max) = (2,000, 3,000, 5,000), stdev = 1,732
+  CI (99.9%): [9,000, 9,000] (assumes normal distribution)
+
+
+# Run complete. Total time: 00:00:05
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                            (metricsBound)  Mode  Cnt     Score      Error   Units
+SenderPathBenchmark.sendOneEvent                              false  avgt    3    66,875 ±   64,203   ns/op
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate                false  avgt    3  1599,440 ± 1490,017  MB/sec
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm           false  avgt    3   112,000 ±    0,001    B/op
+SenderPathBenchmark.sendOneEvent:gc.count                     false  avgt    3     5,000             counts
+SenderPathBenchmark.sendOneEvent:gc.time                      false  avgt    3     9,000                 ms

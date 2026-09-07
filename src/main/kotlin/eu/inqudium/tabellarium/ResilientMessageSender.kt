@@ -279,11 +279,22 @@ internal class ResilientMessageSender(
         val startNanos: Long = System.nanoTime()
 
         /**
-         * True once this callback has reported an error. Volatile: written
-         * on whichever thread the client invokes the callback on, read on
-         * the sending thread right after `send` returns.
+         * True once this callback has reported an error. Read on the
+         * sending thread right after `send` returns, to tell a synchronous
+         * failure (callback already ran, same thread - program order makes
+         * the write visible) from a pending send.
+         *
+         * Safety: deliberately NOT volatile. The only concurrent writer is
+         * an asynchronous error callback on the Kafka I/O thread racing
+         * that read, and both outcomes of that race are correct: seeing
+         * `true` counts the event as fallback only (the exact balance),
+         * seeing `false` counts it as dispatched with the later `send.error`
+         * fallback (the documented asynchronous outcome). A volatile field
+         * would pin this object against the JIT's scalar replacement
+         * wherever the callback does not escape and cost one allocation per
+         * send on that path (`SenderPathBenchmark`, 160 vs. 112 B/op) for a
+         * guarantee no reader needs.
          */
-        @Volatile
         var errorReported: Boolean = false
             private set
 

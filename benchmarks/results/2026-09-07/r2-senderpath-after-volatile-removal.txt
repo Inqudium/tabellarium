@@ -1,0 +1,361 @@
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: <none>
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent
+# Parameters: (metricsBound = false)
+
+# Run progress: 0,00% complete, ETA 00:01:00
+# Fork: 1 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 76,670 ns/op
+# Warmup Iteration   2: 66,626 ns/op
+# Warmup Iteration   3: 67,638 ns/op
+# Warmup Iteration   4: 66,891 ns/op
+# Warmup Iteration   5: 71,250 ns/op
+Iteration   1: 67,133 ns/op
+                 gc.alloc.rate:      1590,741 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   2: 68,685 ns/op
+                 gc.alloc.rate:      1554,752 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   3: 67,269 ns/op
+                 gc.alloc.rate:      1587,533 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           6,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   4: 67,968 ns/op
+                 gc.alloc.rate:      1571,132 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 66,754 ns/op
+                 gc.alloc.rate:      1599,666 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           6,000 counts
+                 gc.time:            3,000 ms
+
+
+# Run progress: 16,67% complete, ETA 00:00:52
+# Fork: 2 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 100,839 ns/op
+# Warmup Iteration   2: 68,263 ns/op
+# Warmup Iteration   3: 67,826 ns/op
+# Warmup Iteration   4: 67,242 ns/op
+# Warmup Iteration   5: 67,162 ns/op
+Iteration   1: 67,012 ns/op
+                 gc.alloc.rate:      1593,538 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   2: 67,350 ns/op
+                 gc.alloc.rate:      1585,500 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   3: 66,964 ns/op
+                 gc.alloc.rate:      1594,790 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           6,000 counts
+                 gc.time:            5,000 ms
+
+Iteration   4: 66,960 ns/op
+                 gc.alloc.rate:      1594,626 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 67,079 ns/op
+                 gc.alloc.rate:      1590,401 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            5,000 ms
+
+
+# Run progress: 33,33% complete, ETA 00:00:41
+# Fork: 3 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 77,078 ns/op
+# Warmup Iteration   2: 77,730 ns/op
+# Warmup Iteration   3: 68,566 ns/op
+# Warmup Iteration   4: 69,929 ns/op
+# Warmup Iteration   5: 66,102 ns/op
+Iteration   1: 73,035 ns/op
+                 gc.alloc.rate:      1461,983 MB/sec
+                 gc.alloc.rate.norm: 112,001 B/op
+                 gc.count:           1,000 counts
+                 gc.time:            1,000 ms
+
+Iteration   2: 65,523 ns/op
+                 gc.alloc.rate:      1629,680 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 65,270 ns/op
+                 gc.alloc.rate:      1635,738 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   4: 66,441 ns/op
+                 gc.alloc.rate:      1607,144 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           1,000 counts
+                 gc.time:            1,000 ms
+
+Iteration   5: 65,188 ns/op
+                 gc.alloc.rate:      1638,018 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+
+
+Result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent":
+  67,242 ±(99.9%) 1,987 ns/op [Average]
+  (min, avg, max) = (65,188, 67,242, 73,035), stdev = 1,859
+  CI (99.9%): [65,255, 69,229] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate":
+  1589,016 ±(99.9%) 44,645 MB/sec [Average]
+  (min, avg, max) = (1461,983, 1589,016, 1638,018), stdev = 41,761
+  CI (99.9%): [1544,371, 1633,661] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm":
+  112,000 ±(99.9%) 0,001 B/op [Average]
+  (min, avg, max) = (112,000, 112,000, 112,001), stdev = 0,001
+  CI (99.9%): [112,000, 112,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.count":
+  61,000 ±(99.9%) 0,001 counts [Sum]
+  (min, avg, max) = (1,000, 4,067, 6,000), stdev = 1,870
+  CI (99.9%): [61,000, 61,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.time":
+  43,000 ±(99.9%) 0,001 ms [Sum]
+  (min, avg, max) = (1,000, 2,867, 5,000), stdev = 1,246
+  CI (99.9%): [43,000, 43,000] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: <none>
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent
+# Parameters: (metricsBound = true)
+
+# Run progress: 50,00% complete, ETA 00:00:31
+# Fork: 1 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 222,503 ns/op
+# Warmup Iteration   2: 189,291 ns/op
+# Warmup Iteration   3: 188,565 ns/op
+# Warmup Iteration   4: 187,677 ns/op
+# Warmup Iteration   5: 186,633 ns/op
+Iteration   1: 187,271 ns/op
+                 gc.alloc.rate:      1140,299 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   2: 186,802 ns/op
+                 gc.alloc.rate:      1143,158 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   3: 188,827 ns/op
+                 gc.alloc.rate:      1130,926 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   4: 188,111 ns/op
+                 gc.alloc.rate:      1135,190 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   5: 186,493 ns/op
+                 gc.alloc.rate:      1145,154 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+
+# Run progress: 66,67% complete, ETA 00:00:20
+# Fork: 2 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 222,096 ns/op
+# Warmup Iteration   2: 189,077 ns/op
+# Warmup Iteration   3: 187,612 ns/op
+# Warmup Iteration   4: 191,975 ns/op
+# Warmup Iteration   5: 196,034 ns/op
+Iteration   1: 215,751 ns/op
+                 gc.alloc.rate:      988,811 MB/sec
+                 gc.alloc.rate.norm: 224,002 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            8,000 ms
+
+Iteration   2: 189,917 ns/op
+                 gc.alloc.rate:      1124,616 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   3: 189,328 ns/op
+                 gc.alloc.rate:      1128,089 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   4: 191,203 ns/op
+                 gc.alloc.rate:      1116,945 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 188,867 ns/op
+                 gc.alloc.rate:      1130,621 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            2,000 ms
+
+
+# Run progress: 83,33% complete, ETA 00:00:10
+# Fork: 3 of 3
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/home/dirk/IdeaProjects/tabellarium/benchmarks/target/benchmarks.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# Warmup Iteration   1: 220,256 ns/op
+# Warmup Iteration   2: 188,279 ns/op
+# Warmup Iteration   3: 201,731 ns/op
+# Warmup Iteration   4: 189,906 ns/op
+# Warmup Iteration   5: 191,333 ns/op
+Iteration   1: 192,125 ns/op
+                 gc.alloc.rate:      1588,067 MB/sec
+                 gc.alloc.rate.norm: 320,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   2: 193,856 ns/op
+                 gc.alloc.rate:      1573,864 MB/sec
+                 gc.alloc.rate.norm: 320,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 198,412 ns/op
+                 gc.alloc.rate:      1537,710 MB/sec
+                 gc.alloc.rate.norm: 320,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   4: 206,110 ns/op
+                 gc.alloc.rate:      1479,724 MB/sec
+                 gc.alloc.rate.norm: 320,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 209,551 ns/op
+                 gc.alloc.rate:      1455,588 MB/sec
+                 gc.alloc.rate.norm: 320,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+
+
+Result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent":
+  194,175 ±(99.9%) 9,780 ns/op [Average]
+  (min, avg, max) = (186,493, 194,175, 215,751), stdev = 9,148
+  CI (99.9%): [184,395, 203,955] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate":
+  1254,584 ±(99.9%) 219,323 MB/sec [Average]
+  (min, avg, max) = (988,811, 1254,584, 1588,067), stdev = 205,155
+  CI (99.9%): [1035,261, 1473,907] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm":
+  256,001 ±(99.9%) 50,078 B/op [Average]
+  (min, avg, max) = (224,001, 256,001, 320,001), stdev = 46,843
+  CI (99.9%): [205,923, 306,080] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.count":
+  55,000 ±(99.9%) 0,001 counts [Sum]
+  (min, avg, max) = (3,000, 3,667, 4,000), stdev = 0,488
+  CI (99.9%): [55,000, 55,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.time":
+  51,000 ±(99.9%) 0,001 ms [Sum]
+  (min, avg, max) = (2,000, 3,400, 8,000), stdev = 1,404
+  CI (99.9%): [51,000, 51,000] (assumes normal distribution)
+
+
+# Run complete. Total time: 00:01:02
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                            (metricsBound)  Mode  Cnt     Score     Error   Units
+SenderPathBenchmark.sendOneEvent                              false  avgt   15    67,242 ±   1,987   ns/op
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate                false  avgt   15  1589,016 ±  44,645  MB/sec
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm           false  avgt   15   112,000 ±   0,001    B/op
+SenderPathBenchmark.sendOneEvent:gc.count                     false  avgt   15    61,000            counts
+SenderPathBenchmark.sendOneEvent:gc.time                      false  avgt   15    43,000                ms
+SenderPathBenchmark.sendOneEvent                               true  avgt   15   194,175 ±   9,780   ns/op
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate                 true  avgt   15  1254,584 ± 219,323  MB/sec
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm            true  avgt   15   256,001 ±  50,078    B/op
+SenderPathBenchmark.sendOneEvent:gc.count                      true  avgt   15    55,000            counts
+SenderPathBenchmark.sendOneEvent:gc.time                       true  avgt   15    51,000                ms
