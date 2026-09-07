@@ -95,7 +95,7 @@
         <!-- Fuzzing (test scope): Jazzer's JUnit 5 integration - @FuzzTest
              methods run as regression tests in every verify and fuzz for
              real in the scheduled Fuzz workflow (JAZZER_FUZZ=1). -->
-        <jazzer.version>0.24.0</jazzer.version>
+        <jazzer.version>0.30.0</jazzer.version>
         <!-- Security pin; see the dependencyManagement entry for the rationale. -->
         <lz4-java.version>1.11.2</lz4-java.version>
 
@@ -128,7 +128,7 @@
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
         <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
-        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
 
         <!--
             Default for the late-bound @{argLine} reference in the Surefire
@@ -428,7 +428,7 @@
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>3.6.1</version>
                 <executions>
                     <execution>
                         <id>add-java-fuzz-test-sources</id>
