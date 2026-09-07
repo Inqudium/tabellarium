@@ -20,6 +20,7 @@ metrics are catalogued in [`metrics-overview.md`](../metrics/metrics-overview.md
 - [10. Startup validation and failure behavior](#10-startup-validation-and-failure-behavior)
 - [11. Wrapping in an AsyncAppender](#11-wrapping-in-an-asyncappender)
 - [12. Defaults quick reference](#12-defaults-quick-reference)
+- [13. What is deliberately not configurable](#13-what-is-deliberately-not-configurable)
 - [Appendix A: The four-class topic model](#appendix-a-the-four-class-topic-model)
 
 ---
@@ -257,22 +258,37 @@ built-in overrides.
 
 ### Composition
 
-The producer properties are assembled in two layers, then the serializers are
-forced:
+The producer properties are assembled in four layers, then the serializers
+are forced:
 
 1. **Base properties** — everything from `<kafkaProducerProperties>`
    ([§3](#3-kafka-producer-properties)).
 2. **Default overrides** — a set of built-in defaults applied with
    `putIfAbsent`: your value wins wherever you set the same key; a default
-   only fills a gap you left.
-3. **Forced serializers** — `key.serializer` and `value.serializer` are set
+   only fills a gap you left. One default is conditional: when you set
+   `enable.idempotence=true` yourself, the class's `acks` default is
+   skipped (the Kafka client refuses idempotence with anything but
+   `acks=all`), so Kafka's own `acks=all` default applies.
+3. **Mandatory overrides** — values that win even over an explicit value
+   you set. The set is **empty for `TECHNICAL` and `PERFORMANCE`**, so it
+   changes nothing in the minimal configuration; it carries the enforced
+   values of the AUDIT/FUNCTIONAL classes once a `<mapping>` activates
+   them ([Appendix A](#appendix-a-the-four-class-topic-model)).
+4. **The `max.block.ms` cap** — a ceiling for *every* class (500 ms;
+   200 ms for `PERFORMANCE`): a lower value of yours is kept, a higher or
+   unparseable one is clamped to the ceiling and reported at startup in
+   the same format as a mandatory-override conflict
+   ([§10](#10-startup-validation-and-failure-behavior)). It bounds each
+   send worker's worst-case stall per event ([§8](#8-producer-lifecycle-and-shutdown)).
+5. **Forced serializers** — `key.serializer` and `value.serializer` are set
    to `ByteArraySerializer` unconditionally ([§3](#3-kafka-producer-properties)).
 
-> A generic third merge layer — *mandatory* overrides that win even over an
-> explicit value you set — is **empty for the `TECHNICAL` class**, so it
-> changes nothing in the minimal configuration. It carries the enforced
-> values of the AUDIT/FUNCTIONAL classes once a `<mapping>` activates them;
-> see [Appendix A](#appendix-a-the-four-class-topic-model).
+The merged result is then validated: wherever `enable.idempotence=true` is
+in effect (mandated for `AUDIT`, or set by you for any class), `acks` must
+be `all`/`-1`, `retries` must be positive and
+`max.in.flight.requests.per.connection` at most 5. A violation aborts
+`start()` with a named error instead of the Kafka client's generic
+construction failure.
 
 ### Default overrides
 
@@ -343,8 +359,9 @@ filling the gaps and the serializers forced:
 | `value.serializer`   | forced                         | `ByteArraySerializer`    |
 
 Nothing you set is overruled for the `TECHNICAL` class — it has no mandatory
-overrides. (For a topic mapped to `AUDIT`, the same `acks=1` is forced to
-`acks=all`, with a startup warning; see
+overrides; only a `max.block.ms` above its 500 ms cap would be clamped.
+(For a topic mapped to `AUDIT`, the same `acks=1` is forced to `acks=all`,
+with a startup warning; see
 [Appendix A](#appendix-a-the-four-class-topic-model).)
 
 ---
@@ -437,9 +454,12 @@ default extractor reads the MDC entry `traceId` and uses it if non-blank
 **and at most 128 characters long**; otherwise the key is `null` and Kafka
 distributes the record via its configured partitioner (sticky-random by
 default). Using the trace id as the key keeps all records of one trace on
-the same partition, preserving their relative order. A custom extraction
-strategy (session id, account id, …) is supported at the API level but is
-not currently exposed through XML.
+the same partition, preserving their relative order. An MDC that cannot be
+read (a `LoggerContext` without an MDC adapter, as in some embedded
+setups) yields no key rather than a hot-path failure. The key source is
+fixed ([section 13](#13-what-is-deliberately-not-configurable)); a
+different key (session id, account id, …) would be added as an
+XML-bindable appender property, per ADR-0002.
 
 ### Why the key is length-bounded
 
@@ -515,9 +535,8 @@ logging volume all probes fire within microseconds and then every further
 event is routed to the fallback for the duration of the Kafka round-trip,
 even after the cluster has recovered. The throttle spreads probes out to one
 per **`halfOpenProbeGap`** (default **5 ms**), so the probes are dispatched
-over `N × gap` of wall time. It is transparent in CLOSED and OPEN. Setting
-the gap to zero disables it. This is a programmatic setting; it is not
-currently exposed through XML.
+over `N × gap` of wall time. It is transparent in CLOSED and OPEN. The gap
+is fixed in code ([section 13](#13-what-is-deliberately-not-configurable)).
 
 ### Fallback appender
 
@@ -537,11 +556,35 @@ Attach a fallback appender with `<appender-ref ref="…"/>`:
 </appender>
 ```
 
-An event is routed to the fallback when the breaker is open, the throttle
-gate denies a probe, or a send fails (synchronously or via callback error).
+An event is routed to the fallback whenever it cannot reach Kafka; the
+`reason` tag of `kafka.appender.events.fallback` names the gate
+([§9](#9-metrics-integration)):
+
+- `breaker.open` — the class's circuit breaker denied permission;
+- `throttle` — the half-open throttle denied a probe;
+- `send.error` — `producer.send` threw, the client reported an error
+  through the callback (synchronously before `send` returned, or later
+  from its I/O thread), or the class's send worker died;
+- `encoder.error` — a hot-path exception before the send (encoder,
+  routing);
+- `queue.full` — the class's send queue was full;
+- `shutdown` — the event was still queued or in flight when the appender
+  stopped, or was logged after it stopped.
+
+Every event is diverted at most once, whichever gate fires first.
 
 - **Single slot, first wins.** Only one fallback appender is attached; a
   second `<appender-ref>` is ignored.
+- **Owned by the appender.** `stop()` stops the fallback appender (it
+  stays attached and inspectable). Do not share it with other loggers
+  unless a full-context shutdown is the only stop path in your
+  deployment: a selective stop of the Kafka appender would silence the
+  shared appender for everyone.
+- **Must not log through SLF4J per event.** The fallback's `doAppend`
+  runs on the dispatcher's worker thread, which carries the appender's
+  reentry guard: log events it emits there are dropped (no metrics, no
+  fallback) instead of looping back into the pipeline. Logback's own
+  file appenders report through the status manager and are unaffected.
 - **No fallback ⇒ silent drop.** Leaving it unset is the operator's explicit
   choice that best-effort delivery is acceptable. Configuring one is the way
   to say "loss is unacceptable here". **Strongly recommended in production.**
@@ -555,7 +598,11 @@ gate denies a probe, or a send fails (synchronously or via callback error).
 - **Overflow ⇒ drop, counted.** If the fallback is slow enough to fill the
   queue, further events are dropped (never blocked) and counted in the
   `kafka.appender.fallback.dropped` metric. The system is already degraded
-  (Kafka delivery is failing); an unbounded queue would grow to OOM.
+  (Kafka delivery is failing); an unbounded queue would grow to OOM. The
+  same counter covers a `doAppend` that throws (the loss is counted, the
+  exception swallowed) and a worker that died: an `Error` escaping the
+  fallback appender ends the worker, is reported once as a status
+  warning, and every event offered afterwards is dropped and counted.
 - **Shutdown.** On `close()` the worker keeps delivering for the whole
   **5 s** budget; only then is it interrupted, with a further **0.5 s**
   grace for a delivery parked in `doAppend`. Events still queued or in
@@ -570,16 +617,45 @@ producer fails to construct, the already-created ones are closed and the
 exception is rethrown — the registry is never partially initialized, and
 `start()` reports the failure via `addError`.
 
-At `stop()` the send dispatchers are closed first, **in parallel**
-within one shared **~2 s** budget: each drains its queue by still
-sending through the open producers; whatever cannot be sent in time
-diverts to the fallback appender with metric reason `shutdown`. Then every producer is closed **in parallel**
-within a **10 s** overall budget. A per-producer close failure does not
-prevent the others from closing (partial cleanup beats none); failures
-are aggregated and surfaced as a status warning. The parallel close
-keeps the total well inside the Kubernetes default
+`stop()` runs its teardown once (a repeated `stop()` is a no-op) in this
+order:
+
+1. **Ingress closed.** Logback's `isStarted` gate is cleared first, so no
+   new event enters the multi-second teardown; an `append` that already
+   passed the gate is covered by the dispatchers' post-close accounting
+   (reason `shutdown`).
+2. **Send dispatchers, in parallel, ~2 s.** Each worker keeps sending
+   through the still-open producers for the **1 s** drain budget and is
+   then interrupted with **0.5 s** grace; whatever is still queued or in
+   flight diverts to the fallback with metric reason `shutdown`. The
+   budget is shared across classes, so it does not stack. CAUTION: up to
+   one send queue per active class drains into the single fallback
+   queue of the same default capacity; on a stop during an outage the
+   overflow is dropped and counted.
+3. **Producers, in parallel, 10 s** (plus a 0.5 s join margin). A
+   per-producer close failure does not prevent the others from closing
+   (partial cleanup beats none); failures are aggregated and surfaced as
+   a status warning.
+4. **Fallback dispatcher, 5 s drain + 0.5 s grace.** Only now, because
+   the two steps before it still feed the fallback. The remainder is
+   dropped and counted; a non-zero lifetime drop count is reported as a
+   status warning.
+5. **Metrics unbound** only after the dispatchers closed, so a scrape
+   during the teardown still sees the shutdown diversions and drops.
+6. **Fallback appender and encoder stopped.** The fallback appender
+   stays attached ([§7](#7-resilience-circuit-breaker-throttle-fallback)).
+
+Worst case ≈ 18 s in total — inside the Kubernetes default
 `terminationGracePeriodSeconds: 30` regardless of how many classes are
-active.
+active; the parallel closes are what keep the budgets from stacking.
+
+**No restart.** A `start()` on a running appender is ignored with a
+status warning; `start()` after `stop()` is refused with an error naming
+[ADR-0004](../adr/ADR-0004-appender-instances-are-not-restartable.md).
+Logback itself never restarts an appender instance — a reconfiguration
+stops the old instances and builds new ones — and the appender follows
+that lifecycle; program code that needs a fresh pipeline creates a new
+instance.
 
 ### Interaction with `delivery.timeout.ms`
 
@@ -612,7 +688,9 @@ kafkaAppender.bindMeterRegistry(meterRegistry, Tags.of("application", "payment-s
 
 `commonTags` is optional (default `Tags.empty()`) — the registry's own common
 tags are usually enough. Calling this on a stopped appender is a no-op with a
-status-manager warning.
+status-manager warning. A repeated call replaces the previous binding (its
+meters are removed first), so a context refresh or manual re-wiring never
+duplicates meters.
 
 ### Spring binding
 
@@ -631,8 +709,16 @@ class LoggingConfig {
 }
 ```
 
-Binding is idempotent (each appender bound once by reference identity).
-Pre-Spring log events are not counted.
+The binding decides on each appender's own bound state, not on instance
+identity: an appender that is already bound is skipped, one whose earlier
+bind failed is retried on the next call, and one that is not started yet
+is deferred. `bindAppenders()` is public and idempotent, which matters
+for the one gap: a Logback reconfiguration at runtime
+(`<configuration scan="true">`, a programmatic reset) replaces every
+appender instance, and neither Spring nor Logback fires a callback after
+the new configuration is in place — the replacement appenders stay dark
+until `bindAppenders()` is called again. Pre-Spring log events are not
+counted.
 
 ### Metric inventory
 
@@ -642,10 +728,10 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | Metric                                     | Type    | Extra tags                | Meaning |
 | ------------------------------------------ | ------- | ------------------------- | ------- |
 | `kafka.appender.events.accepted`           | Counter | `topic.class`             | Events entering `append()` (after class routing). |
-| `kafka.appender.events.dispatched`         | Counter | `topic.class`             | Events handed to `producer.send()` (callback outcome not yet known). |
+| `kafka.appender.events.dispatched`         | Counter | `topic.class`             | Events handed to `producer.send()` without a synchronous failure (broker outcome still unknown; an event the client rejected before `send()` returned counts as `send.error` fallback instead). |
 | `kafka.appender.events.fallback`           | Counter | `topic.class`, `reason`   | Events diverted from Kafka delivery (to the fallback if configured, otherwise dropped). |
 | `kafka.appender.send.duration`             | Timer   | `topic.class`, `outcome`  | Wall-clock from `send()` invocation to callback. |
-| `kafka.appender.fallback.dropped`          | Counter | —                         | Events dropped by the dispatcher (queue full / shutdown timeout). |
+| `kafka.appender.fallback.dropped`          | Counter | —                         | Events lost by the fallback dispatcher: queue full, `doAppend` threw, worker died, or shutdown remainder. |
 | `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape). |
 | `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity. |
 | `kafka.appender.send.queue.size`           | Gauge   | `topic.class`             | Current send-dispatcher queue depth for the class. |
@@ -680,13 +766,21 @@ appender **stopped** rather than throwing. Checked conditions:
 
 - `<encoder>` is present.
 - `<component>`, `<cmdbId>`, `<environment>` are non-blank.
+- `<sendQueueCapacity>` is positive.
 - Pipeline construction succeeds (`<kafkaProducerProperties>` parses,
-  `<defaultTopic>` is a valid Kafka topic name, all producers construct).
+  `<topicMapping>` passes the checks of [§5](#5-topic-routing), the
+  idempotence preconditions of [§4](#4-producer-property-composition)
+  hold, all producers construct).
 
-Two conditions are reported as **warnings** and do *not* stop the appender:
+A `start()` on a running appender is ignored with a warning; after
+`stop()` it is refused ([§8](#8-producer-lifecycle-and-shutdown)).
+
+Three conditions are reported as **warnings** and do *not* stop the appender:
 
 - **Mandatory-override conflicts** — a value of yours was overruled for a
   compliance-graded class ([§4](#4-producer-property-composition)).
+- **`max.block.ms` above the class cap** — clamped to the cap and reported
+  in the same format ([§4](#4-producer-property-composition)).
 - **Cleartext transport for a graded class** — a topic classified `AUDIT`
   or `FUNCTIONAL` is served by a producer whose `security.protocol` is
   unset or `PLAINTEXT`. Such records are enforced to be durable but travel
@@ -701,7 +795,11 @@ Two conditions are reported as **warnings** and do *not* stop the appender:
 
 In the hot path, an unexpected per-event failure (encoder bug, OOM) is
 logged **once** (subsequent occurrences suppressed to prevent log storms)
-and the event is routed to the fallback.
+and the event is routed to the fallback. Two runtime conditions are
+reported as warnings as well: a send or fallback worker that dies (an
+`Error` escaping the delivery) — the affected class then diverts every
+event with reason `send.error`, the fallback dispatcher drops and counts
+— and, at `stop()`, a non-zero lifetime fallback drop count.
 
 **Pipeline-construction failures report the exception type only.** The
 message and stack trace of a failing producer construction are authored by
@@ -750,6 +848,8 @@ bound.
 | `client.id` (unless set by operator)         | `tabellarium-<component>-<topicclass>` | code |
 | Fallback class for unmapped topics           | `TECHNICAL`                      | XML (`<defaultTopicClass>`) |
 | Partitioning key MDC source                  | `traceId`                        | code |
+| Partitioning key maximum length              | `128` characters (longer ⇒ no key) | code |
+| `max.block.ms` cap (per class)               | `500 ms`; `200 ms` for `PERFORMANCE` | code |
 | Circuit breaker: failure-rate threshold      | `50%`                            | code |
 | Circuit breaker: sliding window / min calls  | `20` / `10`                      | code |
 | Circuit breaker: open-state wait             | `30s`                            | code |
@@ -757,7 +857,7 @@ bound.
 | Half-open probe gap                          | `5 ms`                           | code |
 | Send dispatcher queue capacity (per class)   | `1024`                           | XML (`<sendQueueCapacity>`) |
 | Caller-data capture before async hand-off    | `false`                          | XML (`<includeCallerData>`) |
-| Send dispatcher drain on stop (parallel)     | `1 s` drain + margin, shared     | code |
+| Send dispatcher drain on stop (parallel)     | `1 s` drain + `0.5 s` interrupt grace, `2 s` shared budget | code |
 | Fallback dispatcher queue capacity           | `1024`                           | code |
 | Fallback dispatcher shutdown timeout         | `5 s` drain + `0.5 s` interrupt grace | code |
 | Producer close timeout                       | `10 s`                           | code |
@@ -830,7 +930,10 @@ TopicRouter.route(markers)                   → topic NAME      (e.g. "audit.se
 TopicTable.classFor(topicName)               → topic CLASS     (e.g. AUDIT)
    │
    ▼
-producer[class].send(record)  via  circuitBreaker[class]
+SendDispatcher[class].dispatch(…)            → bounded queue, O(1); the caller returns
+   │  (send worker thread of that class)
+   ▼
+producer[class].send(record)  via  throttle[class] + circuitBreaker[class]
 ```
 
 The class is never chosen directly. It is derived: **marker → topic name →
@@ -838,7 +941,8 @@ topic class → the producer and breaker for that class.** The producer for a
 class is built once at startup by merging your base properties with that
 class's overrides ([A.4](#a4-property-overrides-per-class)). Only classes that
 some topic actually resolves to are *active* — the appender creates a
-producer, breaker, and I/O thread only for those, never for dormant classes.
+producer, breaker, send worker and Kafka I/O thread only for those, never
+for dormant classes.
 (Without `<mapping>` elements everything resolves to the
 `<defaultTopicClass>` — `TECHNICAL` unless configured otherwise — which is
 then the only active class.)
@@ -889,20 +993,31 @@ Each class carries two sets of producer-property overrides:
 | `retries`            |  `10` |      —     |     —     |      —      |
 
 ¹ For AUDIT and FUNCTIONAL, `acks=all` (and, for AUDIT, `enable.idempotence=true`)
-is a **mandatory** override, not a default — you cannot weaken it.
+is a **mandatory** override, not a default — you cannot weaken it. For
+TECHNICAL and PERFORMANCE the `acks=1` default steps aside when you set
+`enable.idempotence=true` yourself ([§4](#4-producer-property-composition)).
+
+The `max.block.ms` default of each class is also its **cap**: a lower
+operator value is kept, a higher or unparseable one is clamped to the
+class value and reported at startup like a mandatory-override conflict.
 
 **Merge order** — for each active class the final producer properties are
-composed in three layers:
+composed in four layers, then validated:
 
 1. **Base properties** — everything from `<kafkaProducerProperties>`.
 2. **Default overrides** — applied via `putIfAbsent`; your value wins where
    both are present.
 3. **Mandatory overrides** — applied unconditionally; the enforced value wins,
    and any conflict is recorded.
+4. **The `max.block.ms` cap** — a higher value is clamped and recorded.
 
-(In the minimal configuration only layers 1 and 2 have any effect, because
-the sole active class, `TECHNICAL`, has no mandatory overrides — see
-[§4](#4-producer-property-composition).)
+With `enable.idempotence=true` in effect, `acks` must be `all`/`-1`,
+`retries` positive and `max.in.flight.requests.per.connection` at most
+5, otherwise `start()` fails with a named error.
+
+(In the minimal configuration only layers 1, 2 and 4 have any effect,
+because the sole active class, `TECHNICAL`, has no mandatory overrides —
+see [§4](#4-producer-property-composition).)
 
 **Mandatory-override violations** — when a value you set conflicts with a
 mandatory override, the appender logs a warning to Logback's status manager at
