@@ -11,6 +11,8 @@ import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
 import org.apache.kafka.clients.CommonClientConfigs
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Logback appender that ships log events to Kafka with per-topic-class
@@ -75,10 +77,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   new event enters the teardown, then closes the [SendDispatcher]s
  *   (their drain still sends through the open producers; the remainder
  *   diverts to the fallback), then the [ProducerRegistry] with its configured
- *   timeout, then the fallback dispatcher, stops the encoder, and
- *   completes via `super.stop()`. Per-resource close failures are
- *   recorded as warnings but do not prevent the rest of the shutdown
- *   sequence.
+ *   timeout, then the fallback dispatcher; only then are the metrics
+ *   unbound, so a scrape during the teardown still sees the shutdown
+ *   diversions and drops. Finally the fallback appender is stopped
+ *   (but stays attached, see [addAppender]) and the encoder is
+ *   stopped. Per-resource close failures are recorded as warnings but
+ *   do not prevent the rest of the shutdown sequence. CAUTION: the
+ *   send dispatchers' shutdown remainder (up to one queue capacity per
+ *   active class) drains into the single fallback queue of the same
+ *   default capacity; on a stop during an outage, overflow beyond that
+ *   is dropped and counted.
+ * - **Restart.** `start()` after `stop()` rebuilds the pipeline
+ *   against the still-attached fallback appender (restarting it) and
+ *   re-arms the one-shot hot-path error report. Metrics are not
+ *   rebound automatically - call [bindMeterRegistry] again.
  *
  * ## Why UnsynchronizedAppenderBase
  *
@@ -285,6 +297,17 @@ class KafkaAppender :
     private val inAppend = ThreadLocal.withInitial { false }
 
     /**
+     * Serializes [bindMeterRegistry] against the unbind in [stop]: a
+     * bind that passed the `isStarted` gate just before a stop must
+     * either complete before the unbind (which then removes its meters)
+     * or observe the stopped state and do nothing - never register
+     * meters after the unbind ran, which nothing would ever remove
+     * again. A lock rather than an atomic because both sides mutate the
+     * bindings' lists; it is never touched on the hot path.
+     */
+    private val bindLock = ReentrantLock()
+
+    /**
      * Guards the teardown in [stop] so a repeated stop (Logback may call
      * it more than once during context teardown) does not re-run the
      * close sequence - re-closing the dispatcher would double-count its
@@ -307,7 +330,21 @@ class KafkaAppender :
         if (!validateConfiguration()) {
             return // addError was already called for each failure
         }
+        // Restart symmetry: a previous stop() stopped the fallback
+        // appender (keeping it attached) and latched the one-shot error
+        // report; both are per-lifecycle and start fresh here.
         stopExecuted.set(false)
+        firstHotPathErrorLogged.set(false)
+        fallbackAppender?.let { fallback ->
+            if (!fallback.isStarted) {
+                try {
+                    fallback.start()
+                } catch (e: Exception) {
+                    addError("Failed to restart the fallback appender '${fallback.name}' (${e.javaClass.name}): ${e.message}", e)
+                    return
+                }
+            }
+        }
 
         // Start the encoder BEFORE the pipeline exists: encoders are
         // self-contained, so a failing encoder.start() aborts the
@@ -422,6 +459,7 @@ class KafkaAppender :
                 fallbackAppender?.let {
                     FallbackDispatcher(
                         it,
+                        reentryGuard = inAppend,
                         onWorkerDeath = { t ->
                             addWarn(
                                 "Fallback dispatcher worker died from ${t.javaClass.name}; " +
@@ -449,14 +487,16 @@ class KafkaAppender :
                             // claimDiversion shares the per-item exactly-once
                             // guard with the dispatcher, so a forced-shutdown
                             // divert and the sender's own error routing can
-                            // never both deliver the same event.
+                            // never both deliver the same event. The detached
+                            // claim object (not the PendingSend) is what the
+                            // Kafka callback retains - see DiversionClaim.
                             sender.send(
                                 topicClass,
                                 pending.topicName,
                                 pending.payload,
                                 pending.enrichment,
                                 pending.originalEvent,
-                                claimDiversion = pending::tryClaimDiversion,
+                                claimDiversion = pending.claim::tryClaim,
                             )
                         },
                         fallbackDispatcher = newFallbackDispatcher,
@@ -694,8 +734,6 @@ class KafkaAppender :
         // microseconds; the dispatchers' own post-close accounting
         // covers that residual window.)
         super.stop()
-        metricsBindings.unbind()
-        metrics = KafkaAppenderMetrics.NO_OP
         // Close the send dispatchers BEFORE the producer registry: their
         // graceful drain delivers the queued events through the still-
         // open producers; whatever cannot be sent in time diverts to the
@@ -729,14 +767,25 @@ class KafkaAppender :
         } catch (e: Exception) {
             addWarn("Error closing fallback dispatcher: ${e.message}", e)
         }
-        // Stop the attached fallback appender(s). Logback may or may not
-        // hold its own reference to the fallback appender; calling stop
-        // here guarantees its file handles and worker threads are
-        // released even if no other path closes it.
+        // Unbind the metrics only now: the dispatcher closes above are
+        // where the shutdown diversions and drops are counted, and a
+        // scrape during the (multi-second) teardown should still see
+        // them. Under the bind lock - see bindLock.
+        bindLock.withLock {
+            metricsBindings.unbind()
+            metrics = KafkaAppenderMetrics.NO_OP
+        }
+        // Stop the attached fallback appender. Logback may or may not
+        // hold its own reference to it; calling stop here guarantees its
+        // file handles and worker threads are released even if no other
+        // path closes it. Deliberately NOT detached: the slot must
+        // survive for a restart (start() starts it again), and the
+        // AppenderAttachable contract's detachAndStopAllAppenders stays
+        // available to callers who really want the slot cleared.
         try {
-            detachAndStopAllAppenders()
+            fallbackAppender?.stop()
         } catch (e: Exception) {
-            addWarn("Error stopping fallback appender(s): ${e.message}", e)
+            addWarn("Error stopping fallback appender: ${e.message}", e)
         }
         try {
             encoder?.stop()
@@ -825,24 +874,30 @@ class KafkaAppender :
         registry: MeterRegistry,
         commonTags: Iterable<Tag> = Tags.empty(),
     ) {
-        if (!isStarted) {
-            addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
-            return
+        bindLock.withLock {
+            // Re-checked under the lock: stop() flips isStarted before it
+            // takes the lock for the unbind, so a bind that arrives after
+            // that observes the stopped state here instead of registering
+            // meters nothing would remove.
+            if (!isStarted) {
+                addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
+                return
+            }
+            // A repeated bind (context refresh, manual re-wiring) replaces the
+            // previous registration - MetricsBindings tears it down first.
+            val impl =
+                metricsBindings.bind(
+                    registry = registry,
+                    commonTags = commonTags,
+                    appenderName = this.name,
+                    circuitBreakerRegistry = messageSender.circuitBreakerRegistry,
+                    producerRegistry = producerRegistry,
+                )
+            metrics = impl
+            messageSender.setMetrics(impl)
+            sendDispatchers.values.forEach { it.setMetrics(impl) }
+            fallbackDispatcher?.setMetrics(impl)
         }
-        // A repeated bind (context refresh, manual re-wiring) replaces the
-        // previous registration - MetricsBindings tears it down first.
-        val impl =
-            metricsBindings.bind(
-                registry = registry,
-                commonTags = commonTags,
-                appenderName = this.name,
-                circuitBreakerRegistry = messageSender.circuitBreakerRegistry,
-                producerRegistry = producerRegistry,
-            )
-        metrics = impl
-        messageSender.setMetrics(impl)
-        sendDispatchers.values.forEach { it.setMetrics(impl) }
-        fallbackDispatcher?.setMetrics(impl)
     }
 
     // -- AppenderAttachable<ILoggingEvent> ------------------------------
@@ -856,12 +911,20 @@ class KafkaAppender :
      * one fallback slot and the first one wins.
      *
      * **Ownership:** the KafkaAppender assumes it owns the attached
-     * fallback appender's lifecycle - [stop] stops it (via
-     * [detachAndStopAllAppenders]) to release file handles and worker
-     * threads. Do not attach an appender that is simultaneously
-     * referenced by other loggers unless a full-context shutdown is
-     * the only stop path in your deployment; a selective stop of this
-     * appender would silence the shared appender for everyone.
+     * fallback appender's lifecycle - [stop] stops it (keeping it
+     * attached, so a later [start] can start it again) to release file
+     * handles and worker threads. Do not attach an appender that is
+     * simultaneously referenced by other loggers unless a full-context
+     * shutdown is the only stop path in your deployment; a selective
+     * stop of this appender would silence the shared appender for
+     * everyone.
+     *
+     * **Self-logging:** the fallback appender must not log through
+     * SLF4J per delivered event. Its `doAppend` runs on the fallback
+     * dispatcher's worker, which carries this appender's reentry guard:
+     * such log events are dropped by [append] (no metrics, no fallback)
+     * instead of looping back into the pipeline. Logback's own file
+     * appenders report through the status manager and are unaffected.
      */
     override fun addAppender(newAppender: Appender<ILoggingEvent>) {
         if (fallbackAppender != null) {

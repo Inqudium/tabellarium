@@ -370,6 +370,69 @@ class ProducerPropertiesBuilderTest {
         }
 
         @Test
+        fun `should reject acks below all when idempotence is enabled`() {
+            // What is to be tested? Whether the named validation covers
+            //   the third idempotence precondition, acks=all - the one
+            //   an operator hits most easily, because acks=1 is a common
+            //   throughput tuning.
+            // How will the test case be deemed successful and why? Successful
+            //   if an explicit enable.idempotence=true together with
+            //   acks=1 on a class without the mandate throws an
+            //   IllegalArgumentException naming acks and idempotence.
+            // Why is it important to test this test case? Without the
+            //   check the Kafka client rejects the same combination with
+            //   a ConfigException whose text the appender withholds
+            //   unless <debug> is on - the operator then sees only the
+            //   exception type.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(
+                        ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG to "true",
+                        ProducerConfig.ACKS_CONFIG to "1",
+                    ),
+                )
+
+            // When / Then
+            assertThatThrownBy { builder.buildFor(TopicClass.TECHNICAL) }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("acks=1")
+                .hasMessageContaining("enable.idempotence=true")
+        }
+
+        @Test
+        fun `should not let the class acks default contradict an explicit idempotence request`() {
+            // What is to be tested? Whether the TECHNICAL/PERFORMANCE
+            //   acks=1 default steps aside when the operator explicitly
+            //   requests enable.idempotence=true, so the appender's own
+            //   default never manufactures the acks/idempotence conflict.
+            // How will the test case be deemed successful and why? Successful
+            //   if building TECHNICAL from a base that sets only
+            //   enable.idempotence=true yields no acks entry at all (the
+            //   Kafka default acks=all then applies) and no exception.
+            // Why is it important to test this test case? Before the fix,
+            //   exactly this minimal, reasonable configuration refused to
+            //   start with a withheld ConfigException - caused by a value
+            //   the operator never wrote.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG to "true"),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then: no acks default injected, idempotence kept
+            assertThat(result.properties)
+                .doesNotContainKey(ProducerConfig.ACKS_CONFIG)
+                .containsEntry(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true")
+            assertThat(result.mandatoryOverrideViolations).isEmpty()
+        }
+
+        @Test
         fun `should not apply the idempotence checks to classes without the mandate`() {
             // Given: the same tuning that AUDIT rejects
             val builder =

@@ -4,6 +4,7 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.util.Collections
@@ -65,7 +66,17 @@ class SendDispatcherTest {
      * everything enqueued up to that point is delivered before the
      * assertion).
      */
-    private fun newFallback(recorder: RecordingAppender) = FallbackDispatcher(recorder)
+    private fun newFallback(recorder: RecordingAppender) = FallbackDispatcher(recorder).also { openFallbacks += it }
+
+    /** Every fallback dispatcher a test created; closed after the test so no worker outlives it. */
+    private val openFallbacks = mutableListOf<FallbackDispatcher>()
+
+    @AfterEach
+    fun closeFallbacks() {
+        // close() is idempotent, so dispatchers a test already closed are fine.
+        openFallbacks.forEach { it.close() }
+        openFallbacks.clear()
+    }
 
     // -- Tests ----------------------------------------------------------
 

@@ -4,9 +4,12 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.errors.InvalidTopicException
 import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.errors.SerializationException
@@ -15,10 +18,13 @@ import org.apache.kafka.common.errors.TopicAuthorizationException
 import org.apache.kafka.common.header.internals.RecordHeader
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.Collections
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicLong
 
 class ResilientMessageSenderTest {
@@ -35,13 +41,40 @@ class ResilientMessageSenderTest {
      */
     private class TestFactory(
         private val autoComplete: Boolean = true,
+        /**
+         * Optional wrapper around each created MockProducer - the seam
+         * for producer doubles that model client behavior MockProducer
+         * lacks (e.g. the synchronous error callback).
+         */
+        private val wrap: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
     ) : ProducerFactory {
         val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
 
         override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
             val mock = MockProducer(autoComplete, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
             createdProducers += mock
-            return mock
+            return wrap(mock)
+        }
+    }
+
+    /**
+     * Models the Kafka client's ApiException path (kafka-clients 4.x,
+     * `KafkaProducer.doSend`): metadata not available within
+     * max.block.ms, buffer exhausted, record too large. The client
+     * invokes the callback with the exception SYNCHRONOUSLY on the
+     * calling thread and returns a failed future - it does not throw.
+     * MockProducer has no mode for this, so the double implements it.
+     */
+    private class SynchronousCallbackErrorProducer(
+        private val mock: MockProducer<ByteArray, ByteArray>,
+        private val error: Exception,
+    ) : Producer<ByteArray, ByteArray> by mock {
+        override fun send(
+            record: ProducerRecord<ByteArray, ByteArray>,
+            callback: Callback?,
+        ): Future<RecordMetadata> {
+            callback?.onCompletion(null, error)
+            return CompletableFuture<RecordMetadata>().apply { completeExceptionally(error) }
         }
     }
 
@@ -122,6 +155,15 @@ class ResilientMessageSenderTest {
         fun kinds(): List<String> = synchronized(events) { events.map { it.kind } }
     }
 
+    /** Every context a test built; closed after the test so no dispatcher worker or producer outlives it. */
+    private val openContexts = mutableListOf<SenderContext>()
+
+    @AfterEach
+    fun closeContexts() {
+        openContexts.forEach { it.close() }
+        openContexts.clear()
+    }
+
     private fun newSender(
         autoComplete: Boolean = true,
         activeClasses: Set<TopicClass> = setOf(TopicClass.AUDIT),
@@ -129,8 +171,9 @@ class ResilientMessageSenderTest {
         halfOpenProbeGap: Duration = ResilientMessageSender.DEFAULT_HALF_OPEN_PROBE_GAP,
         nanoTimeSource: () -> Long = System::nanoTime,
         cbRegistry: CircuitBreakerRegistry = CircuitBreakerRegistry.ofDefaults(),
+        wrapProducer: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
     ): SenderContext {
-        val factory = TestFactory(autoComplete)
+        val factory = TestFactory(autoComplete, wrapProducer)
         val registry =
             ProducerRegistry.create(
                 propertiesBuilder = ProducerPropertiesBuilder(baseProperties),
@@ -150,7 +193,7 @@ class ResilientMessageSenderTest {
                 halfOpenProbeGap = halfOpenProbeGap,
                 nanoTimeSource = nanoTimeSource,
             )
-        return SenderContext(sender, factory, cbRegistry, fallback, registry)
+        return SenderContext(sender, factory, cbRegistry, fallback, registry, dispatcher).also { openContexts += it }
     }
 
     private data class SenderContext(
@@ -159,7 +202,16 @@ class ResilientMessageSenderTest {
         val circuitBreakerRegistry: CircuitBreakerRegistry,
         val fallback: RecordingAppender?,
         val registry: ProducerRegistry,
-    )
+        val dispatcher: FallbackDispatcher?,
+    ) : AutoCloseable {
+        override fun close() {
+            // Order as in the appender: producers first (they can still
+            // divert into the dispatcher), then the dispatcher drains.
+            runCatching { registry.close() }
+            dispatcher?.close()
+            fallback?.stop()
+        }
+    }
 
     private val basicEnrichment =
         EnrichedRecord(
@@ -391,11 +443,28 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should silently drop the event when send throws and no fallback is configured`() {
+            // What is to be tested? The "no fallback" operator choice on
+            //   the synchronous-throw path: the event is dropped without
+            //   an exception escaping, but every accounting hook still
+            //   fires exactly once - the drop is silent for the caller,
+            //   not for the metrics.
+            // How will the test case be deemed successful and why? Successful
+            //   if send returns normally and the metrics show exactly one
+            //   send.completed(error) and one fallback(send.error) with no
+            //   dispatched - so a regression that swallowed the failure
+            //   before the hooks, or counted it as dispatched, is caught.
+            // Why is it important to test this test case? Without a
+            //   fallback the metrics are the ONLY trace of the loss; a
+            //   test that merely proves "does not throw" would let them
+            //   silently go dark.
+
             // Given
             val ctx = newSender(fallback = null)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
             ctx.factory.createdProducers[0].close()
 
-            // When / Then: must not throw
+            // When: must not throw
             ctx.sender.send(
                 topicClass = TopicClass.AUDIT,
                 topicName = "audit-events",
@@ -403,6 +472,101 @@ class ResilientMessageSenderTest {
                 enrichment = basicEnrichment,
                 originalEvent = newTestLoggingEvent(),
             )
+
+            // Then: accounted exactly once as a send error, never as dispatched
+            assertThat(metrics.kinds()).containsExactly("send.completed", "fallback")
+            assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
+            assertThat(metrics.events.single { it.kind == "fallback" }.detail).isEqualTo("send.error")
+        }
+    }
+
+    @Nested
+    inner class `Synchronous callback error handling` {
+        @Test
+        fun `should count a send the client failed through the synchronous callback as fallback only, never as dispatched`() {
+            // What is to be tested? The accounting on the Kafka client's
+            //   ApiException path: for a metadata timeout (max.block.ms
+            //   elapsed - the standard broker-outage symptom), buffer
+            //   exhaustion or an oversized record, kafka-clients 4.x
+            //   invokes the callback with the exception synchronously
+            //   on the calling thread and returns without throwing. The
+            //   sender must not count such an event as dispatched on
+            //   top of the fallback the callback already recorded.
+            // How will the test case be deemed successful and why? Successful
+            //   if the captured metrics hold exactly one
+            //   send.completed(error) and one fallback(send.error) and
+            //   NO dispatched, the breaker saw exactly one failure, and
+            //   the event reached the fallback appender exactly once.
+            //   MockProducer cannot model this path (it either throws or
+            //   defers to errorNext), hence the dedicated producer double.
+            // Why is it important to test this test case? Before the fix,
+            //   exactly the events operators inspect during an outage
+            //   (the ~10 until the breaker opens, plus every half-open
+            //   probe) counted as both dispatched and fallback, breaking
+            //   the conservation the dashboards are built on.
+
+            // Given: a producer that fails every send through the
+            //   synchronous callback
+            val ctx =
+                newSender(
+                    cbRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry(),
+                    wrapProducer = { mock -> SynchronousCallbackErrorProducer(mock, TimeoutException("Topic audit-events not present in metadata after 500 ms.")) },
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+            val breaker =
+                ctx.circuitBreakerRegistry.circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
+
+            // When
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "metadata timeout"),
+            )
+
+            // Then: fallback only - accepted = dispatched + fallback holds
+            assertThat(metrics.kinds()).containsExactly("send.completed", "fallback")
+            assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
+            assertThat(metrics.events.single { it.kind == "fallback" }.detail).isEqualTo("send.error")
+            assertThat(breaker.metrics.numberOfFailedCalls).isEqualTo(1)
+            pollUntil { ctx.fallback!!.events.size == 1 }
+            assertThat(
+                ctx.fallback!!
+                    .events
+                    .single()
+                    .message,
+            ).isEqualTo("metadata timeout")
+        }
+
+        @Test
+        fun `should still count an asynchronously completed send as dispatched`() {
+            // Given: the regular deferred-callback producer - the
+            //   complement of the previous test, pinning that the
+            //   synchronous-failure detection does not suppress
+            //   dispatched for a send whose outcome is still pending
+            val ctx = newSender(autoComplete = false)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+
+            // Then: dispatched, outcome unknown so far
+            assertThat(metrics.kinds()).containsExactly("dispatched")
+
+            // And: a later asynchronous error adds the send.error fallback
+            //   on top of the dispatched count - a later outcome of the
+            //   same event, documented as such on eventAccepted
+            ctx.factory.createdProducers[0].errorNext(RuntimeException("leader gone"))
+            assertThat(metrics.kinds()).containsExactly("dispatched", "send.completed", "fallback")
         }
     }
 

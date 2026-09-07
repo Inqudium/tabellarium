@@ -48,10 +48,24 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * - Construction starts the worker thread immediately. The thread is
  *   marked daemon so it does not prevent JVM shutdown.
- * - [close] signals the worker to stop, waits up to [shutdownTimeoutMs]
- *   milliseconds for it to drain remaining events, then returns. Events
- *   still in the queue after the timeout are dropped (counted in
- *   [droppedEventCount]).
+ * - [close] signals the worker to stop and lets it drain the queue by
+ *   delivering for up to [shutdownTimeoutMs] milliseconds; only then is
+ *   the worker interrupted, with a short bounded grace for a delivery
+ *   parked in `doAppend`. Events still queued or in flight after that
+ *   are dropped (counted in [droppedEventCount]). Invariant: the drain
+ *   gets the whole budget - the interrupt ends the drain, so it must
+ *   never come before the budget has been used.
+ *
+ * ## Threading and self-logging
+ *
+ * The worker marks itself with the appender's [reentryGuard] for its
+ * entire lifetime, exactly like the [SendDispatcher] worker: a fallback
+ * appender that logs through SLF4J per delivered event would otherwise
+ * feed each such log back through the root logger into
+ * [KafkaAppender.append], on to Kafka and - while Kafka is down - back
+ * into this very queue, a loop that saturates both queues for the
+ * duration of an outage. With the mark, [KafkaAppender.append] drops
+ * events raised on this thread.
  *
  * @param fallbackAppender The appender to which events are dispatched.
  * @param queueCapacity Maximum number of events in flight. Default 1024
@@ -59,7 +73,11 @@ import java.util.concurrent.atomic.AtomicReference
  *                      references to MDC, throwable, etc.) and
  *                      tolerance for brief fallback slowness.
  * @param shutdownTimeoutMs Time allowed in [close] for the worker to
- *                          drain. Default 5 seconds.
+ *                          drain by delivering. Default 5 seconds; the
+ *                          bounded interrupt grace comes on top.
+ * @param reentryGuard The appender's per-thread reentry guard; the
+ *                     worker sets it once at startup. Null disables
+ *                     the marking (tests).
  * @param onWorkerDeath Invoked when the worker thread dies from a
  *                      [Throwable] the delivery loop does not handle
  *                      (an [Error] such as OOM - [Exception]s are
@@ -78,6 +96,7 @@ internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     private val shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    private val reentryGuard: ThreadLocal<Boolean>? = null,
     private val onWorkerDeath: (Throwable) -> Unit = {},
 ) : AutoCloseable {
     private val queue: LinkedBlockingQueue<ILoggingEvent> = LinkedBlockingQueue(queueCapacity)
@@ -206,13 +225,14 @@ internal class FallbackDispatcher(
             return
         }
         running = false
-        // Phase 1: graceful drain attempt.
-        // The worker's poll(100, MS) wakes up on its next timeout and
-        // sees running=false; it then enters the drain-on-close loop
-        // and processes any remaining events without blocking calls.
-        // We give it up to GRACEFUL_DRAIN_WAIT_MS for this - long enough
-        // for the typical case (fast appender, small queue), short
-        // enough that a hung appender does not stretch shutdown.
+        // Phase 1: graceful drain. The worker's poll(100, MS) wakes up
+        // on its next timeout, sees running=false, enters the
+        // drain-on-close loop and keeps DELIVERING until the queue is
+        // empty. It gets the whole shutdown budget for that - the
+        // interrupt below ends the drain (an interrupted worker delivers
+        // at most one more event), so sending it early would throw away
+        // the rest of the budget together with everything still queued.
+        // Same two-phase shape as SendDispatcher.close.
         //
         // An interrupt of the closing thread (e.g. an expiring container
         // shutdown budget) must not abort the teardown half-way: the
@@ -220,28 +240,27 @@ internal class FallbackDispatcher(
         // below still run without further blocking waits, and the
         // interrupt flag is restored before returning.
         var interrupted = false
-        val gracefulWait = GRACEFUL_DRAIN_WAIT_MS.coerceAtMost(shutdownTimeoutMs)
         try {
-            worker.join(gracefulWait)
+            worker.join(shutdownTimeoutMs)
         } catch (_: InterruptedException) {
             interrupted = true
         }
 
         if (worker.isAlive) {
-            // Phase 2: forced exit.
-            // Worker did not finish draining in time. Interrupt to wake
-            // it from poll(); whatever it is currently doing (blocked
-            // in doAppend, processing an event) is its own problem now.
+            // Phase 2: forced exit. The budget is used up; interrupt to
+            // wake the worker from poll() or from an interruptible
+            // doAppend, and give the interrupt a short bounded grace to
+            // take effect. Whatever the worker is still doing after that
+            // (parked in non-interruptible I/O) is its own problem now.
             worker.interrupt()
-            val remainingTimeout = shutdownTimeoutMs - gracefulWait
             // CAUTION: Thread.join(0) means "wait forever", not "do not
-            // wait" - a Java API trap. Only join if we actually have
-            // remaining budget and were not interrupted ourselves. If we
-            // don't, accept that the worker may outlive us; it is a
-            // daemon thread, so the JVM can still exit.
-            if (remainingTimeout > 0 && !interrupted) {
+            // wait" - a Java API trap; the grace is a positive constant.
+            // Skip the wait if we were interrupted ourselves and accept
+            // that the worker may outlive us; it is a daemon thread, so
+            // the JVM can still exit.
+            if (!interrupted) {
                 try {
-                    worker.join(remainingTimeout)
+                    worker.join(INTERRUPT_GRACE_MS)
                 } catch (_: InterruptedException) {
                     interrupted = true
                 }
@@ -270,6 +289,11 @@ internal class FallbackDispatcher(
     }
 
     private fun runWorker() {
+        // Mark this thread for the appender's reentry guard: anything the
+        // fallback appender logs through SLF4J from inside doAppend now
+        // happens here, and append() must drop it. Set once - the worker
+        // never legitimately logs through the appender.
+        reentryGuard?.set(true)
         while (running) {
             val event =
                 try {
@@ -340,15 +364,15 @@ internal class FallbackDispatcher(
         /** Default queue capacity. Tuned for typical microservice log volumes. */
         const val DEFAULT_QUEUE_CAPACITY: Int = 1024
 
-        /** Default time allowed in close() for the worker to drain, in milliseconds. */
+        /** Default time allowed in close() for the worker to drain by delivering, in milliseconds. */
         const val DEFAULT_SHUTDOWN_TIMEOUT_MS: Long = 5000
 
         /**
-         * How long [close] waits for the worker to drain gracefully before
-         * forcibly interrupting. Picked to be slightly longer than the
-         * worker's poll() interval (100 ms) so the worker has time to
-         * observe `running=false` and enter the drain loop.
+         * How long [close] waits after interrupting the worker for the
+         * interrupt to take effect (a delivery parked in an interruptible
+         * `doAppend` unblocks) before counting the remainder as dropped
+         * itself. Mirrors [SendDispatcher]'s grace.
          */
-        private const val GRACEFUL_DRAIN_WAIT_MS: Long = 200
+        private const val INTERRUPT_GRACE_MS: Long = 500
     }
 }

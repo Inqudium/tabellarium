@@ -7,7 +7,7 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 | Metric                             | Tags                                | When it is incremented                                       |
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
 | `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Every event that enters `KafkaAppender.append()` (after routing to its topic class) |
-| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was successfully handed to `producer.send()` (callback outcome still unknown) |
+| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was handed to `producer.send()` without a synchronous failure (callback outcome still unknown); an event the client rejected before `send()` returned - metadata timeout, buffer exhausted, record too large - counts as `events.fallback{reason="send.error"}` instead, never as both |
 | `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event was routed past Kafka (to the fallback appender if configured, otherwise dropped) |
 | `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher had to drop (queue full or shutdown timeout) |
 

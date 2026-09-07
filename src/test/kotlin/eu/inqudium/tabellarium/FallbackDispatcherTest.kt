@@ -164,7 +164,10 @@ class FallbackDispatcherTest {
             //   another (heap exhaustion). The drop is the safe choice.
 
             // Given: a tiny-capacity dispatcher with a blocking appender
-            //   so events accumulate in the queue rather than being drained
+            //   so events accumulate in the queue rather than being drained.
+            //   The worker is anchored in doAppend on a first event before
+            //   the queue is filled, so the accounting is exact: capacity 2
+            //   admits exactly two more, the rest are dropped.
             val blockingAppender = BlockingAppender()
             val dispatcher =
                 FallbackDispatcher(
@@ -172,19 +175,19 @@ class FallbackDispatcherTest {
                     queueCapacity = 2,
                 )
             try {
-                // When: enqueue 5 events
+                dispatcher.enqueue(newTestLoggingEvent(message = "in-flight"))
+                pollUntil { blockingAppender.inAppend.get() }
+
+                // When: enqueue 5 more events against a pinned worker
                 val accepted =
                     (1..5).map {
                         dispatcher.enqueue(newTestLoggingEvent(message = "event-$it"))
                     }
 
-                // Then: the first events fit, the last get dropped.
-                //   The worker may also pull one event off the queue and
-                //   block in doAppend, which frees a slot. So we expect
-                //   *at least* 2 accepted and *at least* 1 dropped.
-                assertThat(accepted.count { it }).isGreaterThanOrEqualTo(2)
-                assertThat(accepted.count { !it }).isGreaterThanOrEqualTo(1)
-                assertThat(dispatcher.droppedEventCount).isGreaterThanOrEqualTo(1)
+                // Then: exactly the capacity fits, exactly the surplus is
+                //   dropped and counted
+                assertThat(accepted).containsExactly(true, true, false, false, false)
+                assertThat(dispatcher.droppedEventCount).isEqualTo(3L)
             } finally {
                 blockingAppender.unblock()
                 dispatcher.close()
@@ -284,6 +287,53 @@ class FallbackDispatcherTest {
         }
 
         @Test
+        fun `should keep delivering for the whole shutdown budget before dropping the remainder`() {
+            // What is to be tested? That close() lets the worker drain by
+            //   DELIVERING for the full shutdownTimeoutMs before it
+            //   interrupts - the interrupt ends the drain, so sending it
+            //   early would drop everything still queued although budget
+            //   remains.
+            // How will the test case be deemed successful and why? Successful
+            //   if a queue whose delivery takes well over the former 200 ms
+            //   graceful window but well under the configured budget is
+            //   delivered completely, with zero drops. The slow appender
+            //   sleeps per event to model a slow disk; the margins on
+            //   both sides (about 600 ms of delivery against a 5 s budget)
+            //   make the outcome insensitive to scheduling jitter.
+            // Why is it important to test this test case? Before the fix,
+            //   the dispatcher interrupted its worker after 200 ms and then
+            //   waited the remaining 4.8 s for nothing - on a pod shutdown
+            //   with a slow fallback appender, most of the queued events
+            //   (typically the ones a Kafka outage had just diverted) were
+            //   dropped with 96 % of the budget unused.
+
+            // Given: an appender needing ~20 ms per event, 30 events queued
+            val slowAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    val delivered = AtomicInteger(0)
+
+                    init {
+                        context = testContext
+                        start()
+                    }
+
+                    override fun append(event: ILoggingEvent) {
+                        Thread.sleep(20)
+                        delivered.incrementAndGet()
+                    }
+                }
+            val dispatcher = FallbackDispatcher(slowAppender, shutdownTimeoutMs = 5000)
+            (1..30).forEach { dispatcher.enqueue(newTestLoggingEvent(message = "slow-$it")) }
+
+            // When
+            dispatcher.close()
+
+            // Then: everything was delivered within the budget, nothing dropped
+            assertThat(slowAppender.delivered.get()).isEqualTo(30)
+            assertThat(dispatcher.droppedEventCount).isZero()
+        }
+
+        @Test
         fun `should count an event as dropped when the fallback appender throws`() {
             // What is to be tested? Whether an event whose doAppend throws
             //   is accounted as dropped instead of silently vanishing -
@@ -336,9 +386,10 @@ class FallbackDispatcherTest {
             //   counting turns the primary loss-diagnostics signal into a
             //   lie precisely during shutdown investigations.
 
-            // Given: a dispatcher whose worker is anchored in a blocked
-            //   doAppend so events remain queued at close time
-            val blockingAppender = BlockingAppender()
+            // Given: a dispatcher whose worker is anchored in a blocked,
+            //   non-interruptible doAppend so the trigger stays pinned and
+            //   the three later events remain queued at close time
+            val blockingAppender = BlockingAppender(interruptible = false)
             val dispatcher =
                 FallbackDispatcher(
                     fallbackAppender = blockingAppender,
@@ -353,12 +404,58 @@ class FallbackDispatcherTest {
             val afterFirstClose = dispatcher.droppedEventCount
             dispatcher.close()
 
-            // Then
-            assertThat(afterFirstClose).isGreaterThanOrEqualTo(1L)
+            // Then: the first close counted exactly the pinned trigger
+            //   (claimed in flight) plus the three queued events; the
+            //   second close changed nothing
+            assertThat(afterFirstClose).isEqualTo(4L)
             assertThat(dispatcher.droppedEventCount).isEqualTo(afterFirstClose)
 
             // Cleanup
             blockingAppender.unblock()
+        }
+    }
+
+    @Nested
+    inner class `Reentry guard` {
+        @Test
+        fun `should mark the worker thread with the reentry guard`() {
+            // What is to be tested? Whether the fallback worker carries the
+            //   appender's reentry-guard ThreadLocal, like the send worker
+            //   does, so a fallback appender that logs through SLF4J from
+            //   doAppend cannot feed those events back into the pipeline.
+            // How will the test case be deemed successful and why? Successful
+            //   if the guard reads true inside the fallback appender's
+            //   append, i.e. on the worker thread.
+            // Why is it important to test this test case? Without the mark,
+            //   an SLF4J-logging fallback appender combined with a Kafka
+            //   outage produces a queue-saturating loop: fallback log ->
+            //   root logger -> appender -> Kafka (down) -> fallback -> log.
+
+            // Given
+            val guard = ThreadLocal.withInitial { false }
+            val guardSeen = AtomicReference<Boolean?>()
+            val probingAppender =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = testContext
+                        start()
+                    }
+
+                    override fun append(event: ILoggingEvent) {
+                        guardSeen.set(guard.get())
+                    }
+                }
+            val dispatcher = FallbackDispatcher(probingAppender, reentryGuard = guard)
+            try {
+                // When
+                dispatcher.enqueue(newTestLoggingEvent(message = "probe"))
+
+                // Then
+                pollUntil { guardSeen.get() != null }
+                assertThat(guardSeen.get()).isTrue()
+            } finally {
+                dispatcher.close()
+            }
         }
     }
 

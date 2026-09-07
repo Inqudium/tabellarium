@@ -128,10 +128,29 @@ internal class SendDispatcher(
          * the fallback twice - once as `shutdown` by close(), once as
          * `send.error` by the sender when the parked send later
          * unblocks with an exception.
+         *
+         * Held as a detached object so the sender can hand exactly this
+         * claim to the Kafka callback without keeping the whole
+         * [PendingSend] - and with it the payload copy - reachable for
+         * as long as the client buffers the record.
          */
+        val claim: DiversionClaim = DiversionClaim()
+
+        fun tryClaimDiversion(): Boolean = claim.tryClaim()
+    }
+
+    /**
+     * The compare-and-set behind [PendingSend.tryClaimDiversion], on its
+     * own so that a reference to it retains nothing but one boolean.
+     * Safety: this is what the send callback captures; the callback
+     * lives until the Kafka client completes the record, which under a
+     * slow broker can be `delivery.timeout.ms` - retaining the
+     * [PendingSend] there would double the per-record heap footprint.
+     */
+    internal class DiversionClaim {
         private val diverted = AtomicBoolean(false)
 
-        fun tryClaimDiversion(): Boolean = diverted.compareAndSet(false, true)
+        fun tryClaim(): Boolean = diverted.compareAndSet(false, true)
     }
 
     private val queue: LinkedBlockingQueue<PendingSend> = LinkedBlockingQueue(queueCapacity)

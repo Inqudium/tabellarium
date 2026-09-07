@@ -36,19 +36,28 @@ import java.time.Duration
 internal interface KafkaAppenderMetrics {
     /**
      * Recorded once per event that enters [KafkaAppender.append].
-     * Counted regardless of what happens downstream, so
-     * accepted = dispatched + fallback holds. When a hot-path failure
-     * occurs before routing resolved the topic class, the event is
-     * counted under [TopicClass.TECHNICAL] - the same default the
-     * failure metric uses. Events dropped by the appender's reentry
-     * and self-logging guards never enter the pipeline and are not
-     * counted.
+     * Counted regardless of what happens downstream. Invariant at the
+     * hand-off boundary: every accepted event is counted exactly once
+     * as either [eventDispatched] or [eventFallback], so
+     * accepted = dispatched + fallback holds *up to* the fallbacks with
+     * reason `send.error` that an asynchronous callback reports for an
+     * already-dispatched event (those are a later outcome, not a second
+     * event; they are also visible as `send.duration{outcome=error}`).
+     * When a hot-path failure occurs before routing resolved the topic
+     * class, the event is counted under [TopicClass.TECHNICAL] - the
+     * same default the failure metric uses. Events dropped by the
+     * appender's reentry and self-logging guards never enter the
+     * pipeline and are not counted.
      */
     fun eventAccepted(topicClass: TopicClass)
 
     /**
-     * Recorded once per event that was successfully handed to
-     * [org.apache.kafka.clients.producer.Producer.send]. Note: this
+     * Recorded once per event that was handed to
+     * [org.apache.kafka.clients.producer.Producer.send] without a
+     * synchronous failure - neither a throw nor an error the client
+     * reported through the callback before `send` returned (metadata
+     * timeout, buffer exhausted, record too large). Such events are
+     * counted as [eventFallback] instead, never as both. Note: this
      * does NOT mean the record reached the broker - the Kafka callback
      * outcome is captured by [sendCompleted].
      */
