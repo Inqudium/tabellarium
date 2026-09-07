@@ -55,16 +55,14 @@ import java.util.concurrent.atomic.AtomicLong
  * loop that saturates both queues for the duration of an outage.
  *
  * @param fallbackAppender The appender to which events are dispatched.
- * @param queueCapacity Maximum number of events in flight. Default 1024
- *                      is a balance between memory (each event holds
- *                      references to MDC, throwable, etc.) and
- *                      tolerance for brief fallback slowness.
- * @param shutdownTimeoutMs Time allowed in [close] for the worker to
- *                          drain by delivering. Default 5 seconds; the
- *                          skeleton's bounded interrupt grace comes on
- *                          top.
- * @param reentryGuard The appender's per-thread reentry guard; null
- *                     disables the marking (tests).
+ * @param queueCapacity Passed through to [BoundedWorkerDispatcher];
+ *                      the default of 1024 balances memory (each event
+ *                      holds MDC, throwable, ...) against tolerance for
+ *                      brief fallback slowness.
+ * @param shutdownTimeoutMs Passed through to [BoundedWorkerDispatcher]
+ *                          as its drain budget; here the drain means
+ *                          delivering to the fallback appender.
+ * @param reentryGuard Passed through to [BoundedWorkerDispatcher].
  * @param onWorkerDeath Invoked after a worker death was accounted for
  *                      (in-flight and queued events counted as
  *                      dropped); the appender reports it to the status

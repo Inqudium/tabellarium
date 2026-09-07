@@ -18,43 +18,26 @@ import java.util.Properties
  * ssl.keystore.location=/cert/identity.pkcs12
  * ```
  *
- * The element text is parsed as standard `.properties` content,
- * including:
- *
- * - **Leading whitespace** (XML indentation) - handled by the underlying
- *   [Properties.load] implementation.
- * - **Blank lines** for visual grouping - skipped by [Properties.load].
- * - **Helm/template values** like `bootstrap.servers={{ .Values.logback_kafka }}` -
- *   already substituted by the renderer before the parser sees them.
- *
  * ## Parsing rules
  *
- * Delegated to [Properties.load], which implements the full Java
- * `.properties` specification:
+ * The text is standard Java `.properties` content, parsed by
+ * [Properties.load] with exactly its specification (XML indentation,
+ * blank lines, `#`/`!` comments, first `=`/`:` as the separator with
+ * later ones part of the value, backslash continuations, escape
+ * decoding, empty values); Helm-style template values are substituted
+ * by the renderer before the parser sees them. Two behaviors are this
+ * function's own, not the specification's: trailing whitespace of a
+ * value is trimmed (see the body), and a malformed Unicode escape is
+ * rewrapped as an [IllegalArgumentException] naming the element. The
+ * case that matters most to operators is a SASL JAAS configuration
+ * split over continuation lines:
  *
- * - Whitespace around keys and values is trimmed.
- * - Blank lines are skipped.
- * - Lines starting with `#` or `!` are treated as comments and skipped.
- * - The first `=` (or `:`) on a line is treated as the key/value
- *   separator; subsequent occurrences are part of the value. This is
- *   essential for SASL JAAS configurations such as
- *   `sasl.jaas.config=...required username="..." password="...";`.
- * - **Multi-line continuations** with a trailing backslash are supported.
- *   This is the typical layout for long JAAS configurations:
- *
- *   ```
- *   sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule \
- *       required \
- *       username="serviceuser" \
- *       password="${KAFKA_PASSWORD}";
- *   ```
- *
- * - Unicode escapes (`\uXXXX`) and standard escape sequences (`\n`,
- *   `\t`, `\\`) in keys and values are decoded by [Properties.load].
- *   This is generally what operators expect from a `.properties`-style
- *   input.
- * - Empty values are accepted (`client.id=` is valid; `client.id`
- *   becomes the empty string).
+ * ```
+ * sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule \
+ *     required \
+ *     username="serviceuser" \
+ *     password="${KAFKA_PASSWORD}";
+ * ```
  *
  * ## Order of the returned map
  *

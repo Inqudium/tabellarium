@@ -271,8 +271,8 @@ class KafkaAppender :
      *   `org.apache.kafka` at DEBUG and the appender attached at the
      *   root logger, each such log would feed a new event back into
      *   the pipeline - a feedback loop that amplifies exactly during
-     *   broker trouble. (The network-thread-name guard below cannot
-     *   catch it: the event carries the worker's thread name.)
+     *   broker trouble. (The network-thread-name guard in [append]
+     *   cannot catch it: the event carries the worker's thread name.)
      * - **Application (caller) threads** (set around each [append]
      *   call): the remaining synchronous work - `encoder.encode`,
      *   metric hooks - can itself log through SLF4J (an encoder's
@@ -286,16 +286,12 @@ class KafkaAppender :
      *
      * **Deliberately also active on virtual threads.** Skipping the
      * guard for virtual callers (our own workers are always platform
-     * threads) was considered and rejected: the recurring per-event
-     * cost sits on the caller side, which is exactly where virtual
-     * threads occur and where the recursion protection is needed -
-     * safety must not depend on the thread type. The VT cost is one
-     * `ThreadLocalMap` entry per virtual thread that ever logs
-     * (`Boolean.TRUE`/`FALSE` are cached, so no boxing), transient
-     * with the thread. `ScopedValue` would be the structured,
-     * VT-friendly replacement, but is final only since JDK 25 - a
-     * candidate for a future baseline bump, not for the Java 21
-     * target. See the 2026-08-29 performance analysis, finding 6.
+     * threads) was considered and rejected: the recursion protection is
+     * needed exactly where virtual threads occur - safety must not
+     * depend on the thread type. The cost is one cached-Boolean
+     * `ThreadLocal` entry per thread that ever logs; the derivation and
+     * the `ScopedValue` outlook (JDK 25+) are in
+     * `docs/assessment/PERF_ANALYSIS-2026-08-29T11-01-08.md`, finding 6.
      */
     private val inAppend = ThreadLocal.withInitial { false }
 
@@ -363,7 +359,7 @@ class KafkaAppender :
             buildPipeline()
         } catch (e: Exception) {
             // buildPipeline rolled its own resources back; the encoder
-            // started above is the only thing left to release.
+            // started before it is the only thing left to release.
             runCatching { encoder?.stop() }
             // The exception text originates in the Kafka client and is
             // built from credential-bearing configuration. Kafka masks
@@ -423,6 +419,20 @@ class KafkaAppender :
         return ok
     }
 
+    /**
+     * Builds the pipeline as one transaction: parse, route and classify
+     * (pure, nothing to roll back), then create the real resources -
+     * producers, fallback worker, one send dispatcher per active class
+     * - and publish them to the fields only on full success.
+     *
+     * Invariant: a construction failure after the first real resource
+     * exists rolls back everything created so far in reverse ownership
+     * order, mirroring [stop] (send dispatchers, producer registry,
+     * fallback dispatcher), so a failed or reloaded configuration never
+     * leaks producers or daemon workers that only an external [stop]
+     * could reach. The encoder is started by [start] before this
+     * method runs and released by [start] if this method throws.
+     */
     private fun buildPipeline() {
         val baseProperties = parseKafkaProducerProperties(kafkaProducerProperties)
         topicRouter = topicMapping.toTopicRouter()
@@ -443,12 +453,8 @@ class KafkaAppender :
                 activeTopicClasses = topicTable.activeTopicClasses,
                 producerFactory = producerFactory,
             )
-        // From here on real resources exist (producers, worker threads).
-        // Any later construction failure rolls them back in reverse
-        // ownership order - mirroring stop() - so a failed or reloaded
-        // configuration never leaks producers or daemon workers that
-        // only an external stop() call could reach. The fields are
-        // published only on full success.
+        // From here on real resources exist; see the KDoc for the
+        // rollback contract the catch below implements.
         var newFallbackDispatcher: FallbackDispatcher? = null
         val newSendDispatchers = LinkedHashMap<TopicClass, SendDispatcher>()
         try {
@@ -664,7 +670,8 @@ class KafkaAppender :
                 // partitioning-key extractor, a fallback layout - runs
                 // into the same failure again; only then can the event
                 // be delivered as-is instead of failing the hot path
-                // (finding R2-1 in the 2026-09-07 analysis). The setter
+                // (docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.R2.md,
+                // finding R2-1). The setter
                 // refuses an already-materialized map; that case cannot
                 // be the one that just failed, so the refusal is ignored.
                 (event as? LoggingEvent)?.let { mutable ->
@@ -734,15 +741,12 @@ class KafkaAppender :
             super.stop()
             return
         }
-        // Close Logback's ingress gate FIRST: super.stop() flips the
-        // volatile isStarted that doAppend checks, so no new event can
-        // enter append() while the teardown below closes dispatchers,
-        // producers, fallback, and encoder. The teardown is bounded but
-        // can take seconds; with the gate still open, concurrent logging
-        // would target progressively closed resources. (An append that
-        // already passed the gate can still overlap the teardown for
-        // microseconds; the dispatchers' own post-close accounting
-        // covers that residual window.)
+        // Safety: close Logback's ingress gate first (the volatile
+        // isStarted that doAppend checks), so no new event enters a
+        // multi-second teardown; see the lifecycle section of the class
+        // KDoc for the order. An append that already passed the gate can
+        // overlap for microseconds - the dispatchers' post-close
+        // accounting covers that residual window.
         super.stop()
         // Close the send dispatchers BEFORE the producer registry: their
         // graceful drain delivers the queued events through the still-
@@ -777,8 +781,8 @@ class KafkaAppender :
         } catch (e: Exception) {
             addWarn("Error closing fallback dispatcher: ${e.message}", e)
         }
-        // Unbind the metrics only now: the dispatcher closes above are
-        // where the shutdown diversions and drops are counted, and a
+        // Unbind the metrics only now: the dispatcher closes are where
+        // the shutdown diversions and drops are counted, and a
         // scrape during the (multi-second) teardown should still see
         // them. Under the bind lock - see bindLock.
         bindLock.withLock {

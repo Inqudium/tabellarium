@@ -271,7 +271,7 @@ internal fun interface ProducerFactory {
          */
         fun default(): ProducerFactory =
             ProducerFactory { properties ->
-                // Force the serializers - see KDoc above.
+                // Force the serializers - see [ProducerFactory].
                 val configs: Map<String, Any> =
                     properties +
                         mapOf(

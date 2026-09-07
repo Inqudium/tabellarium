@@ -906,7 +906,8 @@ class KafkaAppenderTest {
             //   no partitioning key, nothing lands in the fallback, and no
             //   hot-path error is reported.
             // Why is it important to test this test case? Before the fix
-            //   (finding R2-1 in the 2026-09-07 follow-up analysis) such a
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.R2.md,
+            //   finding R2-1) such a
             //   setup started cleanly, reported one error, and shipped
             //   nothing to Kafka - every event diverted as encoder.error.
 

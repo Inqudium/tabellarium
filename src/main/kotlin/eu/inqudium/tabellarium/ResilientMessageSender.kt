@@ -89,31 +89,15 @@ import java.util.concurrent.TimeUnit
  * state and is transparent in CLOSED or OPEN. Set
  * [halfOpenProbeGap] to [Duration.ZERO] to disable.
  *
- * ## Fallback
+ * ## Fallback and threading
  *
- * [fallbackDispatcher] is a queue-and-worker decoupling between this
- * sender and the actual fallback `Appender` (typically a `FileAppender`
- * configured in the user's `logback-spring.xml` and passed in via
- * `<appender-ref>`). The dispatcher must be queue-based, not synchronous,
- * because the Kafka send callback runs on the producer's I/O thread
- * (see Threading below). When the dispatcher is null, events for which
- * Kafka delivery is unavailable are silently dropped - the deliberate
- * operator choice: configuring a fallback is the operator's way of
- * saying "loss is unacceptable here"; leaving it null is the operator's
- * way of saying "best-effort is fine".
- *
- * ## Threading
- *
- * The callback runs on the Kafka producer's I/O thread
- * (`kafka-producer-network-thread`). This thread is shared across all
- * in-flight requests of the producer; blocking it stalls all subsequent
- * callbacks. Therefore the sender **must not** call a potentially-
- * blocking fallback appender from the callback. [FallbackDispatcher]
- * solves this by accepting the event into a bounded queue in O(1) and
- * draining it from a dedicated daemon thread, so the Kafka I/O thread
- * returns immediately even if the fallback appender (e.g. `FileAppender`
- * under slow disk) is blocked. Events that overflow the dispatcher
- * queue are dropped, with the count exposed for operator diagnostics.
+ * The send callback runs on the Kafka producer's single I/O thread,
+ * so this sender never calls the fallback appender itself: it hands
+ * the event to [fallbackDispatcher], whose bounded queue and worker
+ * keep a blocking appender off that thread (the rationale, the drop
+ * policy and the accounting live on [FallbackDispatcher]). A null
+ * dispatcher means the operator chose best-effort: events Kafka cannot
+ * take are dropped, counted, and nothing else.
  *
  * @param producerRegistry The registry holding one producer per active
  *                         topic class. Must outlive this sender.
@@ -325,11 +309,8 @@ internal class ResilientMessageSender(
     }
 
     private fun sendToFallback(event: ILoggingEvent) {
-        // Null dispatcher means "drop": operator's explicit choice.
-        // Non-null dispatcher is enqueue-only - the actual doAppend
-        // runs on the dispatcher's own worker thread, decoupling the
-        // Kafka I/O thread from a potentially-blocking fallback
-        // appender.
+        // Enqueue only - never doAppend here, this can be the Kafka I/O
+        // thread (see the class KDoc); null means the operator chose drop.
         fallbackDispatcher?.enqueue(event)
     }
 
@@ -348,9 +329,9 @@ internal class ResilientMessageSender(
         /**
          * Returns the Resilience4j circuit-breaker name used for the given
          * topic class - the `name` tag of the breaker metrics, and the key
-         * under which tests and the appender's restart path find a
-         * breaker in the registry. Not an operator override hook: the
-         * registry is an internal seam (ADR-0002).
+         * under which tests find a breaker in the registry. Not an
+         * operator override hook: the registry is an internal seam
+         * (ADR-0002).
          */
         fun circuitBreakerName(topicClass: TopicClass): String = "kafka-appender-${topicClass.name.lowercase()}"
 
@@ -372,37 +353,25 @@ internal class ResilientMessageSender(
          * too-small count would over-route to the fallback whenever the
          * breaker recovered; a too-large count would prolong the period
          * of uncertainty if the cluster is still degraded. Ten is a
-         * compromise that operators may want to tune per topic class -
-         * see [circuitBreakerName] for the per-class override path.
+         * calibration compromise, fixed in code like every breaker
+         * threshold (ADR-0002; the configuration guide's section on
+         * fixed behavior states why there is no per-deployment override).
          *
          * ## Ignored exceptions
          *
-         * Client-side, deterministically payload-dependent exceptions are
-         * registered as `ignoreExceptions` - they do not count toward the
-         * failure rate. The rationale: the circuit breaker is an
-         * **infrastructure-health** signal ("is Kafka reachable?"), not a
-         * **payload-validation** filter. A buggy application that suddenly
-         * logs 2 MB stacktraces would otherwise produce a stream of
-         * [org.apache.kafka.common.errors.RecordTooLargeException]s that
-         * open the breaker for the entire topic class - silencing
-         * legitimate logs from the same service even though the Kafka
-         * cluster is perfectly healthy. The same logic applies to
-         * [org.apache.kafka.common.errors.InvalidTopicException],
-         * [org.apache.kafka.common.errors.SerializationException], and
-         * [org.apache.kafka.common.errors.TopicAuthorizationException]:
-         * all are deterministic, all are insensitive to retry, and all
-         * would survive a breaker recovery cycle anyway. The individual
-         * failed events still go to the fallback appender (the operator's
-         * configured escape hatch for delivery failures), so no log is
-         * lost; only the breaker statistics are spared.
-         *
-         * Transient infrastructure exceptions -
-         * [org.apache.kafka.common.errors.TimeoutException],
-         * [org.apache.kafka.common.errors.NetworkException],
-         * [org.apache.kafka.common.errors.LeaderNotAvailableException],
-         * [org.apache.kafka.common.errors.NotEnoughReplicasException] -
-         * are NOT ignored. These are exactly the conditions the breaker
-         * exists to react to.
+         * Rationale: the breaker is an **infrastructure-health** signal
+         * ("is Kafka reachable?"), not a payload-validation filter - so
+         * exceptions that are deterministic per record, insensitive to
+         * retry and unaffected by a breaker recovery (the `ignoreExceptions`
+         * list below) do not count toward the failure rate, while transient
+         * infrastructure failures (timeouts, network, leader or replica
+         * availability) do. Failure mode this prevents: an application
+         * that suddenly logs 2 MB stack traces would otherwise open the
+         * breaker for its whole topic class with
+         * [org.apache.kafka.common.errors.RecordTooLargeException]s and
+         * silence its legitimate logs although Kafka is healthy. The
+         * ignored events still reach the fallback appender; only the
+         * breaker statistics are spared.
          */
         fun defaultCircuitBreakerConfig(): CircuitBreakerConfig =
             CircuitBreakerConfig

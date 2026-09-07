@@ -255,7 +255,8 @@ class MessageEnricherTest {
             // Why is it important to test this test case? The extractor runs
             //   on every event right after the appender swallowed exactly
             //   this exception from prepareForDeferredProcessing; before the
-            //   fix (finding R2-1, 2026-09-07 follow-up) it re-raised it and
+            //   fix (docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.R2.md,
+            //   finding R2-1) it re-raised it and
             //   turned every event of an embedded setup into a hot-path
             //   failure.
 
