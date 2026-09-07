@@ -89,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared test support (`RecordingAppender`, `RecordingProducerFactory`,
   three encoders) replaces the per-class private fixtures; every test
   fixture closes what it starts.
+- The per-send callback's synchronous-failure flag is a plain field (the
+  race with an asynchronous error callback is benign in both outcomes),
+  so the JIT can scalar-replace the callback wherever it does not
+  escape; `SenderPathBenchmark` unbound is back at its 2026-08-30
+  allocation baseline (112 B/op). The metrics-bound variant reads
+  224 B/op in this session for the pre-change code as well (same JVM;
+  JIT-profile variance the benchmark report already documents), so it
+  carries no regression either.
 
 ### Fixed
 

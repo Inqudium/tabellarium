@@ -35,9 +35,13 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Verifies finding 3 of PERF_ANALYSIS-2026-08-29T11-01-08: the
- * per-delivered-event observability envelope (capturing callback
- * lambda, {@code Duration} box, Resilience4j event objects via the
- * attached breaker consumers, Micrometer meter updates).
+ * per-delivered-event observability envelope (the per-send callback
+ * object, {@code Duration} box, Resilience4j event objects via the
+ * attached breaker consumers, Micrometer meter updates). Since the
+ * callback became a class ({@code SendCallback}, 2026-09-07) this
+ * benchmark also guards its scalar replaceability: against the
+ * inlined {@link DiscardingProducer} the callback never escapes, so a
+ * field that pins it (e.g. a volatile) shows up as +48 B/op here.
  *
  * <p><b>Why this instrument:</b> the full-pipeline benchmark saturates
  * its single worker under open load and then measures mostly the
