@@ -150,6 +150,19 @@ class KafkaAppenderMetricsBindingTest {
 
         @Test
         fun `should attach the configured common tags to every metric`() {
+            // What is to be tested? Whether the commonTags passed to
+            //   KafkaAppenderMetricsBinding travel through bindMeterRegistry into the
+            //   MicrometerKafkaAppenderMetrics instance, so the hot-path counters carry
+            //   application and region on the real Spring-wired path.
+            // How will the test case be deemed successful and why? Successful if
+            //   counters found under both tags exist after the refresh and one doAppend
+            //   advances that tagged series by exactly 1.0 - registration with the tags
+            //   and increments on the tagged meter are both required.
+            // Why is it important to test this test case? Common tags are how a shared
+            //   registry tells one service's appender metrics from another's; if the
+            //   binding dropped them, every dashboard scoped by application would show
+            //   nothing while an untagged series silently absorbed the data.
+
             // Note: this test uses the before/after delta pattern (same
             //   as the hot-path test) rather than an absolute count.
             //   Spring's own lifecycle may emit log events through the

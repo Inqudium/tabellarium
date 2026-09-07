@@ -31,6 +31,18 @@ class TopicRouterFuzzTest {
 
     @FuzzTest(maxDuration = "10m")
     void validationAndRoutingUpholdTheirContract(FuzzedDataProvider data) {
+        // What is to be tested? TopicRouter construction-time validation and
+        //   route() for arbitrary topic names, marker names and marker trees.
+        // How will the test case be deemed successful and why? Successful if the
+        //   router accepts exactly the names Kafka's own pattern accepts (the
+        //   positive oracle), rejects the rest with IllegalArgumentException, and
+        //   route() never throws and always yields the default or a mapped topic
+        //   with a direct match winning.
+        // Why is it important to test this test case? A name that passes start()
+        //   but fails per send would divert every event to the fallback while the
+        //   breaker, which deliberately ignores InvalidTopicException, reports a
+        //   healthy pipeline; the fuzzer searches for exactly such a gap.
+
         if (data.consumeBoolean()) {
             positiveOracle(data);
         } else {

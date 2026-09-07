@@ -28,6 +28,10 @@ TEST_SRC_DIR = Path(sys.argv[2] if len(sys.argv) > 2 else "src/test/kotlin")
 OUTPUT = Path(sys.argv[3] if len(sys.argv) > 3 else "docs/tests/test-evidence.md")
 
 FUN_RE = re.compile(r"^\s*fun `([^`]+)`\(")
+# Java test methods (the Jazzer fuzz targets under src/test/java): Surefire
+# reports them as `name(ParameterType)[n]`, so the lookup strips that suffix.
+JAVA_FUN_RE = re.compile(r"^\s*(?:(?:public|private|protected)\s+)?(?:static\s+)?void\s+(\w+)\s*\(")
+JAVA_TEST_SRC_DIR = TEST_SRC_DIR.parent / "java"
 QUESTIONS = [
     ("What is tested?", re.compile(r"What is to be tested\?")),
     ("How is success determined?", re.compile(r"How will the test case be deemed successful and why\?")),
@@ -44,11 +48,14 @@ def extract_rationales(src_dir: Path) -> dict:
     is a sufficient key.
     """
     rationales = {}
-    for kt in sorted(src_dir.rglob("*Test.kt")):
-        clazz = kt.stem
-        lines = kt.read_text(encoding="utf-8").splitlines()
+    sources = [(kt, FUN_RE) for kt in sorted(src_dir.rglob("*Test.kt"))]
+    if JAVA_TEST_SRC_DIR.is_dir():
+        sources += [(java, JAVA_FUN_RE) for java in sorted(JAVA_TEST_SRC_DIR.rglob("*Test.java"))]
+    for source, fun_re in sources:
+        clazz = source.stem
+        lines = source.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
-            m = FUN_RE.match(line)
+            m = fun_re.match(line)
             if not m:
                 continue
             # The rationale is the CONTIGUOUS comment run at the top of
@@ -150,7 +157,8 @@ def main() -> None:
             for name in sorted(suites[top][group]):
                 out.append(f"**{md_escape(name)}**")
                 out.append("")
-                rationale = rationales.get((top, name))
+                # Java methods carry a `(ParameterType)[n]` suffix in Surefire.
+                rationale = rationales.get((top, name)) or rationales.get((top, re.sub(r"\(.*$", "", name)))
                 if rationale:
                     out.append('??? quote "Rationale"')
                     for label, answer in rationale.items():
@@ -159,7 +167,13 @@ def main() -> None:
                     out.append("")
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text("\n".join(out) + "\n", encoding="utf-8")
-    documented = sum(1 for top in suites for g in suites[top] for n in suites[top][g] if (top, n) in rationales)
+    documented = sum(
+        1
+        for top in suites
+        for g in suites[top]
+        for n in suites[top][g]
+        if (top, n) in rationales or (top, re.sub(r"\(.*$", "", n)) in rationales
+    )
     print(f"wrote {OUTPUT}: {totals['tests']} tests, {documented} with rationale blocks")
 
 

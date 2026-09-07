@@ -20,6 +20,17 @@ import java.util.Map;
 class KafkaProducerPropertiesFuzzTest {
     @FuzzTest(maxDuration = "10m")
     void parserUpholdsItsContract(FuzzedDataProvider data) {
+        // What is to be tested? The <kafkaProducerProperties> parser against
+        //   arbitrary text, including what the checked-in corpus already found.
+        // How will the test case be deemed successful and why? Successful if the
+        //   only exception ever thrown is the documented IllegalArgumentException
+        //   and every accepted map has non-null keys and values without trailing
+        //   whitespace - the parser's whole contract, stated as oracles.
+        // Why is it important to test this test case? The text is operator input
+        //   from Logback XML; a parser that throws anything else fails start()
+        //   with an unnamed cause, and whitespace leaking into a producer property
+        //   (a bootstrap address, a keystore path) breaks the connection silently.
+
         String text = data.consumeRemainingAsString();
         Map<String, String> parsed;
         try {

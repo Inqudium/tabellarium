@@ -101,6 +101,18 @@ class LogstashHttpMethodKeyValueIngestTest {
     inner class `Elasticsearch ingest contract` {
         @Test
         fun `should render a raw HttpMethod KeyValue as an empty object that a scalar mapping rejects`() {
+            // What is to be tested? The Elasticsearch side of the incident: whether the
+            //   JSON the encoder emits for a raw HttpMethod KeyValue carries an object
+            //   value on a field the index maps as a keyword scalar.
+            // How will the test case be deemed successful and why? Successful if the
+            //   parsed document holds an object node under lap.http.request.method and
+            //   the scalar-mapping check names exactly that field as the first conflict
+            //   - reproducing mapper_parsing_exception without a cluster.
+            // Why is it important to test this test case? It pins the root cause of a
+            //   log line that reached stdout but never Kibana; the characterization must
+            //   stay true across logstash-logback-encoder upgrades so the emitting
+            //   services' call sites remain the right place to fix it.
+
             // Given: the emitted diary JSON, parsed as Elasticsearch would receive it.
             val doc = ObjectMapper().readTree(emitDiaryEvent(methodValue = HttpMethod.GET).json)
 
@@ -118,6 +130,18 @@ class LogstashHttpMethodKeyValueIngestTest {
 
         @Test
         fun `should render the method name as a string that a scalar mapping accepts`() {
+            // What is to be tested? Whether the one-line fix at the call site - passing
+            //   method.name() instead of the HttpMethod object - produces a JSON string
+            //   that the same scalar mapping accepts.
+            // How will the test case be deemed successful and why? Successful if the
+            //   parsed document holds a textual node under lap.http.request.method and
+            //   the scalar-mapping check finds no offending field at all, not merely a
+            //   different one.
+            // Why is it important to test this test case? The previous test proves the
+            //   failure; this one proves the recommended fix, so the incident write-up
+            //   in the class KDoc cannot recommend a change that a later encoder version
+            //   would render insufficient.
+
             // Given: the same event built with the fix - method.name() instead of the HttpMethod object.
             val doc = ObjectMapper().readTree(emitDiaryEvent(methodValue = HttpMethod.GET.name()).json)
 

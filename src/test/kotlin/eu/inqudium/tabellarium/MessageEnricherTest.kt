@@ -39,6 +39,18 @@ class MessageEnricherTest {
     inner class `Construction validation` {
         @Test
         fun `should reject construction when component is blank`() {
+            // What is to be tested? Whether the constructor rejects a whitespace-only
+            //   component instead of building an enricher that would stamp an empty
+            //   meta.component header onto every record.
+            // How will the test case be deemed successful and why? Successful if
+            //   construction throws IllegalArgumentException with the component message;
+            //   the require() guard is the last line of defense behind the appender's
+            //   own start() validation and covers programmatic construction.
+            // Why is it important to test this test case? Records without a component
+            //   cannot be correlated back to the originating service; construction time
+            //   is the only point where the gap is still visible to the operator rather
+            //   than buried in a Kafka topic.
+
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = "  ", cmdbId = cmdbId, environment = environment)
@@ -48,6 +60,16 @@ class MessageEnricherTest {
 
         @Test
         fun `should reject construction when cmdbId is blank`() {
+            // What is to be tested? Whether the constructor rejects an empty cmdbId
+            //   rather than emitting records whose meta.cmdbId header is empty.
+            // How will the test case be deemed successful and why? Successful if
+            //   construction throws IllegalArgumentException with the CMDB-id message,
+            //   proving the guard checks this field and not only component.
+            // Why is it important to test this test case? The CMDB id is what ties a
+            //   record to the deploying instance in the inventory; an empty value would
+            //   pass through the hot path unnoticed and only surface when someone tries
+            //   to attribute the records.
+
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = component, cmdbId = "", environment = environment)
@@ -57,6 +79,15 @@ class MessageEnricherTest {
 
         @Test
         fun `should reject construction when environment is blank`() {
+            // What is to be tested? Whether the constructor rejects an empty
+            //   environment, completing the three-field validation contract.
+            // How will the test case be deemed successful and why? Successful if
+            //   construction throws IllegalArgumentException with the environment
+            //   message; each field has its own require(), so each needs its own test.
+            // Why is it important to test this test case? An empty meta.environment
+            //   header makes prod and staging records indistinguishable downstream -
+            //   the kind of mix-up a SIEM filter cannot detect after the fact.
+
             // When / Then
             assertThatThrownBy {
                 MessageEnricher(component = component, cmdbId = cmdbId, environment = "")
@@ -69,6 +100,18 @@ class MessageEnricherTest {
     inner class `Static headers` {
         @Test
         fun `should include component cmdbId and environment in the headers`() {
+            // What is to be tested? Whether the three operator-supplied identity values
+            //   arrive in the enrichment result under the documented meta.* header keys,
+            //   UTF-8 encoded, exactly as configured.
+            // How will the test case be deemed successful and why? Successful if the
+            //   decoded header map holds component, cmdbId and environment under
+            //   HEADER_COMPONENT, HEADER_CMDB_ID and HEADER_ENVIRONMENT; decoding the
+            //   pre-built byte arrays proves they hold the right text, not just a key.
+            // Why is it important to test this test case? These headers are the only
+            //   way downstream consumers attribute a record to a service and stage; a
+            //   swapped value (cmdbId under the environment key) would still pass the
+            //   five-key test but misattribute every record.
+
             // Given
             val enricher = newEnricher()
             val event = newTestLoggingEvent()
@@ -85,6 +128,17 @@ class MessageEnricherTest {
 
         @Test
         fun `should include the agent name and version in the headers`() {
+            // What is to be tested? Whether the enricher stamps the library's own
+            //   identity - the fixed AGENT_NAME and the resource-loaded AGENT_VERSION -
+            //   onto every record alongside the operator-supplied headers.
+            // How will the test case be deemed successful and why? Successful if the
+            //   decoded headers carry AGENT_NAME under HEADER_AGENT_NAME and
+            //   AGENT_VERSION under HEADER_AGENT_VERSION, so the two pre-built entries
+            //   are keyed correctly.
+            // Why is it important to test this test case? Consumers use
+            //   meta.agent.name/version to tell which producer library and release
+            //   wrote a record; that is how a schema change is traced back to a rollout.
+
             // Given
             val enricher = newEnricher()
             val event = newTestLoggingEvent()
@@ -177,6 +231,17 @@ class MessageEnricherTest {
 
         @Test
         fun `should return an immutable headers list`() {
+            // What is to be tested? Whether the shared headers list is unmodifiable at
+            //   runtime, not merely typed as a read-only Kotlin List.
+            // How will the test case be deemed successful and why? Successful if a cast
+            //   to MutableList followed by add() throws UnsupportedOperationException -
+            //   the guarantee java.util.List.copyOf gives, asserted rather than assumed.
+            // Why is it important to test this test case? The same list instance is
+            //   handed to every ProducerRecord; a caller that could append to it would
+            //   inject a header into every later event of the same appender. A refactor
+            //   that swapped copyOf for a mutable builder would drop the guarantee
+            //   silently.
+
             // Given
             val enricher = newEnricher()
 
@@ -195,6 +260,17 @@ class MessageEnricherTest {
     inner class `Default partitioning key extractor` {
         @Test
         fun `should derive the partitioning key from the traceId in the MDC`() {
+            // What is to be tested? Whether the default extractor reads the
+            //   TRACE_ID_MDC_KEY entry from the event's MDC and passes it through as the
+            //   partitioning key unchanged.
+            // How will the test case be deemed successful and why? Successful if an event
+            //   whose MDC holds traceId=trace-abc-123 yields exactly that string; this is
+            //   the happy path the blank, null and over-long cases are variations of.
+            // Why is it important to test this test case? The trace id as record key is
+            //   what keeps all records of one request on one partition, in order; a
+            //   wrong MDC key name would silently degrade to sticky-random partitioning
+            //   with no error anywhere.
+
             // Given
             val enricher = newEnricher()
             val event = newTestLoggingEvent(mdc = mapOf("traceId" to "trace-abc-123"))
@@ -284,6 +360,17 @@ class MessageEnricherTest {
 
         @Test
         fun `should return a null partitioning key when the MDC does not contain a traceId`() {
+            // What is to be tested? Whether an MDC that is populated but has no traceId
+            //   entry yields no partitioning key, rather than some other MDC value or an
+            //   empty string.
+            // How will the test case be deemed successful and why? Successful if an event
+            //   with only unrelated MDC entries produces a null partitioningKey; null is
+            //   the documented "let the producer's partitioner decide" signal.
+            // Why is it important to test this test case? Most events outside a traced
+            //   request carry MDC content but no trace id; they must fall back to the
+            //   producer's partitioner instead of hashing onto one hot partition under a
+            //   constant key.
+
             // Given
             val enricher = newEnricher()
             val event = newTestLoggingEvent(mdc = mapOf("other-key" to "other-value"))
@@ -359,6 +446,18 @@ class MessageEnricherTest {
     inner class `Custom partitioning key extractor` {
         @Test
         fun `should use the custom extractor when one is provided`() {
+            // What is to be tested? Whether a caller-supplied partitioningKeyExtractor
+            //   replaces the default MDC-based one, so the record key can come from any
+            //   event attribute the application chooses.
+            // How will the test case be deemed successful and why? Successful if an
+            //   extractor returning the formatted message yields that message as the
+            //   key - a value the default extractor could never produce, so the custom
+            //   path is unambiguously the one that ran.
+            // Why is it important to test this test case? Custom extractors are the
+            //   documented way to partition by session, user or account id; if the
+            //   parameter were ignored, callers would silently get trace-id partitioning
+            //   while believing they had configured something else.
+
             // Given: an extractor that returns the formatted message
             val enricher = newEnricherWith { event -> event.formattedMessage }
             val event = newTestLoggingEvent(message = "specific-message")
@@ -372,6 +471,17 @@ class MessageEnricherTest {
 
         @Test
         fun `should pass null returned by the custom extractor through unchanged`() {
+            // What is to be tested? Whether a custom extractor's null is honored as "no
+            //   key", without the enricher substituting the default MDC lookup or an
+            //   empty string.
+            // How will the test case be deemed successful and why? Successful if an
+            //   extractor that always returns null yields a null partitioningKey; the
+            //   normalization in enrich() must let null through untouched.
+            // Why is it important to test this test case? Null is the extractor's
+            //   contract for "leave partition selection to the producer"; if enrich()
+            //   fell back to the MDC or to "" instead, an application would lose the
+            //   ability to opt out of keying on a per-event basis.
+
             // Given
             val enricher = newEnricherWith { _ -> null }
             val event = newTestLoggingEvent()

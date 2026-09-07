@@ -104,8 +104,12 @@ JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
 
 - Every Joran-visible setter and every behavioral guarantee has a test.
   New configuration surface without a test will not be merged.
-- Test comments follow the existing three-question pattern (what is
-  tested, how success is determined, why it matters).
+- Every test - including the Java fuzz targets - opens its body with the
+  three-question rationale block (`What is to be tested?`, `How will the
+  test case be deemed successful and why?`, `Why is it important to test
+  this test case?`), followed by a blank line. The Docs workflow parses
+  exactly these questions into the test-evidence page, so a test without
+  the block appears there undocumented.
 - Unit tests use `MockProducer` from `kafka-clients`; no test in the
   **default run** may require a running Kafka broker or Docker.
 - Tests tagged `integration` (Testcontainers-based real-broker tests)

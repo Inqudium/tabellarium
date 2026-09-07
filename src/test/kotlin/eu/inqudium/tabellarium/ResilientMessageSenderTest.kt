@@ -189,6 +189,20 @@ class ResilientMessageSenderTest {
     inner class `Successful send` {
         @Test
         fun `should send a record to the producer for the given topic class`() {
+            // What is to be tested? The happy path of send(): a permitted event
+            //   becomes exactly one ProducerRecord on the producer the registry
+            //   holds for the topic class, addressed to the given topic name and
+            //   carrying the encoded payload as its value.
+            // How will the test case be deemed successful and why? Successful
+            //   if the MockProducer's history holds exactly one record whose
+            //   topic and value equal the arguments passed to send(). This pins
+            //   the topicName -> record.topic and payload -> record.value mapping
+            //   of buildRecord.
+            // Why is it important to test this test case? Every other test in
+            //   this class exercises a deviation from this path; if the plain
+            //   send misrouted or duplicated records, nothing would reach the
+            //   right Kafka topic even with a perfectly healthy cluster.
+
             // Given
             val ctx = newSender()
 
@@ -210,6 +224,19 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should map the enrichment partitioning key to the record key as UTF-8 bytes`() {
+            // What is to be tested? Whether the enrichment's partitioningKey (a
+            //   String, e.g. the trace id) becomes the record key as its UTF-8
+            //   encoding - the key is what Kafka's default partitioner hashes,
+            //   so it decides the partition.
+            // How will the test case be deemed successful and why? Successful
+            //   if the sent record's key is byte-equal to the UTF-8 bytes of
+            //   "trace-abc-123". Pins the charset: a platform-default or UTF-16
+            //   encoding would still be "a key" but hash differently.
+            // Why is it important to test this test case? Events of one trace
+            //   must land in one partition so consumers see them in order; a
+            //   changed encoding would silently scatter a trace across
+            //   partitions and break per-key ordering for downstream readers.
+
             // Given
             val ctx = newSender()
 
@@ -229,6 +256,18 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should leave the record key null when the enrichment has no partitioning key`() {
+            // What is to be tested? The absent-key case: an enrichment without
+            //   a partitioningKey must yield a record with a null key, not an
+            //   empty byte array or a placeholder string.
+            // How will the test case be deemed successful and why? Successful
+            //   if the sent record's key() is null. A null key lets the Kafka
+            //   partitioner spread the record (sticky/round-robin); an empty
+            //   array would hash every keyless event to the same partition.
+            // Why is it important to test this test case? Events without a trace
+            //   context (startup logs, background jobs) are common; funnelling
+            //   all of them into one partition would create a hot partition and
+            //   an ordering guarantee nobody asked for.
+
             // Given
             val ctx = newSender()
             val noKeyEnrichment = EnrichedRecord(partitioningKey = null, headers = basicEnrichment.headers)
@@ -292,6 +331,19 @@ class ResilientMessageSenderTest {
     inner class `Open circuit handling` {
         @Test
         fun `should route to the fallback appender when the circuit is open`() {
+            // What is to be tested? The OPEN-breaker path of send(): when
+            //   tryAcquirePermission is denied, the producer is never called and
+            //   the original ILoggingEvent goes to the fallback dispatcher
+            //   instead.
+            // How will the test case be deemed successful and why? Successful
+            //   if the producer's history stays empty and the fallback recorder
+            //   receives exactly the one event, identified by its message. Both
+            //   halves matter: the event must not be sent AND must not be lost.
+            // Why is it important to test this test case? During a Kafka outage
+            //   the breaker is open for 30 s at a time; this path is what keeps
+            //   the logs of those 30 s on disk instead of discarding them or
+            //   hammering a dead broker.
+
             // Given
             val ctx = newSender()
             val cbName = ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT)
@@ -314,6 +366,18 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should silently drop the event when the circuit is open and no fallback is configured`() {
+            // What is to be tested? The operator's "no fallback" choice on the
+            //   OPEN-breaker path: with a null fallback dispatcher the event is
+            //   dropped, and send() neither throws nor touches the producer.
+            // How will the test case be deemed successful and why? Successful
+            //   if send() returns normally (an exception would fail the test
+            //   right there) and the producer history is empty. Pins the
+            //   null-safe sendToFallback plus the "denied -> return" flow.
+            // Why is it important to test this test case? send() runs on the
+            //   send-dispatcher worker; an NPE here would kill that worker and
+            //   turn a deliberate best-effort configuration into a dead pipeline
+            //   for the whole topic class.
+
             // Given: no fallback appender
             val ctx = newSender(fallback = null)
             val cbName = ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT)
@@ -383,6 +447,20 @@ class ResilientMessageSenderTest {
     inner class `Synchronous failure handling` {
         @Test
         fun `should route to the fallback appender when the producer send throws synchronously`() {
+            // What is to be tested? The synchronous-throw path of send(): when
+            //   producer.send itself throws (here a closed MockProducer raising
+            //   IllegalStateException), the exception is caught and the original
+            //   event is diverted to the fallback.
+            // How will the test case be deemed successful and why? Successful
+            //   if the fallback recorder receives exactly the one event with the
+            //   message "sync failure" - which also proves the exception did not
+            //   escape send() to the caller.
+            // Why is it important to test this test case? A closed producer, an
+            //   InterruptException from max.block.ms or a non-API KafkaException
+            //   would otherwise propagate into the send worker or lose the
+            //   event; this path keeps a thrown send on the same fallback
+            //   contract as a callback error.
+
             // Given: a closed MockProducer (which throws IllegalStateException
             //   on send - simulating buffer-full-after-max-block-ms or a
             //   prematurely closed producer)
@@ -504,6 +582,21 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should still count an asynchronously completed send as dispatched`() {
+            // What is to be tested? The complement of the previous test: the
+            //   errorReported check that suppresses "dispatched" for a
+            //   synchronous callback failure must NOT suppress it for a send
+            //   whose callback is still pending when producer.send returns.
+            // How will the test case be deemed successful and why? Successful
+            //   if the metrics show exactly "dispatched" right after send() and,
+            //   once the deferred callback fails, "dispatched, send.completed,
+            //   fallback" - the documented later outcome of an already-dispatched
+            //   event.
+            // Why is it important to test this test case? An over-eager fix for
+            //   the synchronous case could zero the dispatched counter for every
+            //   normal send; the accepted = dispatched + fallback balance on the
+            //   dashboards would then break in the healthy state instead of the
+            //   outage state.
+
             // Given: the regular deferred-callback producer - the
             //   complement of the previous test, pinning that the
             //   synchronous-failure detection does not suppress
@@ -536,6 +629,19 @@ class ResilientMessageSenderTest {
     inner class `Topic-class isolation` {
         @Test
         fun `should use a topic-class-specific circuit breaker name`() {
+            // What is to be tested? The naming scheme of circuitBreakerName:
+            //   "kafka-appender-" plus the lowercase topic class, giving one
+            //   distinct registry key per class.
+            // How will the test case be deemed successful and why? Successful
+            //   if AUDIT and PERFORMANCE map to "kafka-appender-audit" and
+            //   "kafka-appender-performance". Two classes are enough to pin both
+            //   the prefix and the lowercase derivation.
+            // Why is it important to test this test case? The name is the
+            //   registry key that gives each class its own breaker and the
+            //   `name` tag of the Resilience4j metrics; a scheme change would
+            //   silently merge the breakers (one class's outage trips all) and
+            //   break every operator dashboard that filters on the tag.
+
             // When / Then: the name is derived from the class, lowercase
             assertThat(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
                 .isEqualTo("kafka-appender-audit")
@@ -723,6 +829,21 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should disable throttling entirely when probe gap is zero`() {
+            // What is to be tested? Whether halfOpenProbeGap = Duration.ZERO
+            //   reaches the per-class HalfOpenThrottle as its "disabled"
+            //   sentinel, so that in HALF_OPEN every event goes straight to the
+            //   breaker instead of one probe per gap.
+            // How will the test case be deemed successful and why? Successful
+            //   if 5 events at the same frozen instant all reach the producer
+            //   and none the fallback. With a non-zero gap the same setup routes
+            //   4 of 5 to the fallback (see the tests above), so the assertion
+            //   isolates the zero-gap wiring.
+            // Why is it important to test this test case? Duration.ZERO is the
+            //   documented off-switch for the throttle; if the sender
+            //   substituted a default or the throttle treated zero as "always
+            //   too soon", an operator disabling the throttle would get either
+            //   the throttle or a permanently gated breaker.
+
             // Given: HALF_OPEN breaker, gap=0 (throttle disabled)
             val frozenClock = AtomicLong(0)
             val ctx =
@@ -851,6 +972,21 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should also ignore InvalidTopicException and SerializationException`() {
+            // What is to be tested? Whether the full ignoreExceptions list of
+            //   defaultCircuitBreakerConfig - not just RecordTooLargeException -
+            //   is wired: InvalidTopicException, SerializationException and
+            //   TopicAuthorizationException must not count as failures.
+            // How will the test case be deemed successful and why? Successful
+            //   if 20 callback errors cycling through all four exception types
+            //   leave the breaker CLOSED; with minimumNumberOfCalls=10 and a
+            //   50 % threshold, a single non-ignored type in the mix would open
+            //   it.
+            // Why is it important to test this test case? Each of these is
+            //   deterministic per record (bad topic name, encoder bug, ACL
+            //   change) and unaffected by a breaker recovery; counting them
+            //   would silence a healthy topic class for 30 s per trip - while
+            //   the RecordTooLargeException test alone would still pass.
+
             // Given
             val productionCbRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry()
             val ctx = newSender(autoComplete = false, cbRegistry = productionCbRegistry)
@@ -887,6 +1023,20 @@ class ResilientMessageSenderTest {
     inner class `Metrics instrumentation` {
         @Test
         fun `should report a dispatched event with success outcome on a clean send`() {
+            // What is to be tested? The metrics sequence for the happy path: a
+            //   send accepted by the producer reports eventDispatched, and its
+            //   callback reports sendCompleted with outcome SUCCESS - and no
+            //   fallback is reported for it.
+            // How will the test case be deemed successful and why? Successful
+            //   if the captured kinds contain "dispatched" and one
+            //   "send.completed" whose detail is "success", and no "fallback".
+            //   The auto-completing MockProducer fires the callback
+            //   synchronously, so the assertions can run inline.
+            // Why is it important to test this test case? The dispatched counter
+            //   and the success timer are the baseline every outage is measured
+            //   against; a clean send that reported error, or a fallback, would
+            //   make the dashboards show a permanent outage in a healthy system.
+
             // Given
             val ctx = newSender()
             val metrics = CapturingMetrics()
@@ -952,6 +1102,19 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should report fallback with THROTTLE reason when the half-open gap is not elapsed`() {
+            // What is to be tested? The reason tag of the throttle path: an
+            //   event denied by the HalfOpenThrottle (HALF_OPEN, gap not
+            //   elapsed) must be reported as fallback with reason THROTTLE,
+            //   distinct from BREAKER_OPEN.
+            // How will the test case be deemed successful and why? Successful
+            //   if of two sends at the same frozen instant exactly one fallback
+            //   is reported and its detail is "throttle": the first send claims
+            //   the probe slot, the second is gated.
+            // Why is it important to test this test case? THROTTLE means "Kafka
+            //   is recovering, probes are being spaced", BREAKER_OPEN means
+            //   "Kafka is down" - conflating them would hide from operators
+            //   whether an outage is ending or ongoing.
+
             // Given: HALF_OPEN breaker with a frozen clock
             val frozenClock = AtomicLong(0)
             val ctx =
@@ -991,6 +1154,21 @@ class ResilientMessageSenderTest {
 
         @Test
         fun `should report fallback with SEND_ERROR reason on async producer failure`() {
+            // What is to be tested? The metrics sequence of an asynchronous
+            //   delivery failure: dispatched at send time, then - when the
+            //   callback reports the error - sendCompleted with outcome ERROR
+            //   and a fallback with reason SEND_ERROR.
+            // How will the test case be deemed successful and why? Successful
+            //   if only "dispatched" is visible before errorNext and afterwards
+            //   exactly one send.completed(error) and one fallback(send.error)
+            //   exist. The deferred MockProducer makes the before/after split
+            //   observable.
+            // Why is it important to test this test case? Broker-side failures
+            //   (leader gone, network drop) arrive only via the callback; if
+            //   that path tagged them BREAKER_OPEN or reported no fallback at
+            //   all, the dashboards would misattribute or hide the very failures
+            //   the breaker reacts to.
+
             // Given: a non-auto-complete producer so we control the callback
             val ctx = newSender(autoComplete = false)
             val metrics = CapturingMetrics()
