@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-07
+
+Behavior changes operators should read before upgrading: the
+`events.dispatched` metric no longer counts sends the Kafka client
+rejected synchronously, `start()` after `stop()` is refused (ADR-0004),
+and the fallback drain at shutdown uses its full 5 s budget. The public
+API (ADR-0002) is unchanged.
+
 ### Added
 
 - Releases are published to **Maven Central** via the Sonatype Central
@@ -49,10 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the README.
 - CI compiles the benchmark module against the freshly built library
   (compile only), so the JMH regression instrument cannot rot silently
-  when an internal seam it reaches changes shape.
+  when an internal seam it reaches changes shape; the module links
+  against the library through its `tabellarium.version` property, which
+  CI sets to the version it just built.
 
 ### Changed
 
+- `events.dispatched` counts only sends the Kafka client accepted
+  without a synchronous failure: an event the client rejected before
+  `send()` returned (metadata timeout, buffer exhausted, record too
+  large — the kafka-clients 4.x synchronous-callback path) counts as
+  `events.fallback{reason="send.error"}` only, never as both.
 - One `BoundedWorkerDispatcher` skeleton (bounded queue, single worker,
   in-flight ownership, death handler, two-phase close, reentry mark)
   beneath `SendDispatcher` and `FallbackDispatcher`, which now
@@ -64,11 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed by a bounded 0.5 s interrupt grace — previously the drain
   was cut off after a 200 ms graceful window and the remaining queue
   dropped although budget remained. Worst case is now 5.5 s.
-- `events.dispatched` counts only sends the Kafka client accepted
-  without a synchronous failure: an event the client rejected before
-  `send()` returned (metadata timeout, buffer exhausted, record too
-  large — the kafka-clients 4.x synchronous-callback path) counts as
-  `events.fallback{reason="send.error"}` only, never as both.
 - An explicit `enable.idempotence=true` on a class without the AUDIT
   mandate suppresses the class's `acks=1` default, and the idempotence
   validation now also requires `acks=all`, with a named error instead of
@@ -302,5 +312,6 @@ optional `KafkaAppenderMetricsBinding`.
   public type. Dokka's API reference now shows exactly the supported
   surface.
 
-[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Inqudium/tabellarium/releases/tag/v1.0.0

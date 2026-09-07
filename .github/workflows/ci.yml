@@ -44,7 +44,9 @@ jobs:
       - name: Compile the benchmark module against the freshly built library
         run: |
           mvn --batch-mode --no-transfer-progress -DskipTests -Djacoco.skip=true -Dktlint.skip=true -Dcyclonedx.skip=true install
-          mvn --batch-mode --no-transfer-progress -f benchmarks/pom.xml compile
+          # Link against the version just installed, whatever the revision is.
+          version=$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)
+          mvn --batch-mode --no-transfer-progress -f benchmarks/pom.xml -Dtabellarium.version="$version" compile
 
       # Repo-local script instead of a third-party reporting action (this
       # workflow pins actions to SHAs; a summary needs no new supply-chain

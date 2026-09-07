@@ -10,7 +10,9 @@ deliberately not part of the library's build.
 ## Build & run
 
 ```bash
-# 1. install the library snapshot the benchmarks link against
+# 1. install the library the benchmarks link against (the benchmark POM's
+#    tabellarium.version property defaults to the repo's current revision;
+#    pass -Dtabellarium.version=... to link against another installed one)
 mvn -DskipTests install
 
 # 2. build the shaded benchmark jar
