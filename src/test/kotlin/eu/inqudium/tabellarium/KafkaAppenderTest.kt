@@ -1135,16 +1135,14 @@ class KafkaAppenderTest {
                     .find("kafka.appender.events.accepted")
                     .tag("topic.class", TopicClass.TECHNICAL.tag)
                     .counter()
-            assertThat(accepted).isNotNull
-            assertThat(accepted!!.count()).isEqualTo(1.0)
+            assertThat(checkNotNull(accepted) { "accepted counter not registered" }.count()).isEqualTo(1.0)
             val diverted =
                 registry
                     .find("kafka.appender.events.fallback")
                     .tag("topic.class", TopicClass.TECHNICAL.tag)
                     .tag("reason", "encoder.error")
                     .counter()
-            assertThat(diverted).isNotNull
-            assertThat(diverted!!.count()).isEqualTo(1.0)
+            assertThat(checkNotNull(diverted) { "fallback counter not registered" }.count()).isEqualTo(1.0)
             appender.stop()
         }
     }
@@ -1514,7 +1512,7 @@ class KafkaAppenderTest {
                 val blocked = blockedClasses.any { clientId.endsWith("-$it") }
                 // Always wrap: MockProducer is not thread-safe, and the
                 // dispatcher worker sends while the test thread polls
-                // history - same rationale as SynchronizedTestProducerFactory.
+                // history - same rationale as SynchronizingProducerFactory.
                 return object : Producer<ByteArray, ByteArray> by mock {
                     override fun send(
                         record: ProducerRecord<ByteArray, ByteArray>,
@@ -1778,8 +1776,9 @@ class KafkaAppenderTest {
             assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
             assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
             release.countDown()
-            checkNotNull(sendWorker.get()).join(5000)
-            assertThat(sendWorker.get()!!.isAlive).isFalse()
+            val worker = checkNotNull(sendWorker.get()) { "the producer double never captured the send worker" }
+            worker.join(5000)
+            assertThat(worker.isAlive).isFalse()
 
             // Then: the late failure was observed (send.duration error),
             //   but the sender's error routing found the diversion already
@@ -1801,7 +1800,7 @@ class KafkaAppenderTest {
          * internally and hide or fabricate failures. The appender-side
          * code under test still runs fully concurrently.
          */
-        private inner class SynchronizedTestProducerFactory : ProducerFactory {
+        private inner class SynchronizingProducerFactory : ProducerFactory {
             val mock =
                 MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
 
@@ -1846,7 +1845,7 @@ class KafkaAppenderTest {
             //   race, not an appender defect)
             val threadCount = 8
             val eventsPerThread = 250
-            val factory = SynchronizedTestProducerFactory()
+            val factory = SynchronizingProducerFactory()
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
@@ -2117,8 +2116,8 @@ class KafkaAppenderTest {
                     .find("resilience4j.circuitbreaker.calls")
                     .tags("kind", "successful", "appender", "KAFKA_A")
                     .timer()
-            assertThat(successTimer).isNotNull()
-            pollUntil { successTimer!!.count() == 1L }
+            val timer = checkNotNull(successTimer) { "successful-calls timer not registered" }
+            pollUntil { timer.count() == 1L }
             appender.stop()
         }
 

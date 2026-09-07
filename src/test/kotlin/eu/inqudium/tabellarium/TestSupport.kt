@@ -65,7 +65,11 @@ internal class RecordingProducerFactory(
     }
 }
 
-/** Stateless encoder: the formatted message as UTF-8 bytes. Safe for concurrent appends. */
+/**
+ * Stateless encoder: the formatted message as UTF-8 bytes. Safe for
+ * concurrent appends. Explicitly open for [RecordingEncoder] - the
+ * build has no all-open plugin, so every subclassable class says so.
+ */
 internal open class MessageBytesEncoder : EncoderBase<ILoggingEvent>() {
     override fun encode(event: ILoggingEvent): ByteArray = event.formattedMessage.toByteArray(Charsets.UTF_8)
 

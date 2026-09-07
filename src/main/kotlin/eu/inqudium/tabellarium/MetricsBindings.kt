@@ -265,61 +265,32 @@ internal class MetricsBindings(
         // One 0/1 gauge per possible state, exactly like the official
         // binder - dashboards select the active state via `== 1`.
         for (state in CircuitBreaker.State.entries) {
-            boundResilience4jMeters +=
-                Gauge
-                    .builder("resilience4j.circuitbreaker.state", breaker) { b ->
-                        if (b.state == state) 1.0 else 0.0
-                    }.description("The states of the circuit breaker")
-                    .tags(tags)
-                    .tag("state", state.name.lowercase())
-                    .register(registry)
+            registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.state", "state", state.name.lowercase(), "The states of the circuit breaker") {
+                if (it.state == state) 1.0 else 0.0
+            }
         }
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.buffered.calls", breaker) {
-                    it.metrics.numberOfSuccessfulCalls.toDouble()
-                }.description("The number of buffered successful calls stored in the ring buffer")
-                .tags(tags)
-                .tag("kind", "successful")
-                .register(registry)
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.buffered.calls", breaker) {
-                    it.metrics.numberOfFailedCalls.toDouble()
-                }.description("The number of buffered failed calls stored in the ring buffer")
-                .tags(tags)
-                .tag("kind", "failed")
-                .register(registry)
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.slow.calls", breaker) {
-                    it.metrics.numberOfSlowSuccessfulCalls.toDouble()
-                }.description("The number of slow successful calls which were slower than a certain threshold")
-                .tags(tags)
-                .tag("kind", "successful")
-                .register(registry)
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.slow.calls", breaker) {
-                    it.metrics.numberOfSlowFailedCalls.toDouble()
-                }.description("The number of slow failed calls which were slower than a certain threshold")
-                .tags(tags)
-                .tag("kind", "failed")
-                .register(registry)
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.failure.rate", breaker) {
-                    it.metrics.failureRate.toDouble()
-                }.description("The failure rate of the circuit breaker")
-                .tags(tags)
-                .register(registry)
-        boundResilience4jMeters +=
-            Gauge
-                .builder("resilience4j.circuitbreaker.slow.call.rate", breaker) {
-                    it.metrics.slowCallRate.toDouble()
-                }.description("The slow call rate of the circuit breaker")
-                .tags(tags)
-                .register(registry)
+        // The buffered/slow-call and rate gauges of the official binder,
+        // as a table: name, kind tag (null = untagged), description,
+        // value - so the mirror the class KDoc commits to checking on
+        // every Resilience4j upgrade is one list, not a page of chains.
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.buffered.calls", "kind", "successful", "The number of buffered successful calls stored in the ring buffer") {
+            it.metrics.numberOfSuccessfulCalls.toDouble()
+        }
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.buffered.calls", "kind", "failed", "The number of buffered failed calls stored in the ring buffer") {
+            it.metrics.numberOfFailedCalls.toDouble()
+        }
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.calls", "kind", "successful", "The number of slow successful calls which were slower than a certain threshold") {
+            it.metrics.numberOfSlowSuccessfulCalls.toDouble()
+        }
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.calls", "kind", "failed", "The number of slow failed calls which were slower than a certain threshold") {
+            it.metrics.numberOfSlowFailedCalls.toDouble()
+        }
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.failure.rate", null, null, "The failure rate of the circuit breaker") {
+            it.metrics.failureRate.toDouble()
+        }
+        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.call.rate", null, null, "The slow call rate of the circuit breaker") {
+            it.metrics.slowCallRate.toDouble()
+        }
 
         // Event-driven call meters. The consumers are attached exactly
         // once per breaker (no deregistration API exists) and write
@@ -341,30 +312,9 @@ internal class MetricsBindings(
                     }
                 }
             }
-        holder.successfulCalls =
-            Timer
-                .builder("resilience4j.circuitbreaker.calls")
-                .description("Total number of successful calls")
-                .tags(tags)
-                .tag("kind", "successful")
-                .register(registry)
-                .also { boundResilience4jMeters += it }
-        holder.failedCalls =
-            Timer
-                .builder("resilience4j.circuitbreaker.calls")
-                .description("Total number of failed calls")
-                .tags(tags)
-                .tag("kind", "failed")
-                .register(registry)
-                .also { boundResilience4jMeters += it }
-        holder.ignoredCalls =
-            Timer
-                .builder("resilience4j.circuitbreaker.calls")
-                .description("Total number of calls which failed but the exception was ignored")
-                .tags(tags)
-                .tag("kind", "ignored")
-                .register(registry)
-                .also { boundResilience4jMeters += it }
+        holder.successfulCalls = registerCallTimer(registry, tags, "successful", "Total number of successful calls")
+        holder.failedCalls = registerCallTimer(registry, tags, "failed", "Total number of failed calls")
+        holder.ignoredCalls = registerCallTimer(registry, tags, "ignored", "Total number of calls which failed but the exception was ignored")
         holder.notPermittedCalls =
             Counter
                 .builder("resilience4j.circuitbreaker.not.permitted.calls")
@@ -374,6 +324,39 @@ internal class MetricsBindings(
                 .register(registry)
                 .also { boundResilience4jMeters += it }
     }
+
+    /** Registers one breaker gauge (optionally with one extra tag) and tracks it for [unbind]. */
+    private fun registerBreakerGauge(
+        registry: MeterRegistry,
+        breaker: CircuitBreaker,
+        tags: Tags,
+        name: String,
+        tagKey: String?,
+        tagValue: String?,
+        description: String,
+        value: (CircuitBreaker) -> Double,
+    ) {
+        val builder = Gauge.builder(name, breaker) { value(it) }.description(description).tags(tags)
+        if (tagKey != null && tagValue != null) {
+            builder.tag(tagKey, tagValue)
+        }
+        boundResilience4jMeters += builder.register(registry)
+    }
+
+    /** Registers one `resilience4j.circuitbreaker.calls` timer of the given kind and tracks it for [unbind]. */
+    private fun registerCallTimer(
+        registry: MeterRegistry,
+        tags: Tags,
+        kind: String,
+        description: String,
+    ): Timer =
+        Timer
+            .builder("resilience4j.circuitbreaker.calls")
+            .description(description)
+            .tags(tags)
+            .tag("kind", kind)
+            .register(registry)
+            .also { boundResilience4jMeters += it }
 
     /**
      * Best-effort binding of Kafka producer-internal metrics. Requires

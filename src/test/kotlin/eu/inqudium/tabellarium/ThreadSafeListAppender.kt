@@ -15,7 +15,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * Instantiated reflectively by Joran in the XML round-trip tests, so
  * the class needs its public no-arg constructor; the programmatic
- * tests use its started subclass [RecordingAppender].
+ * tests use its started subclass [RecordingAppender] - explicitly open
+ * for that subclass, because the build has no all-open plugin.
  */
 internal open class ThreadSafeListAppender : AppenderBase<ILoggingEvent>() {
     val events = CopyOnWriteArrayList<ILoggingEvent>()

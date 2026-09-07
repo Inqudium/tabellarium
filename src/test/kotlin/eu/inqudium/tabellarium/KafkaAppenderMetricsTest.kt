@@ -47,10 +47,12 @@ class KafkaAppenderMetricsTest {
 
         @Test
         fun `should always return the same NO_OP instance`() {
-            // Then: companion-provided NO_OP must be a stable singleton
-            //   so callers can hold a reference and compare by identity.
+            // Given / When: two reads of the companion-provided instance
             val first = KafkaAppenderMetrics.NO_OP
             val second = KafkaAppenderMetrics.NO_OP
+
+            // Then: a stable singleton, so callers can hold a reference
+            //   and compare by identity
             assertThat(first).isSameAs(second)
         }
     }

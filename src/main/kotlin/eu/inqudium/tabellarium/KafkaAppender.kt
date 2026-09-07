@@ -484,12 +484,13 @@ class KafkaAppender :
                     SendDispatcher(
                         topicClass = topicClass,
                         sendAction = { pending ->
-                            // claimDiversion shares the per-item exactly-once
-                            // guard with the dispatcher, so a forced-shutdown
-                            // divert and the sender's own error routing can
-                            // never both deliver the same event. The detached
-                            // claim object (not the PendingSend) is what the
-                            // Kafka callback retains - see DiversionClaim.
+                            // Invariant: claimDiversion shares the per-item
+                            // exactly-once guard with the dispatcher, so a
+                            // forced-shutdown divert and the sender's own
+                            // error routing never both deliver the same
+                            // event. Rationale: the detached claim object
+                            // (not the PendingSend) is what the Kafka
+                            // callback retains - see DiversionClaim.
                             sender.send(
                                 topicClass,
                                 pending.topicName,
@@ -805,12 +806,12 @@ class KafkaAppender :
 
     /**
      * Closes all send dispatchers concurrently within one shared budget
-     * ([ParallelClose]). Each [SendDispatcher.close] is itself bounded
+     * ([closeInParallel]). Each [SendDispatcher.close] is itself bounded
      * (drain timeout plus interrupt grace), so the closer threads always
      * finish; the join budget only adds scheduling margin.
      */
     private fun closeSendDispatchersInParallel() {
-        ParallelClose.runWithin(
+        closeInParallel(
             budgetMs = SEND_DISPATCHER_CLOSE_BUDGET_MS,
             tasks =
                 sendDispatchers.map { (topicClass, dispatcher) ->
@@ -876,10 +877,10 @@ class KafkaAppender :
         commonTags: Iterable<Tag> = Tags.empty(),
     ) {
         bindLock.withLock {
-            // Re-checked under the lock: stop() flips isStarted before it
-            // takes the lock for the unbind, so a bind that arrives after
-            // that observes the stopped state here instead of registering
-            // meters nothing would remove.
+            // Safety: re-checked under the lock - stop() flips isStarted
+            // before it takes the lock for the unbind, so a bind that
+            // arrives after that observes the stopped state here instead
+            // of registering meters nothing would remove.
             if (!isStarted) {
                 addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
                 return

@@ -1,5 +1,6 @@
 package eu.inqudium.tabellarium
 
+import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
@@ -37,6 +38,16 @@ class MicrometerKafkaAppenderMetricsTest {
         val tagList = tags.map { Tag.of(it.first, it.second) }
         return registry.find(name).tags(tagList).timer()
             ?: error("timer $name with tags ${tags.toList()} not found in registry")
+    }
+
+    private fun gauge(
+        registry: SimpleMeterRegistry,
+        name: String,
+        vararg tags: Pair<String, String>,
+    ): Gauge {
+        val tagList = tags.map { Tag.of(it.first, it.second) }
+        return registry.find(name).tags(tagList).gauge()
+            ?: error("gauge $name with tags ${tags.toList()} not found in registry")
     }
 
     @Nested
@@ -207,20 +218,11 @@ class MicrometerKafkaAppenderMetricsTest {
             metrics.registerFallbackQueueGauges(queueSize = backing::get, capacity = 100)
 
             // When / Then: gauge follows the supplier
-            assertThat(
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
-                    .gauge()!!
-                    .value(),
-            ).isEqualTo(0.0)
+            val queueSize = gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
+            assertThat(queueSize.value()).isEqualTo(0.0)
 
             backing.set(42)
-            assertThat(
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
-                    .gauge()!!
-                    .value(),
-            ).isEqualTo(42.0)
+            assertThat(queueSize.value()).isEqualTo(42.0)
         }
 
         @Test
@@ -233,12 +235,7 @@ class MicrometerKafkaAppenderMetricsTest {
             metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 2048)
 
             // Then
-            assertThat(
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY)
-                    .gauge()!!
-                    .value(),
-            ).isEqualTo(2048.0)
+            assertThat(gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).value()).isEqualTo(2048.0)
         }
     }
 
@@ -257,21 +254,21 @@ class MicrometerKafkaAppenderMetricsTest {
 
             // Then: counters carry the common tag in addition to the per-call tags
             val accepted =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                    .tag("service", "payment-service")
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit")
-                    .counter()
-            assertThat(accepted).isNotNull
-            assertThat(accepted!!.count()).isEqualTo(1.0)
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    "service" to "payment-service",
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "audit",
+                )
+            assertThat(accepted).isEqualTo(1.0)
 
             val dropped =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED)
-                    .tag("service", "payment-service")
-                    .counter()
-            assertThat(dropped).isNotNull
-            assertThat(dropped!!.count()).isEqualTo(1.0)
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED,
+                    "service" to "payment-service",
+                )
+            assertThat(dropped).isEqualTo(1.0)
         }
     }
 
@@ -310,37 +307,37 @@ class MicrometerKafkaAppenderMetricsTest {
 
             // Then: all three metric types carry the appender tag
             val accepted =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "audit-appender")
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit")
-                    .counter()
-            assertThat(accepted).isNotNull
-            assertThat(accepted!!.count()).isEqualTo(1.0)
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "audit-appender",
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "audit",
+                )
+            assertThat(accepted).isEqualTo(1.0)
 
             val dropped =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "audit-appender")
-                    .counter()
-            assertThat(dropped).isNotNull
-            assertThat(dropped!!.count()).isEqualTo(1.0)
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "audit-appender",
+                )
+            assertThat(dropped).isEqualTo(1.0)
 
             val queueSize =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "audit-appender")
-                    .gauge()
-            assertThat(queueSize).isNotNull
-            assertThat(queueSize!!.value()).isEqualTo(7.0)
+                gauge(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "audit-appender",
+                )
+            assertThat(queueSize.value()).isEqualTo(7.0)
 
             val queueCapacity =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "audit-appender")
-                    .gauge()
-            assertThat(queueCapacity).isNotNull
-            assertThat(queueCapacity!!.value()).isEqualTo(100.0)
+                gauge(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "audit-appender",
+                )
+            assertThat(queueCapacity.value()).isEqualTo(100.0)
         }
 
         @Test
@@ -379,20 +376,10 @@ class MicrometerKafkaAppenderMetricsTest {
             secondInstance.registerFallbackQueueGauges(queueSize = { 22 }, capacity = 200)
 
             // Then: each instance has its own gauge series
-            val first =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "audit-appender")
-                    .gauge()
-            val second =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "technical-appender")
-                    .gauge()
-            assertThat(first).isNotNull
-            assertThat(second).isNotNull
-            assertThat(first!!.value()).isEqualTo(11.0)
-            assertThat(second!!.value()).isEqualTo(22.0)
+            val first = gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE, MicrometerKafkaAppenderMetrics.TAG_APPENDER to "audit-appender")
+            val second = gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE, MicrometerKafkaAppenderMetrics.TAG_APPENDER to "technical-appender")
+            assertThat(first.value()).isEqualTo(11.0)
+            assertThat(second.value()).isEqualTo(22.0)
         }
 
         @Test
@@ -406,12 +393,12 @@ class MicrometerKafkaAppenderMetricsTest {
 
             // Then: the tag is present with value "unnamed"
             val accepted =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                    .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "unnamed")
-                    .counter()
-            assertThat(accepted).isNotNull
-            assertThat(accepted!!.count()).isEqualTo(1.0)
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "unnamed",
+                )
+            assertThat(accepted).isEqualTo(1.0)
         }
 
         @Test

@@ -93,12 +93,12 @@ internal class ProducerRegistry private constructor(
      * as suppressed exceptions) so the caller's warn path can surface
      * them instead of losing them silently.
      *
-     * The parallel wait itself is [ParallelClose] - shared with the
+     * The parallel wait itself is [closeInParallel] - shared with the
      * appender's dispatcher teardown - including its interrupt handling.
      */
     override fun close() {
         val failures = ConcurrentLinkedQueue<Pair<TopicClass, Exception>>()
-        ParallelClose.runWithin(
+        closeInParallel(
             budgetMs = closeTimeout.toMillis() + JOIN_MARGIN.toMillis(),
             tasks =
                 producersByClass.map { (topicClass, producer) ->

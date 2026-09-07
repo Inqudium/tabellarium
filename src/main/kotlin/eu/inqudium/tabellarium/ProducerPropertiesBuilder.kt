@@ -83,7 +83,8 @@ internal class ProducerPropertiesBuilder(
         val violations = mutableListOf<MandatoryOverrideViolation>()
         val merged = LinkedHashMap(baseProperties)
 
-        // Default overrides: only when the caller did not set the property.
+        // Default overrides: only when the caller did not set the property
+        // (putIfAbsent - the caller's value wins).
         // Safety: an explicit enable.idempotence=true from the caller makes
         // the class's acks default (acks=1 for TECHNICAL/PERFORMANCE)
         // illegal for the Kafka client, so that one default steps aside

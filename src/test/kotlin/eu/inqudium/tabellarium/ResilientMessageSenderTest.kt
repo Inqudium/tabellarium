@@ -162,6 +162,10 @@ class ResilientMessageSenderTest {
         val registry: ProducerRegistry,
         val dispatcher: FallbackDispatcher?,
     ) : AutoCloseable {
+        /** The fallback recorder of a context built with one; fails with a message otherwise. */
+        val recorder: RecordingAppender
+            get() = checkNotNull(fallback) { "this sender context was built without a fallback recorder" }
+
         override fun close() {
             // Order as in the appender: producers first (they can still
             // divert into the dispatcher), then the dispatcher drains.
@@ -304,8 +308,8 @@ class ResilientMessageSenderTest {
 
             // Then: producer was not touched; event reached the fallback
             assertThat(ctx.factory.createdProducers[0].history()).isEmpty()
-            pollUntil { ctx.fallback!!.events.size == 1 }
-            assertThat(ctx.fallback!!.events[0].message).isEqualTo("lost event")
+            pollUntil { ctx.recorder.events.size == 1 }
+            assertThat(ctx.recorder.events[0].message).isEqualTo("lost event")
         }
 
         @Test
@@ -362,7 +366,7 @@ class ResilientMessageSenderTest {
 
             // Then: producer received the record, fallback has not yet been called
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(1)
-            assertThat(ctx.fallback!!.events).isEmpty()
+            assertThat(ctx.recorder.events).isEmpty()
 
             // When: simulate an async failure from Kafka
             ctx.factory.createdProducers[0].errorNext(
@@ -370,8 +374,8 @@ class ResilientMessageSenderTest {
             )
 
             // Then: fallback received the original event
-            pollUntil { ctx.fallback.events.size == 1 }
-            assertThat(ctx.fallback.events[0].message).isEqualTo("delivery will fail")
+            pollUntil { ctx.recorder.events.size == 1 }
+            assertThat(ctx.recorder.events[0].message).isEqualTo("delivery will fail")
         }
     }
 
@@ -395,8 +399,8 @@ class ResilientMessageSenderTest {
             )
 
             // Then: fallback received the original event
-            pollUntil { ctx.fallback!!.events.size == 1 }
-            assertThat(ctx.fallback!!.events[0].message).isEqualTo("sync failure")
+            pollUntil { ctx.recorder.events.size == 1 }
+            assertThat(ctx.recorder.events[0].message).isEqualTo("sync failure")
         }
 
         @Test
@@ -489,9 +493,9 @@ class ResilientMessageSenderTest {
             assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
             assertThat(metrics.events.single { it.kind == "fallback" }.detail).isEqualTo("send.error")
             assertThat(breaker.metrics.numberOfFailedCalls).isEqualTo(1)
-            pollUntil { ctx.fallback!!.events.size == 1 }
+            pollUntil { ctx.recorder.events.size == 1 }
             assertThat(
-                ctx.fallback!!
+                ctx.recorder
                     .events
                     .single()
                     .message,
@@ -532,7 +536,7 @@ class ResilientMessageSenderTest {
     inner class `Topic-class isolation` {
         @Test
         fun `should use a topic-class-specific circuit breaker name`() {
-            // Given
+            // When / Then: the name is derived from the class, lowercase
             assertThat(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
                 .isEqualTo("kafka-appender-audit")
             assertThat(ResilientMessageSender.circuitBreakerName(TopicClass.PERFORMANCE))
@@ -577,7 +581,7 @@ class ResilientMessageSenderTest {
             assertThat(technicalProducer.history()[0].topic()).isEqualTo("technical-events")
 
             // And: AUDIT fallback was not touched (we didn't send to AUDIT)
-            assertThat(ctx.fallback!!.events).isEmpty()
+            assertThat(ctx.recorder.events).isEmpty()
         }
     }
 
@@ -618,7 +622,7 @@ class ResilientMessageSenderTest {
 
             // Then: all 100 reached the producer; fallback is empty
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(100)
-            assertThat(ctx.fallback!!.events).isEmpty()
+            assertThat(ctx.recorder.events).isEmpty()
         }
 
         @Test
@@ -666,7 +670,7 @@ class ResilientMessageSenderTest {
 
             // Then: one probe reached the producer, four went to fallback
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(1)
-            pollUntil { ctx.fallback!!.events.size == 4 }
+            pollUntil { ctx.recorder.events.size == 4 }
         }
 
         @Test
@@ -714,7 +718,7 @@ class ResilientMessageSenderTest {
 
             // Then: both probes reached the producer
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(2)
-            assertThat(ctx.fallback!!.events).isEmpty()
+            assertThat(ctx.recorder.events).isEmpty()
         }
 
         @Test
@@ -748,7 +752,7 @@ class ResilientMessageSenderTest {
             //   by Resilience4j default, so all 5 fit). The throttle
             //   does not add gating.
             assertThat(ctx.factory.createdProducers[0].history()).hasSize(5)
-            assertThat(ctx.fallback!!.events).isEmpty()
+            assertThat(ctx.recorder.events).isEmpty()
         }
     }
 
@@ -802,7 +806,7 @@ class ResilientMessageSenderTest {
 
             // Then: breaker still CLOSED, and every event went to fallback
             assertThat(breaker.state).isEqualTo(CircuitBreaker.State.CLOSED)
-            pollUntil { ctx.fallback!!.events.size == 30 }
+            pollUntil { ctx.recorder.events.size == 30 }
         }
 
         @Test
