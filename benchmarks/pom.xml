@@ -6,15 +6,20 @@
 
     <groupId>eu.inqudium</groupId>
     <artifactId>tabellarium-benchmarks</artifactId>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>1.1.0</version>
     <packaging>jar</packaging>
 
     <!--
         JMH verification benchmarks for the PERF_ANALYSIS reports under
         ../docs/assessment/. Deliberately a STANDALONE module (not wired
         into the library's reactor): the library build stays untouched,
-        and this module depends on the installed snapshot
-        (`mvn -DskipTests install` in the repo root first).
+        and this module depends on the installed library
+        (`mvn -DskipTests install` in the repo root first). The
+        library version it links against is the `tabellarium.version`
+        property: its default tracks the repo's current revision, and
+        CI overrides it with the version it just built
+        (`-Dtabellarium.version=...`), so a release bump can never leave
+        this module pointing at an artifact that no longer exists.
 
         Sources are Java, not Kotlin: JMH's annotation processing is
         first-class under javac, and the benchmarks reach the library's
@@ -31,13 +36,14 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jmh.version>1.37</jmh.version>
         <micrometer.version>1.17.1</micrometer.version>
+        <tabellarium.version>1.1.0</tabellarium.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>eu.inqudium</groupId>
             <artifactId>tabellarium</artifactId>
-            <version>1.0.1-SNAPSHOT</version>
+            <version>${tabellarium.version}</version>
         </dependency>
         <!-- Optional in the library, needed here: the metrics-bound
              pipeline variant (finding 3) binds a SimpleMeterRegistry. -->

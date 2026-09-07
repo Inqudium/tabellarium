@@ -57,7 +57,9 @@ API (ADR-0002) is unchanged.
   from the README.
 - CI compiles the benchmark module against the freshly built library
   (compile only), so the JMH regression instrument cannot rot silently
-  when an internal seam it reaches changes shape.
+  when an internal seam it reaches changes shape; the module links
+  against the library through its `tabellarium.version` property, which
+  CI sets to the version it just built.
 
 ### Changed
 
