@@ -34,27 +34,6 @@ import org.springframework.context.event.ContextRefreshedEvent
 class KafkaAppenderMetricsBindingTest {
     // -- Test fixtures --------------------------------------------------
 
-    /**
-     * Minimal encoder: formatted message → UTF-8 bytes. Enough to
-     * exercise the appender hot path without pulling in Logstash.
-     */
-    private class TestEncoder : EncoderBase<ILoggingEvent>() {
-        override fun encode(event: ILoggingEvent): ByteArray = event.formattedMessage.toByteArray(Charsets.UTF_8)
-
-        override fun headerBytes(): ByteArray = ByteArray(0)
-
-        override fun footerBytes(): ByteArray = ByteArray(0)
-    }
-
-    /**
-     * Producer factory returning auto-completing MockProducers, so
-     * `producer.send` callbacks fire synchronously. No real Kafka
-     * cluster involved.
-     */
-    private class MockProducerFactory : ProducerFactory {
-        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
-    }
-
     private lateinit var loggerContext: LoggerContext
     private lateinit var appender: KafkaAppender
 
@@ -79,7 +58,7 @@ class KafkaAppenderMetricsBindingTest {
             context = loggerContext
             name = "TEST_KAFKA"
             encoder =
-                TestEncoder().also {
+                MessageBytesEncoder().also {
                     it.context = loggerContext
                     it.start()
                 }
@@ -90,7 +69,7 @@ class KafkaAppenderMetricsBindingTest {
             topicMapping = TopicMappingConfig().apply { defaultTopic = "default.topic" }
             // Inject the mock producer factory so start() succeeds without
             // a real Kafka cluster. Same hook KafkaAppenderTest uses.
-            producerFactory = MockProducerFactory()
+            producerFactory = RecordingProducerFactory()
             start()
         }
 
@@ -207,55 +186,6 @@ class KafkaAppenderMetricsBindingTest {
                     // Then: the tagged counter advanced by exactly one,
                     //   proving the common tags reach the actual hot-
                     //   path metric (not just the initial registration).
-                    assertThat(after - before).isEqualTo(1.0)
-                }
-        }
-
-        @Test
-        fun `should bind a restarted appender again when bindAppenders is called`() {
-            // What is to be tested? Whether the binding decides on the
-            //   appender's own bound state rather than on instance
-            //   identity: an appender that was stopped (which unbinds its
-            //   metrics) and started again is the same instance, and a
-            //   manual bindAppenders() call - the documented rebind path -
-            //   must bind it again instead of skipping it as "known".
-            // How will the test case be deemed successful and why? Successful
-            //   if after a stop/start cycle the appender's counters are
-            //   gone from the registry, and after bindAppenders() a
-            //   hot-path event moves the accepted counter by exactly one
-            //   again.
-            // Why is it important to test this test case? Finding R2-4 of
-            //   the 2026-09-07 follow-up: with the identity set, the
-            //   restarted appender stayed dark although the documentation
-            //   named bindAppenders() as the way to relight it.
-
-            ApplicationContextRunner()
-                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
-                .run { ctx ->
-                    val registry = ctx.getBean(MeterRegistry::class.java)
-                    val binding = ctx.getBean(KafkaAppenderMetricsBinding::class.java)
-                    assertThat(registry.find("kafka.appender.events.accepted").counters()).isNotEmpty
-
-                    // When: the appender is restarted (stop unbinds) and
-                    //   the binding is asked again
-                    appender.stop()
-                    assertThat(registry.find("kafka.appender.events.accepted").counters()).isEmpty()
-                    appender.start()
-                    assertThat(appender.isStarted).isTrue()
-                    binding.bindAppenders()
-
-                    // Then: bound again - the counters exist and count
-                    val before =
-                        registry
-                            .find("kafka.appender.events.accepted")
-                            .counters()
-                            .sumOf { it.count() }
-                    appender.doAppend(loggingEvent())
-                    val after =
-                        registry
-                            .find("kafka.appender.events.accepted")
-                            .counters()
-                            .sumOf { it.count() }
                     assertThat(after - before).isEqualTo(1.0)
                 }
         }

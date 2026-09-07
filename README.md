@@ -287,16 +287,13 @@ Three resilience mechanisms run independently per topic class:
 
 1. **Per-class circuit breaker.** A Resilience4j `CircuitBreaker` is
    instantiated per active topic class. A stuck audit-topic broker does
-   not throttle technical-log delivery, and vice versa. Default
-   thresholds (tuned for logging volume, canonical in the
-   [configuration guide](docs/config/kafka-appender-config-guide.md)):
-   50% failure rate over a sliding window of 20 calls, 30 second
-   cooldown in open state, 10 probe calls in half-open, probes spread
-   5 ms apart. These thresholds are fixed in code - the breaker
-   registry is an internal seam (ADR-0002), so there is currently no
-   supported way to tune them per deployment; if a real tuning need
-   comes up, open an issue so it can become an XML-bindable property
-   with a follow-up ADR instead of an ad-hoc hook.
+   not throttle technical-log delivery, and vice versa. The
+   thresholds are tuned for logging volume and fixed in code; their
+   canonical values live in the configuration guide's
+   [defaults quick reference](docs/config/kafka-appender-config-guide.md#12-defaults-quick-reference),
+   which a test keeps in step with the constants. Why they are not
+   configurable - and what else is deliberately fixed - is explained in
+   the guide's [section on fixed behavior](docs/config/kafka-appender-config-guide.md#13-what-is-deliberately-not-configurable).
 
 2. **Asynchronous delivery with callback-driven outcome tracking.**
    Kafka's `producer.send` is invoked with a callback that feeds the
@@ -790,7 +787,10 @@ user id, account id) — most deployments use the trace-id default. Per
 [ADR-0002](docs/adr/ADR-0002-public-api-is-the-operator-surface.md),
 such an override would be added as an XML-bindable `KafkaAppender`
 property (e.g. a partitioning-key MDC name), not by exposing the
-internal enricher — open an issue if your deployment needs it.
+internal enricher — open an issue if your deployment needs it. The
+configuration guide lists
+[everything that is deliberately not configurable](docs/config/kafka-appender-config-guide.md#13-what-is-deliberately-not-configurable)
+and the reason for each item.
 
 ## Future work
 

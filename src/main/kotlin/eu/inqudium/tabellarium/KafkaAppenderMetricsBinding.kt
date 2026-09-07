@@ -75,9 +75,8 @@ import java.util.IdentityHashMap
  * harnesses or context-reload scenarios) result in only one bind per
  * appender: an appender that already has a metrics binding is
  * skipped. The decision is made on the appender's own bound state,
- * not on instance identity - so a restarted appender (whose `stop()`
- * unbound its metrics) is bound again on the next call, and a bind
- * that failed is retried.
+ * not on instance identity - so a bind that failed is retried on the
+ * next call and a manual bind is never duplicated.
  *
  * ## Logback reconfiguration
  *
@@ -90,8 +89,7 @@ import java.util.IdentityHashMap
  * in place (`LoggerContextListener.onStart` runs only for the initial
  * start, `onReset` before the new appenders exist), so this class
  * cannot rebind automatically. Compatibility: after a reconfiguration
- * (and equally after a programmatic restart of an appender) the
- * metrics stay dark until [bindAppenders] is called again - it is
+ * the metrics stay dark until [bindAppenders] is called again - it is
  * public and idempotent for exactly this purpose (e.g. from an
  * application-side `LoggerContextListener` that defers to the next
  * scheduler tick, or from an operations endpoint).
@@ -148,9 +146,7 @@ open class KafkaAppenderMetricsBinding(
             }
             if (appender.isMeterRegistryBound) {
                 // Already bound (by a previous call or manually); the
-                // appender's own state is the source of truth, so a
-                // restarted instance - unbound by its stop() - is not
-                // mistaken for a bound one.
+                // appender's own state is the source of truth.
                 continue
             }
             try {

@@ -492,10 +492,9 @@ configuration is tuned for logging traffic:
 | `waitDurationInOpenState`            | `30s`            |
 | `permittedNumberOfCallsInHalfOpenState` | `10`          |
 
-These values are fixed in code: the `CircuitBreakerRegistry` is an internal
-seam (ADR-0002) and not reachable through the operator surface, so there is
-currently no supported per-class override. A demonstrated tuning need should
-become an XML-bindable property with a follow-up ADR.
+These values are fixed in code (see [section 13](#13-what-is-deliberately-not-configurable)
+for why); the table above and the defaults quick reference are kept in step
+with the constants by `DocumentationContractTest`.
 
 **Ignored exceptions.** The breaker is an *infrastructure-health* signal
 ("is Kafka reachable?"), not a payload validator. Deterministic,
@@ -765,7 +764,29 @@ bound.
 | Metrics                                      | off (no-op) until bound          | code |
 
 "code" defaults are not exposed through the XML surface today; they are
-listed so operators understand the runtime behavior.
+listed so operators understand the runtime behavior. This table is the
+**canonical** statement of these numbers: `DocumentationContractTest`
+compares every "code" row against the constants in the library, so a
+changed constant fails the build until the table follows. The README and
+the KDoc link here instead of restating the values.
+
+---
+
+## 13. What is deliberately not configurable
+
+Everything marked "code" above is fixed on purpose, not by omission. The
+operator surface is the public API (ADR-0002); a knob is added when a
+demonstrated need exists, as an XML-bindable property with a follow-up ADR
+- never as an ad-hoc hook into an internal component.
+
+| Fixed behavior | Why it is fixed |
+| -------------- | --------------- |
+| Circuit-breaker thresholds and the half-open probe gap | Tuned for logging traffic (trip after ~10 failures, recover in 30 s, probes spread so a burst cannot burn the half-open window); the registry is an internal seam. No deployment has yet needed different values - open an issue if yours does. |
+| Fallback queue capacity and both shutdown drain budgets | Sized so the whole teardown (send drain, producer close, fallback drain) fits a Kubernetes `terminationGracePeriodSeconds: 30` with margin; exposing one budget without the others would let a single setting break that total. |
+| `max.block.ms` caps (500 ms; 200 ms for `PERFORMANCE`) | A ceiling that operators may lower but not raise: it bounds each send worker's worst-case stall per event, which is what keeps queue drain during an outage and the shutdown budget predictable. |
+| Partitioning-key source (`traceId` in the MDC) | Per ADR-0002 an override would be an XML-bindable appender property; until a deployment asks for one, the trace-id default is the only path (README, "Extension points"). |
+| Serializers (`ByteArraySerializer` for key and value) | The appender's wire format; any other serializer would fail every record in the Kafka sender thread. |
+| Restart of a stopped appender | Refused by design (ADR-0004): Logback replaces appender instances on reconfiguration instead of restarting them, and the appender follows that lifecycle. |
 
 ---
 

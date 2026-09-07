@@ -88,10 +88,12 @@ import kotlin.concurrent.withLock
  *   active class) drains into the single fallback queue of the same
  *   default capacity; on a stop during an outage, overflow beyond that
  *   is dropped and counted.
- * - **Restart.** `start()` after `stop()` rebuilds the pipeline
- *   against the still-attached fallback appender (restarting it) and
- *   re-arms the one-shot hot-path error report. Metrics are not
- *   rebound automatically - call [bindMeterRegistry] again.
+ * - **No restart.** `start()` after `stop()` is refused with an error
+ *   (ADR-0004): Logback never restarts an appender instance - a
+ *   reconfiguration stops the old ones and builds new ones - and the
+ *   appender follows that lifecycle instead of carrying every per-life
+ *   resource (fallback, breakers, metrics binding, error guard) across
+ *   a second start.
  *
  * ## Why UnsynchronizedAppenderBase
  *
@@ -312,8 +314,8 @@ class KafkaAppender :
      * Guards the teardown in [stop] so a repeated stop (Logback may call
      * it more than once during context teardown) does not re-run the
      * close sequence - re-closing the dispatcher would double-count its
-     * remaining queue as dropped and re-emit the drop warning. Reset in
-     * [start] in case the appender is ever restarted.
+     * remaining queue as dropped and re-emit the drop warning. Never
+     * reset: once stopped, [start] refuses (ADR-0004).
      */
     private val stopExecuted = AtomicBoolean(false)
 
@@ -328,23 +330,20 @@ class KafkaAppender :
             addWarn("KafkaAppender is already started; ignoring repeated start().")
             return
         }
+        if (stopExecuted.get()) {
+            // Rationale: a stopped appender has released its fallback,
+            // its breakers' history, its metrics binding and its one-shot
+            // error guard; making all of that come back symmetrically is
+            // a lifecycle nobody asked for - Logback itself replaces
+            // instances instead of restarting them (ADR-0004).
+            addError(
+                "KafkaAppender cannot be started again after stop() (ADR-0004): Logback replaces " +
+                    "appender instances on reconfiguration - create a new instance instead.",
+            )
+            return
+        }
         if (!validateConfiguration()) {
             return // addError was already called for each failure
-        }
-        // Restart symmetry: a previous stop() stopped the fallback
-        // appender (keeping it attached) and latched the one-shot error
-        // report; both are per-lifecycle and start fresh here.
-        stopExecuted.set(false)
-        firstHotPathErrorLogged.set(false)
-        fallbackAppender?.let { fallback ->
-            if (!fallback.isStarted) {
-                try {
-                    fallback.start()
-                } catch (e: Exception) {
-                    addError("Failed to restart the fallback appender '${fallback.name}' (${e.javaClass.name}): ${e.message}", e)
-                    return
-                }
-            }
         }
 
         // Start the encoder BEFORE the pipeline exists: encoders are
@@ -470,18 +469,6 @@ class KafkaAppender :
                         },
                     )
                 }
-            // Rationale: the breaker registry lives as long as the appender,
-            // so on a restart the sender would look up the SAME breakers
-            // the previous life left behind - possibly OPEN against a
-            // cluster the operator has since replaced. Everything else in
-            // the pipeline is rebuilt fresh; the breakers follow suit by
-            // being reset to CLOSED (identity kept, so the metrics binding's
-            // per-breaker consumers stay valid). A first start finds none.
-            registry.activeTopicClasses.forEach { topicClass ->
-                circuitBreakerRegistry
-                    .find(ResilientMessageSender.circuitBreakerName(topicClass))
-                    .ifPresent { breaker -> breaker.reset() }
-            }
             val sender =
                 ResilientMessageSender(
                     producerRegistry = registry,
@@ -800,10 +787,10 @@ class KafkaAppender :
         // Stop the attached fallback appender. Logback may or may not
         // hold its own reference to it; calling stop here guarantees its
         // file handles and worker threads are released even if no other
-        // path closes it. Deliberately NOT detached: the slot must
-        // survive for a restart (start() starts it again), and the
-        // AppenderAttachable contract's detachAndStopAllAppenders stays
-        // available to callers who really want the slot cleared.
+        // path closes it. Not detached: the stopped appender stays
+        // inspectable through the AppenderAttachable accessors, and
+        // detachAndStopAllAppenders remains available to callers who
+        // want the slot cleared.
         try {
             fallbackAppender?.stop()
         } catch (e: Exception) {
@@ -817,43 +804,25 @@ class KafkaAppender :
     }
 
     /**
-     * Closes all send dispatchers concurrently and waits for them within
-     * one shared budget. Each [SendDispatcher.close] is itself bounded
+     * Closes all send dispatchers concurrently within one shared budget
+     * ([ParallelClose]). Each [SendDispatcher.close] is itself bounded
      * (drain timeout plus interrupt grace), so the closer threads always
-     * finish; the join budget only adds scheduling margin. An interrupt
-     * of the stopping thread ends the wait early - the daemon closer
-     * threads complete on their own - and is restored before returning.
+     * finish; the join budget only adds scheduling margin.
      */
     private fun closeSendDispatchersInParallel() {
-        if (sendDispatchers.isEmpty()) return
-        val closers =
-            sendDispatchers.map { (topicClass, dispatcher) ->
-                Thread({
-                    try {
-                        dispatcher.close()
-                    } catch (e: Exception) {
-                        addWarn("Error closing send dispatcher for $topicClass: ${e.message}", e)
+        ParallelClose.runWithin(
+            budgetMs = SEND_DISPATCHER_CLOSE_BUDGET_MS,
+            tasks =
+                sendDispatchers.map { (topicClass, dispatcher) ->
+                    "tabellarium-send-dispatcher-close-${topicClass.tag}" to {
+                        try {
+                            dispatcher.close()
+                        } catch (e: Exception) {
+                            addWarn("Error closing send dispatcher for $topicClass: ${e.message}", e)
+                        }
                     }
-                }, "tabellarium-send-dispatcher-close-${topicClass.tag}").apply {
-                    isDaemon = true
-                    start()
-                }
-            }
-        var interrupted = false
-        val deadlineNanos = System.nanoTime() + SEND_DISPATCHER_CLOSE_BUDGET_MS * 1_000_000
-        for (closer in closers) {
-            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-            if (remainingMs <= 0) break
-            try {
-                closer.join(remainingMs)
-            } catch (_: InterruptedException) {
-                interrupted = true
-                break
-            }
-        }
-        if (interrupted) {
-            Thread.currentThread().interrupt()
-        }
+                },
+        )
     }
 
     // -- Public API: metrics integration --------------------------------
@@ -861,8 +830,9 @@ class KafkaAppender :
     /**
      * Whether a [bindMeterRegistry] binding is currently in place. The
      * [KafkaAppenderMetricsBinding] decides on this - not on appender
-     * identity - so a restarted instance (whose stop() unbound the
-     * metrics) is bound again on the next `bindAppenders()` call.
+     * identity - so an appender whose earlier bind failed is bound on
+     * the next `bindAppenders()` call and a bound one is never bound
+     * twice.
      */
     internal val isMeterRegistryBound: Boolean
         get() = bindLock.withLock { metricsBindings.isBound }

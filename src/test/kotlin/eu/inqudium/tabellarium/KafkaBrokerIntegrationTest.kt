@@ -38,15 +38,6 @@ import java.util.concurrent.TimeUnit
  */
 @Tag("integration")
 class KafkaBrokerIntegrationTest {
-    /** Minimal encoder so the payload assertion is byte-exact. */
-    private class PlainTextEncoder : EncoderBase<ILoggingEvent>() {
-        override fun encode(event: ILoggingEvent): ByteArray = event.formattedMessage.toByteArray(Charsets.UTF_8)
-
-        override fun headerBytes(): ByteArray = ByteArray(0)
-
-        override fun footerBytes(): ByteArray = ByteArray(0)
-    }
-
     @Test
     fun `should deliver a TECHNICAL and an AUDIT record through a real broker`() {
         // What is to be tested? The central external system boundary
@@ -87,7 +78,7 @@ class KafkaBrokerIntegrationTest {
             val appender =
                 KafkaAppender().apply {
                     context = LoggerContext()
-                    encoder = PlainTextEncoder()
+                    encoder = MessageBytesEncoder()
                     component = "integration-test"
                     cmdbId = "CMDB-IT"
                     environment = "it"

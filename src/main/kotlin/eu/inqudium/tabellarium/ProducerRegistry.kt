@@ -93,40 +93,24 @@ internal class ProducerRegistry private constructor(
      * as suppressed exceptions) so the caller's warn path can surface
      * them instead of losing them silently.
      *
-     * An interrupt while waiting stops the wait early, restores the
-     * interrupt flag, and leaves the daemon closer threads to finish on
-     * their own.
+     * The parallel wait itself is [ParallelClose] - shared with the
+     * appender's dispatcher teardown - including its interrupt handling.
      */
     override fun close() {
         val failures = ConcurrentLinkedQueue<Pair<TopicClass, Exception>>()
-        val closers =
-            producersByClass.map { (topicClass, producer) ->
-                Thread({
-                    try {
-                        producer.close(closeTimeout)
-                    } catch (e: Exception) {
-                        failures += topicClass to e
+        ParallelClose.runWithin(
+            budgetMs = closeTimeout.toMillis() + JOIN_MARGIN.toMillis(),
+            tasks =
+                producersByClass.map { (topicClass, producer) ->
+                    "tabellarium-producer-close-${topicClass.name.lowercase()}" to {
+                        try {
+                            producer.close(closeTimeout)
+                        } catch (e: Exception) {
+                            failures += topicClass to e
+                        }
                     }
-                }, "tabellarium-producer-close-${topicClass.name.lowercase()}").apply {
-                    isDaemon = true
-                    start()
-                }
-            }
-        var interrupted = false
-        val deadlineNanos = System.nanoTime() + closeTimeout.toNanos() + JOIN_MARGIN.toNanos()
-        for (closer in closers) {
-            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-            if (remainingMs <= 0) break
-            try {
-                closer.join(remainingMs)
-            } catch (_: InterruptedException) {
-                interrupted = true
-                break
-            }
-        }
-        if (interrupted) {
-            Thread.currentThread().interrupt()
-        }
+                },
+        )
         if (failures.isNotEmpty()) {
             val summary =
                 failures.joinToString(separator = "; ") { (topicClass, cause) ->
