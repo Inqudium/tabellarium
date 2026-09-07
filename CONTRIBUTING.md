@@ -134,7 +134,10 @@ JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
 2. Keep the change focused — one logical change per pull request.
 3. Make sure `mvn verify` passes.
 4. Update the README / `docs/` when the configuration surface or the
-   metrics inventory changes.
+   metrics inventory changes. `DocumentationContractTest` pins the
+   configuration guide's defaults tables and the metrics overview's
+   inventory to the constants, so a changed constant fails `mvn verify`
+   until the tables follow.
 5. Open the pull request with a description of *what* changed and *why*.
 
 ## Reporting bugs and requesting features

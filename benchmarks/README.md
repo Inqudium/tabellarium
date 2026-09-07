@@ -24,15 +24,16 @@ java -jar benchmarks/target/benchmarks.jar AppendPipelineBenchmark -bm sample -t
 ```
 
 All benchmarks use 3 forks, 5 warmup and 5 measurement iterations by
-default (annotation-driven). Raw outputs of the 2026-08-29 verification
-session live under `results/2026-08-29/`.
+default (annotation-driven). Raw outputs live under `results/<date>/`:
+the 2026-08-29 verification session, the 2026-08-30 re-run after the
+header fix, and the 2026-09-07 sender-path re-measurement.
 
 ## Inventory
 
 | Benchmark | Verifies | What it measures |
 |---|---|---|
-| `RecordHeadersBenchmark` | PERF_ANALYSIS-2026-08-29T11-01-08 finding 2 | Per-record header construction: production shape (5 × `headers().add`) vs. one shared pre-built header list. Primary metric: `gc.alloc.rate.norm`. |
-| `SenderPathBenchmark` | finding 3 | The delivered-path worker side (`ResilientMessageSender.send` incl. breaker, record build, instant-success callback) with `metricsBound=false/true`; the param delta is the observability envelope per delivered event. |
+| `RecordHeadersBenchmark` | PERF_ANALYSIS-2026-08-29T11-01-08 finding 2 | Per-record header construction: the pre-fix shape (5 × `headers().add` per record) vs. the shared pre-built header list production uses since the fix (`EnrichedRecord.headers`). Historical evidence, not a current-code regression guard. Primary metric: `gc.alloc.rate.norm`. |
+| `SenderPathBenchmark` | finding 3 | The delivered-path worker side (`ResilientMessageSender.send` incl. breaker, record build, instant-success callback object) with `metricsBound=false/true`; the param delta is the observability envelope per delivered event. Also the guard for the callback object's scalar replaceability: 112 B/op unbound since the `@Volatile` removal (`results/2026-09-07/`). |
 | `HandoffBenchmark` | finding 1 | The caller-side hand-off primitive: N producers `offer` into a bounded `LinkedBlockingQueue` while one batch-draining consumer keeps it near-empty (worst-case put-lock contention; `rejected` aux counter proves the regime). Thread split via `-tg 1,<producers>`. |
 | `AppendPipelineBenchmark` | secondary evidence (findings 1/3), caller-side allocation | The full production `doAppend` path open-loop against a `DiscardingProducer`. Under open load it saturates the worker and measures the shedding regime — the teardown prints the achieved path mix (delivered vs. diverted), which is part of the evidence, not a hidden variable. |
 

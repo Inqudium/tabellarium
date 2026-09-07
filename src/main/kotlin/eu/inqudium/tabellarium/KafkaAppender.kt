@@ -917,9 +917,9 @@ class KafkaAppender :
      * one fallback slot and the first one wins.
      *
      * **Ownership:** the KafkaAppender assumes it owns the attached
-     * fallback appender's lifecycle - [stop] stops it (keeping it
-     * attached, so a later [start] can start it again) to release file
-     * handles and worker threads. Do not attach an appender that is
+     * fallback appender's lifecycle - [stop] stops it (it stays attached
+     * and inspectable; the appender itself is not restarted, ADR-0004)
+     * to release file handles and worker threads. Do not attach an appender that is
      * simultaneously referenced by other loggers unless a full-context
      * shutdown is the only stop path in your deployment; a selective
      * stop of this appender would silence the shared appender for

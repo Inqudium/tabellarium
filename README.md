@@ -193,9 +193,11 @@ Reference for every supported element:
 | `<includeCallerData>`        | No       | boolean | Captures caller data on the logging thread before the asynchronous hand-off (default false); only relevant when a fallback layout uses `%caller`. |
 | `<appender-ref ref="..."/>`  | No       | ref     | Single fallback appender — see [Resilience](#resilience).                          |
 
-Missing or blank values for the five required elements cause the
-appender to refuse startup with an explicit `addError` on Logback's
-status manager. The error message identifies which element is missing.
+A missing `<encoder>` or a blank `<environment>`, `<component>` or
+`<cmdbId>` makes the appender refuse startup with an explicit `addError`
+on Logback's status manager naming the element; a missing
+`<defaultTopic>` or unusable producer properties fail the pipeline
+construction the same way.
 
 ## Delivery guarantees
 
@@ -302,10 +304,12 @@ Three resilience mechanisms run independently per topic class:
    source of truth for delivery outcome, so delivery failures are
    never invisible.
 
-3. **Fallback appender.** When the circuit is open or a send fails
-   synchronously, the original `ILoggingEvent` is routed to the
-   configured fallback appender. Standard Logback `<appender-ref>`
-   syntax is supported:
+3. **Fallback appender.** Whenever an event cannot reach Kafka — an
+   open breaker, a throttled probe, a failed send (synchronous or via
+   the callback), a full send queue, a hot-path error, or the remainder
+   at shutdown — the original `ILoggingEvent` is routed to the
+   configured fallback appender, tagged with the reason in the metrics.
+   Standard Logback `<appender-ref>` syntax is supported:
 
    ```xml
    <appender name="KAFKA_FALLBACK_FILE" class="ch.qos.logback.core.FileAppender">
@@ -443,7 +447,7 @@ hazard — `synchronized` blocks in the appender hot path, which cause
 carrier-thread pinning on virtual threads and Reactor-Netty
 event-loop stalls — does not arise: the appender extends
 `UnsynchronizedAppenderBase`. There are no locks in the hot path;
-only atomics and volatiles.
+only atomics, volatiles and a per-thread reentry flag.
 
 Two reactive-specific concerns remain that are worth tuning per
 service.
@@ -505,12 +509,12 @@ buffered record.
 Services that run BlockHound (`io.projectreactor.tools:blockhound`)
 in their integration tests will see the appender's internal
 operations flagged as blocking — most notably the
-`LinkedBlockingQueue.offer()` in the [FallbackDispatcher] and the
-internals of `KafkaProducer.send()`. These are not true blocks in
-the harmful sense (the queue offer is non-blocking on a non-full
-queue; the producer send is the operator's accepted
-`max.block.ms` budget), but BlockHound's heuristics don't know
-that.
+`LinkedBlockingQueue.offer()` of the per-class send queue (every
+event) and of the fallback dispatcher. These are not true blocks in
+the harmful sense (the offer is non-blocking, a full queue rejects
+instead of waiting; `KafkaProducer.send()` itself runs on the
+appender's own worker threads, never on the caller), but BlockHound's
+heuristics don't know that.
 
 Add an allow-list entry in the test setup:
 
@@ -594,7 +598,7 @@ Micrometer on the classpath and emits no metrics until
 | `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` without a synchronous failure (callback outcome unknown) |
 | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
-| `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost because the fallback dispatcher queue was full    |
+| `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost by the fallback dispatcher (queue full, `doAppend` threw, worker died, shutdown remainder) |
 | `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue                |
 | `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue                |
 | `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     | Current depth of the class's send dispatcher queue            |
@@ -692,14 +696,16 @@ happens after the `MeterRegistry` is available:
 ```kotlin
 val loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
 loggerContext.loggerList.asSequence()
-    .flatMap { logger ->
-        generateSequence({ logger.iteratorForAppenders() }) { null }
-            .first().asSequence()
-    }
+    .flatMap { logger -> logger.iteratorForAppenders().asSequence() }
     .filterIsInstance<KafkaAppender>()
     .distinct()
     .forEach { it.bindMeterRegistry(meterRegistry, Tags.empty()) }
 ```
+
+(Descend into `AsyncAppender` wrappers yourself if you use them; the
+Spring binding does.) A repeated `bindMeterRegistry` call replaces the
+previous binding, and a call on a stopped appender is ignored with a
+status warning.
 
 Pre-Spring log events (Logback initialization, Spring bootstrap
 logging) are not counted in either setup — this is a deliberate
@@ -861,8 +867,12 @@ AUDIT record end-to-end against an Apache Kafka container — real
 serializers, compression, headers, and the AUDIT acks/idempotence
 handshake.
 
-The module has no Maven plugins beyond the Kotlin compiler and Surefire.
-Java 21 and Kotlin 2.4.10.
+The artifact targets Java 21 (Kotlin 2.4.10); building needs JDK 24+
+because of the JVM flags in `.mvn/jvm.config`. The quality gates that
+run with `mvn verify` (ktlint, JaCoCo, the documentation-contract test
+that pins the guide's tables to the constants, Jazzer regression
+inputs) and the CI-only scans (OSV via CycloneDX SBOM, CodeQL, nightly
+fuzzing) are described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 

@@ -1,4 +1,4 @@
-## Complete metrics overview (as of all patches applied)
+# Metrics overview
 
 All metrics carry the `appender` tag, reflecting the Logback appender name (`"unnamed"` if not set). Plus, optionally, the common tags the operator passed to the `KafkaAppenderMetricsBinding` constructor.
 
@@ -6,10 +6,10 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 
 | Metric                             | Tags                                | When it is incremented                                       |
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Every event that enters `KafkaAppender.append()` (after routing to its topic class) |
+| `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Every event that enters `KafkaAppender.append()` (after routing to its topic class; a hot-path failure before routing counts under `technical`). Events dropped by the reentry and self-logging guards never enter the pipeline and are not counted |
 | `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was handed to `producer.send()` without a synchronous failure (callback outcome still unknown); an event the client rejected before `send()` returned - metadata timeout, buffer exhausted, record too large - counts as `events.fallback{reason="send.error"}` instead, never as both |
 | `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event was routed past Kafka (to the fallback appender if configured, otherwise dropped) |
-| `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher had to drop (queue full or shutdown timeout) |
+| `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher had to drop: queue full, the fallback appender's `doAppend` threw, its worker died, or events remained at shutdown |
 
 ### Timers
 
@@ -50,10 +50,10 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 | --------------- | ------------------------------------------------------------ |
 | `breaker.open`  | Circuit breaker gave no permission (OPEN, or HALF_OPEN exhausted) |
 | `throttle`      | Half-open throttle: probe gap not yet elapsed                |
-| `send.error`    | `producer.send()` threw synchronously or the callback reported an exception |
+| `send.error`    | `producer.send()` threw synchronously, the callback reported an exception, or the class's SendDispatcher worker died |
 | `encoder.error` | Hot-path exception before `send()` (encoder, routing, OOM)   |
 | `queue.full`    | The class's SendDispatcher queue was full — Kafka delivery cannot keep up |
-| `shutdown`      | Event was still in the SendDispatcher queue or in flight when the appender stopped |
+| `shutdown`      | Event was still in the SendDispatcher queue or in flight when the appender stopped, or was logged after it stopped |
 
 ### `outcome` — 2 possible values (only on `send.duration`)
 
@@ -132,7 +132,7 @@ Activated automatically via reflection when `io.micrometer.core.instrument.binde
 | `kafka.producer.buffer.available.bytes` | Free buffer bytes                         |
 | …                                       | (~40 producer-internal metrics in total)  |
 
-All carry the `topic.class` tag to disambiguate between the per-class producers.
+All carry the `topic.class` tag to disambiguate between the per-class producers, plus the `appender` tag and the common tags.
 
 ## Key Prometheus queries for a dashboard
 
@@ -162,7 +162,7 @@ resilience4j_circuitbreaker_state{name=~"kafka-appender-.*"}
 
 | Condition                                                    | Meaning                                                      | Severity                        |
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| `kafka_appender_fallback_dropped_total > 0`                  | Actual data loss, FallbackDispatcher queue overflowed        | Critical                        |
+| `kafka_appender_fallback_dropped_total > 0`                  | Actual data loss in the fallback path (queue overflow, failing fallback appender, dead worker, shutdown remainder) | Critical                        |
 | `kafka_appender_fallback_queue_size / capacity > 0.8` for 5 min | Fallback appender is slower than the event rate              | Warning                         |
 | `resilience4j_circuitbreaker_state{state="open"} == 1`       | Cluster loss for this topic class                            | Critical (for AUDIT/FUNCTIONAL) |
 | `rate(kafka_appender_events_fallback{reason="send.error"}[1m]) > 0` for 10 min | Persistent send errors that were not filtered out as client errors | Warning                         |

@@ -83,7 +83,8 @@
         <!-- Multi-line "key=value" Kafka producer configuration. Helm /
              Spring placeholder substitution happens before the appender
              parses the text. Lines starting with '#' are treated as
-             comments. Whitespace around keys and values is trimmed. -->
+             comments. Leading whitespace (XML indentation) is ignored,
+             trailing whitespace on values is trimmed. -->
         <kafkaProducerProperties>
             bootstrap.servers=${KAFKA_BOOTSTRAP_SERVERS:-kafka.example.com:9092}
             security.protocol=SSL
@@ -155,9 +156,10 @@
              Recommended: leave unset or set to false. -->
         <!-- <debug>true</debug> -->
 
-        <!-- Fallback appender. When the Kafka circuit breaker is open or
-             a send fails, the event is delivered through this appender
-             instead. Without it, failed events are silently dropped. -->
+        <!-- Fallback appender. When an event cannot reach Kafka (open
+             circuit breaker, failed send, full send queue, shutdown
+             remainder), it is delivered through this appender instead.
+             Without it, such events are silently dropped. -->
         <appender-ref ref="KAFKA_FALLBACK_FILE"/>
 
     </appender>
@@ -165,9 +167,10 @@
     <!-- =================================================================
          Root logger configuration. Reference the KafkaAppender DIRECTLY:
          wrapping it in an AsyncAppender is NOT recommended - the appender
-         already bounds caller-thread blocking internally (max.block.ms,
-         circuit breaker, async fallback dispatcher), and default
-         AsyncAppender settings weaken the loss semantics. See README,
+         already performs producer.send on its own per-class worker
+         threads (the logging thread only encodes and enqueues in O(1)),
+         and default AsyncAppender settings weaken the loss semantics.
+         See README,
          "Should I wrap this in a Logback AsyncAppender?".
 
          Only for sub-100 ms hard-latency SLAs is a wrapper justified,
