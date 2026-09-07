@@ -31,6 +31,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `<kafkaProducerProperties>` parser, topic-name validation and marker
   routing, and the MDC-derived partitioning-key bounding — and replay
   their checked-in findings as regression tests in every build.
+- `DocumentationContractTest` keeps the operator documentation in step
+  with the code: the configuration guide's defaults quick reference
+  (queue capacities, drain budgets, producer close timeout, circuit-breaker
+  thresholds, probe gap, partitioning-key source) and the metrics
+  overview (metric names, tag keys, enum-derived series counts) are
+  compared against the constants, so a changed constant fails the build
+  until the documentation follows.
+- ADR-0004: appender instances are not restartable — `start()` after
+  `stop()` is refused with an error naming the ADR; Logback replaces
+  appender instances on reconfiguration instead of restarting them, and
+  the appender follows that lifecycle.
+- Configuration guide section "What is deliberately not configurable",
+  listing the behaviors fixed in code (breaker thresholds and probe gap,
+  fallback capacity and drain budgets, `max.block.ms` caps, partitioning
+  key source, serializers, restart) with the reason for each; linked
+  from the README.
+- CI compiles the benchmark module against the freshly built library
+  (compile only), so the JMH regression instrument cannot rot silently
+  when an internal seam it reaches changes shape.
+
+### Changed
+
+- One `BoundedWorkerDispatcher` skeleton (bounded queue, single worker,
+  in-flight ownership, death handler, two-phase close, reentry mark)
+  beneath `SendDispatcher` and `FallbackDispatcher`, which now
+  implement only their delivery and their rejection accounting; one
+  `closeInParallel` helper replaces the two hand-rolled deadline-join
+  loops of the producer registry and the appender.
+- The fallback dispatcher's shutdown lets the worker drain by
+  delivering for the whole `shutdownTimeoutMs` (5 s) before interrupting,
+  followed by a bounded 0.5 s interrupt grace — previously the drain
+  was cut off after a 200 ms graceful window and the remaining queue
+  dropped although budget remained. Worst case is now 5.5 s.
+- `events.dispatched` counts only sends the Kafka client accepted
+  without a synchronous failure: an event the client rejected before
+  `send()` returned (metadata timeout, buffer exhausted, record too
+  large — the kafka-clients 4.x synchronous-callback path) counts as
+  `events.fallback{reason="send.error"}` only, never as both.
+- An explicit `enable.idempotence=true` on a class without the AUDIT
+  mandate suppresses the class's `acks=1` default, and the idempotence
+  validation now also requires `acks=all`, with a named error instead of
+  the withheld Kafka `ConfigException`.
+- The Kafka send callback retains a detached diversion claim instead of
+  the whole pending send (payload copy); README documents the heap bound
+  under a slow broker (`buffer.memory` measured in event size).
+- Metrics are unbound after the dispatcher teardown, so a scrape during
+  a multi-second shutdown still sees the shutdown diversions and drops;
+  `bindMeterRegistry` and the unbind in `stop()` are serialized.
+- `KafkaAppenderMetricsBinding` decides on the appender's own bound
+  state instead of an identity set; the Logback-reconfiguration rebind
+  gap is documented with `bindAppenders()` as the manual path.
+- Documentation and KDoc no longer promise a per-class circuit-breaker
+  override via the registry — it is an internal seam (ADR-0002); the
+  README links to the guide's defaults table instead of restating the
+  breaker numbers.
+- Shared test support (`RecordingAppender`, `RecordingProducerFactory`,
+  three encoders) replaces the per-class private fixtures; every test
+  fixture closes what it starts.
+
+### Fixed
+
+- An event whose MDC cannot be materialized (a `LoggerContext` without
+  an MDC adapter, as in embedded setups) is delivered instead of
+  diverting every event as `encoder.error`: `append()` pins an empty
+  MDC snapshot on the event and the default partitioning-key extractor
+  treats an unreadable MDC as "no key".
+- The fallback dispatcher's worker carries the appender's reentry guard,
+  so a fallback appender that logs through SLF4J per delivered event no
+  longer feeds those events back into the pipeline.
+- The appender-level exactly-once test observes a late send failure
+  through captured meters and joins the send worker, so a broken
+  diversion-claim wiring turns it red.
 
 ## [1.0.0] - 2026-08-29
 
