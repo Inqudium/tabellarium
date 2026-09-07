@@ -11,8 +11,9 @@ import org.apache.kafka.common.serialization.ByteArraySerializer
  * Shared test support for the pipeline tests. One recorder, one
  * producer factory, three encoders - the fixtures every test class
  * used to declare privately (four recorders, ~17 producer doubles,
- * six encoders across the suite; finding 4 of the 2026-09-07
- * architecture review). Test-specific producer doubles that model one
+ * six encoders across the suite;
+ * docs/assessment/ARCHITECTURE_REVIEW-2026-09-07T20-23-00.md, finding 4).
+ * Test-specific producer doubles that model one
  * behavior (blocking, self-logging, synchronous callback errors) stay
  * next to the test that needs them; the shared factory takes them as
  * the `wrap` function.

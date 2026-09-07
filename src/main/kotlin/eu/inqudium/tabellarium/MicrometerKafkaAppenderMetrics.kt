@@ -21,37 +21,14 @@ import java.util.concurrent.atomic.AtomicReference
  * disambiguates the rare case of multiple appender instances binding
  * to the same registry.
  *
- * | Metric                              | Type    | Tags (in addition to `appender`)  |
- * |-------------------------------------|---------|-----------------------------------|
- * | `kafka.appender.events.accepted`    | Counter | `topic.class`                     |
- * | `kafka.appender.events.dispatched`  | Counter | `topic.class`                     |
- * | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           |
- * | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          |
- * | `kafka.appender.fallback.dropped`   | Counter | (only the common `appender` tag)  |
- * | `kafka.appender.fallback.queue.size`     | Gauge   | (only the common `appender` tag)  |
- * | `kafka.appender.fallback.queue.capacity` | Gauge   | (only the common `appender` tag)  |
- * | `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     |
- * | `kafka.appender.send.queue.capacity`     | Gauge   | `topic.class`                     |
- *
- * The canonical, operator-facing inventory (including the tag value
- * sets) is the metrics overview under `docs/metrics/`; this table
- * mirrors it for implementation readers and must be updated together
- * with it.
- *
- * Cardinality budget, derived from the enum sizes ([TopicClass]: 4
- * values, [KafkaAppenderMetrics.FallbackReason]: 6,
- * [KafkaAppenderMetrics.SendOutcome]: 2), with `appender` typically a
- * single value per application:
- *
- * - `events.accepted`/`events.dispatched`: 4 each → 8 series
- * - `events.fallback`: 4 × 6 = 24 series
- * - `send.duration`: 4 × 2 = 8 series
- * - `fallback.*`: 3 series
- * - `send.queue.*`: 4 × 2 = 8 series
- *
- * Total: 51 series per appender instance. At ~100 microservices in a
- * Prometheus this is ~5 100 series - well within Prometheus' default
- * cardinality budget.
+ * The inventory - names, tags, cardinality - is canonical in
+ * `docs/metrics/metrics-overview.md`, and `DocumentationContractTest`
+ * keeps that document in step with the `METRIC_*`/`TAG_*` constants
+ * and the enum sizes here. Invariant: one pre-resolved meter per enum
+ * combination (`topic.class` × `reason` for fallbacks, `topic.class` ×
+ * `outcome` for send timers, `topic.class` for the rest, none for the
+ * fallback-dispatcher meters), so the series count per appender is a
+ * function of the enum sizes alone.
  *
  * ## Pre-resolution
  *

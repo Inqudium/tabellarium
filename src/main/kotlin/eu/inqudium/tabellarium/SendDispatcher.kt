@@ -72,13 +72,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param fallbackDispatcher Receives diverted events. Null means
  *                           "drop" - the operator's explicit choice,
  *                           consistent with the rest of the pipeline.
- * @param reentryGuard The appender's per-thread reentry guard; null
- *                     disables the marking (tests).
- * @param queueCapacity Maximum queued events. The default matches the
- *                      fallback dispatcher's: large enough to absorb
- *                      bursts, small enough to bound memory.
- * @param drainTimeoutMs Time allowed in [close] for the worker to
- *                       drain the queue by actually sending.
+ * @param reentryGuard Passed through to [BoundedWorkerDispatcher].
+ * @param queueCapacity Passed through to [BoundedWorkerDispatcher];
+ *                      the default matches the fallback dispatcher's.
+ * @param drainTimeoutMs Passed through to [BoundedWorkerDispatcher];
+ *                       here the drain means actually sending.
  * @param onWorkerDeath Invoked after a worker death was accounted for
  *                      (in-flight and queued work diverted with reason
  *                      `send.error`); the appender reports it to the

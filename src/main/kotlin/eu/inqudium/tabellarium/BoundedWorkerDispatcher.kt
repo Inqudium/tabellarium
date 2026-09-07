@@ -19,9 +19,10 @@ import java.util.concurrent.atomic.AtomicReference
  * Rationale: the two dispatchers used to be near-copies whose KDoc
  * cross-referenced each other ("mirrors", "the canonical description
  * lives there") - and they diverged in exactly one close-budget detail
- * that the 2026-09-07 defect analysis had to repair. A prose promise
- * that two pieces of code stay identical does not survive change; one
- * class does (finding 1 of the 2026-09-07 architecture review).
+ * (`docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.md`, finding 3).
+ * A prose promise that two pieces of code stay identical does not
+ * survive change; one class does
+ * (`docs/assessment/ARCHITECTURE_REVIEW-2026-09-07T20-23-00.md`, finding 1).
  *
  * ## The protocol, once
  *
