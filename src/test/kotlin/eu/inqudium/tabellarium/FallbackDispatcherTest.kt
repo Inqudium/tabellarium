@@ -22,22 +22,6 @@ class FallbackDispatcherTest {
      */
     private val testContext = LoggerContext()
 
-    /** Appender that records the events it receives. */
-    private inner class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        val events = mutableListOf<ILoggingEvent>()
-
-        init {
-            context = testContext
-            start()
-        }
-
-        override fun append(event: ILoggingEvent) {
-            synchronized(events) { events += event }
-        }
-
-        fun eventCount(): Int = synchronized(events) { events.size }
-    }
-
     /**
      * Appender that blocks on each append until released. With
      * [interruptible] = false the block survives the worker interrupt
@@ -132,7 +116,7 @@ class FallbackDispatcherTest {
         @Test
         fun `should deliver enqueued events to the fallback appender on the worker thread`() {
             // Given
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)
             try {
                 // When
@@ -200,7 +184,7 @@ class FallbackDispatcherTest {
         @Test
         fun `should drain remaining events when closed gracefully`() {
             // Given
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)
 
             // When: enqueue events, then close immediately
@@ -215,7 +199,7 @@ class FallbackDispatcherTest {
         @Test
         fun `should mark events enqueued after close as dropped`() {
             // Given
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val dispatcher = FallbackDispatcher(recorder)
             dispatcher.close()
 

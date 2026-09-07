@@ -34,30 +34,6 @@ class ResilientMessageSenderTest {
         )
 
     /**
-     * Test factory that returns MockProducers with the given autoComplete mode.
-     * autoComplete=true → the send callback fires immediately with success;
-     * autoComplete=false → the test must call mockProducer.completeNext() or
-     * mockProducer.errorNext(...) to trigger the callback.
-     */
-    private class TestFactory(
-        private val autoComplete: Boolean = true,
-        /**
-         * Optional wrapper around each created MockProducer - the seam
-         * for producer doubles that model client behavior MockProducer
-         * lacks (e.g. the synchronous error callback).
-         */
-        private val wrap: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
-    ) : ProducerFactory {
-        val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
-
-        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
-            val mock = MockProducer(autoComplete, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
-            createdProducers += mock
-            return wrap(mock)
-        }
-    }
-
-    /**
      * Models the Kafka client's ApiException path (kafka-clients 4.x,
      * `KafkaProducer.doSend`): metadata not available within
      * max.block.ms, buffer exhausted, record too large. The client
@@ -75,24 +51,6 @@ class ResilientMessageSenderTest {
         ): Future<RecordMetadata> {
             callback?.onCompletion(null, error)
             return CompletableFuture<RecordMetadata>().apply { completeExceptionally(error) }
-        }
-    }
-
-    /**
-     * Test appender that records every event it receives. Started in its
-     * init block because AppenderBase.doAppend() is a no-op for unstarted
-     * appenders. The list is synchronized: the fallback dispatcher's
-     * worker thread appends while the test thread polls.
-     */
-    private class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
-
-        init {
-            start()
-        }
-
-        override fun append(event: ILoggingEvent) {
-            events += event
         }
     }
 
@@ -173,7 +131,7 @@ class ResilientMessageSenderTest {
         cbRegistry: CircuitBreakerRegistry = CircuitBreakerRegistry.ofDefaults(),
         wrapProducer: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
     ): SenderContext {
-        val factory = TestFactory(autoComplete, wrapProducer)
+        val factory = RecordingProducerFactory(autoComplete, wrapProducer)
         val registry =
             ProducerRegistry.create(
                 propertiesBuilder = ProducerPropertiesBuilder(baseProperties),
@@ -198,7 +156,7 @@ class ResilientMessageSenderTest {
 
     private data class SenderContext(
         val sender: ResilientMessageSender,
-        val factory: TestFactory,
+        val factory: RecordingProducerFactory,
         val circuitBreakerRegistry: CircuitBreakerRegistry,
         val fallback: RecordingAppender?,
         val registry: ProducerRegistry,

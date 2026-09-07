@@ -19,23 +19,6 @@ class ProducerRegistryTest {
     private fun newBuilder(base: Map<String, String> = baseProperties) = ProducerPropertiesBuilder(base)
 
     /**
-     * Test factory that records every invocation. Returns auto-completing
-     * [MockProducer]s so send() calls (if any) succeed without configuring
-     * a Cluster.
-     */
-    private class RecordingFactory : ProducerFactory {
-        val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
-        val receivedProperties = mutableListOf<Map<String, String>>()
-
-        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
-            receivedProperties += properties
-            val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
-            createdProducers += mock
-            return mock
-        }
-    }
-
-    /**
      * Test producer that throws on [close], used to verify the registry's
      * per-producer try/catch in [ProducerRegistry.close].
      */
@@ -58,7 +41,7 @@ class ProducerRegistryTest {
                 ProducerRegistry.create(
                     propertiesBuilder = newBuilder(),
                     activeTopicClasses = emptySet(),
-                    producerFactory = RecordingFactory(),
+                    producerFactory = RecordingProducerFactory(),
                 )
             }.isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("At least one active topic class")
@@ -67,7 +50,7 @@ class ProducerRegistryTest {
         @Test
         fun `should create exactly one producer per active topic class`() {
             // Given
-            val factory = RecordingFactory()
+            val factory = RecordingProducerFactory()
 
             // When
             val registry =
@@ -98,7 +81,7 @@ class ProducerRegistryTest {
             //   compliance.
 
             // Given: base sets a value that AUDIT will override
-            val factory = RecordingFactory()
+            val factory = RecordingProducerFactory()
             val builder =
                 newBuilder(
                     mapOf(
@@ -115,8 +98,8 @@ class ProducerRegistryTest {
             )
 
             // Then: the factory received the enforced value
-            assertThat(factory.receivedProperties).hasSize(1)
-            assertThat(factory.receivedProperties[0])
+            assertThat(factory.createdWithProperties).hasSize(1)
+            assertThat(factory.createdWithProperties[0])
                 .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
         }
 
@@ -140,7 +123,7 @@ class ProducerRegistryTest {
                             TopicClass.FUNCTIONAL,
                             TopicClass.TECHNICAL,
                         ),
-                    producerFactory = RecordingFactory(),
+                    producerFactory = RecordingProducerFactory(),
                 )
 
             // Then
@@ -156,7 +139,7 @@ class ProducerRegistryTest {
         @Test
         fun `should return the producer instance that was created for the given topic class`() {
             // Given
-            val factory = RecordingFactory()
+            val factory = RecordingProducerFactory()
             val registry =
                 ProducerRegistry.create(
                     propertiesBuilder = newBuilder(),
@@ -178,7 +161,7 @@ class ProducerRegistryTest {
                 ProducerRegistry.create(
                     propertiesBuilder = newBuilder(),
                     activeTopicClasses = setOf(TopicClass.AUDIT),
-                    producerFactory = RecordingFactory(),
+                    producerFactory = RecordingProducerFactory(),
                 )
 
             // When / Then
@@ -244,7 +227,7 @@ class ProducerRegistryTest {
         @Test
         fun `should close all producers when the registry is closed`() {
             // Given
-            val factory = RecordingFactory()
+            val factory = RecordingProducerFactory()
             val registry =
                 ProducerRegistry.create(
                     propertiesBuilder = newBuilder(),

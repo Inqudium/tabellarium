@@ -19,20 +19,6 @@ class SendDispatcherTest {
 
     private val testContext = LoggerContext()
 
-    /** Fallback recorder; the list is synchronized because the fallback worker writes while the test polls. */
-    private inner class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
-
-        init {
-            context = testContext
-            start()
-        }
-
-        override fun append(event: ILoggingEvent) {
-            events += event
-        }
-    }
-
     /** Metrics recorder for the fallback reasons the dispatcher emits. */
     private class RecordingMetrics : KafkaAppenderMetrics by KafkaAppenderMetrics.NO_OP {
         val fallbackReasons: MutableList<KafkaAppenderMetrics.FallbackReason> =
@@ -218,7 +204,7 @@ class SendDispatcherTest {
             // Given: worker pinned, capacity 1
             val release = CountDownLatch(1)
             val entered = CountDownLatch(1)
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
             val dispatcher =
                 SendDispatcher(
@@ -275,7 +261,7 @@ class SendDispatcherTest {
 
             // Given
             val sent = AtomicInteger(0)
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val dispatcher =
                 SendDispatcher(
                     topicClass = TopicClass.TECHNICAL,
@@ -315,7 +301,7 @@ class SendDispatcherTest {
             val release = CountDownLatch(1)
             val entered = CountDownLatch(1)
             val sendReturned = AtomicBoolean(false)
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
             val fallbackDispatcher = newFallback(recorder)
             val dispatcher =
@@ -371,7 +357,7 @@ class SendDispatcherTest {
         @Test
         fun `should divert events dispatched after close to the fallback`() {
             // Given
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
             val dispatcher =
                 SendDispatcher(
@@ -411,7 +397,7 @@ class SendDispatcherTest {
 
             // Given: a send action that dies with an Error
             val death = AtomicReference<Throwable?>()
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val dispatcher =
                 SendDispatcher(
                     topicClass = TopicClass.TECHNICAL,
@@ -456,7 +442,7 @@ class SendDispatcherTest {
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
             val death = AtomicReference<Throwable?>()
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
             val dispatcher =
                 SendDispatcher(
@@ -522,7 +508,7 @@ class SendDispatcherTest {
             val release = CountDownLatch(1)
             val entered = CountDownLatch(1)
             val lateClaim = AtomicReference<Boolean?>()
-            val recorder = RecordingAppender()
+            val recorder = RecordingAppender(testContext)
             val fallbackDispatcher = newFallback(recorder)
             val dispatcher =
                 SendDispatcher(

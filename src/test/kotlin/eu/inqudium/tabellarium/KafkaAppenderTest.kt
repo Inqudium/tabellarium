@@ -45,67 +45,6 @@ import java.util.concurrent.atomic.AtomicReference
 class KafkaAppenderTest {
     // -- Test fixtures --------------------------------------------------
 
-    private class TestEncoder : EncoderBase<ILoggingEvent>() {
-        val encodedEvents = mutableListOf<ILoggingEvent>()
-
-        override fun encode(event: ILoggingEvent): ByteArray {
-            encodedEvents += event
-            return event.formattedMessage.toByteArray(Charsets.UTF_8)
-        }
-
-        override fun headerBytes(): ByteArray = ByteArray(0)
-
-        override fun footerBytes(): ByteArray = ByteArray(0)
-    }
-
-    private class ThrowingEncoder : EncoderBase<ILoggingEvent>() {
-        override fun encode(event: ILoggingEvent): ByteArray = throw RuntimeException("simulated encoder failure")
-
-        override fun headerBytes(): ByteArray = ByteArray(0)
-
-        override fun footerBytes(): ByteArray = ByteArray(0)
-    }
-
-    /**
-     * Stateless encoder for tests that append from many threads
-     * concurrently: unlike [TestEncoder] it records nothing, so the
-     * test harness itself introduces no unsynchronized shared state
-     * (TestEncoder's recording list is a plain ArrayList).
-     */
-    private class StatelessEncoder : EncoderBase<ILoggingEvent>() {
-        override fun encode(event: ILoggingEvent): ByteArray = event.formattedMessage.toByteArray(Charsets.UTF_8)
-
-        override fun headerBytes(): ByteArray = ByteArray(0)
-
-        override fun footerBytes(): ByteArray = ByteArray(0)
-    }
-
-    private class TestProducerFactory : ProducerFactory {
-        val createdProducers = mutableListOf<MockProducer<ByteArray, ByteArray>>()
-        val createdWithProperties = mutableListOf<Map<String, String>>()
-
-        override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
-            val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
-            createdProducers += mock
-            createdWithProperties += properties
-            return mock
-        }
-    }
-
-    private class RecordingAppender : AppenderBase<ILoggingEvent>() {
-        // Synchronized: the asynchronous-dispatch test appends from the
-        // dispatcher worker thread while the test thread polls.
-        val events: MutableList<ILoggingEvent> = Collections.synchronizedList(mutableListOf())
-
-        init {
-            start()
-        }
-
-        override fun append(event: ILoggingEvent) {
-            events += event
-        }
-    }
-
     /**
      * Every appender a test built; stopped after the test (stop() is
      * idempotent) so no dispatcher worker, fallback worker or
@@ -120,13 +59,13 @@ class KafkaAppenderTest {
     }
 
     private fun newAppender(
-        encoder: Encoder<ILoggingEvent>? = TestEncoder(),
+        encoder: Encoder<ILoggingEvent>? = RecordingEncoder(),
         component: String = "test-service",
         cmdbId: String = "CMDB-TEST",
         environment: String = "test",
         defaultTopic: String = "default.topic",
         debug: Boolean = false,
-        producerFactory: ProducerFactory = TestProducerFactory(),
+        producerFactory: ProducerFactory = RecordingProducerFactory(),
         fallback: Appender<ILoggingEvent>? = null,
         kafkaProducerProperties: String = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092",
     ): KafkaAppender =
@@ -256,7 +195,7 @@ class KafkaAppenderTest {
         @Test
         fun `should start the encoder when starting the appender`() {
             // Given
-            val encoder = TestEncoder()
+            val encoder = RecordingEncoder()
             val appender = newAppender(encoder = encoder)
 
             // When
@@ -284,7 +223,7 @@ class KafkaAppenderTest {
             //   showed up in capacity planning.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
 
             // When
@@ -310,7 +249,7 @@ class KafkaAppenderTest {
             //   which topic class) a connection belongs to.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory, component = "checkout-service")
 
             // When
@@ -336,7 +275,7 @@ class KafkaAppenderTest {
             //   deployment whose component name contains a space.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory, component = "My Service (prod)")
 
             // When
@@ -350,7 +289,7 @@ class KafkaAppenderTest {
         @Test
         fun `should let an operator-supplied client id win`() {
             // Given: the operator pins client.id in kafkaProducerProperties
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
@@ -392,7 +331,7 @@ class KafkaAppenderTest {
             //   configuration and the actual broker behavior.
 
             // Given: an AUDIT mapping and a conflicting operator acks=1
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
@@ -439,7 +378,7 @@ class KafkaAppenderTest {
             //   dormant TECHNICAL producer running.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
@@ -480,7 +419,7 @@ class KafkaAppenderTest {
             //   activation itself is part of the operator contract.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             appender.topicMapping.addMapping(
                 TopicMappingEntry().apply {
@@ -809,8 +748,8 @@ class KafkaAppenderTest {
             //   the system is least able to absorb it.
 
             // Given
-            val encoder = TestEncoder()
-            val factory = TestProducerFactory()
+            val encoder = RecordingEncoder()
+            val factory = RecordingProducerFactory()
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
@@ -840,7 +779,7 @@ class KafkaAppenderTest {
         @Test
         fun `should deliver events from ordinary threads`() {
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             appender.start()
 
@@ -870,7 +809,7 @@ class KafkaAppenderTest {
             //   guard only ever suppresses the producer's own logging.
 
             // Given: operator pins the generic client.id "app"
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
@@ -910,7 +849,7 @@ class KafkaAppenderTest {
             //   the appender into a black hole.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender =
                 newAppender(
                     producerFactory = factory,
@@ -936,8 +875,8 @@ class KafkaAppenderTest {
         @Test
         fun `should encode and send the event when appended`() {
             // Given
-            val encoder = TestEncoder()
-            val factory = TestProducerFactory()
+            val encoder = RecordingEncoder()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(encoder = encoder, producerFactory = factory)
             appender.start()
 
@@ -972,7 +911,7 @@ class KafkaAppenderTest {
             //   nothing to Kafka - every event diverted as encoder.error.
 
             // Given: an appender with a fallback recorder
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val fallback = RecordingAppender()
             val appender = newAppender(producerFactory = factory, fallback = fallback)
             appender.start()
@@ -1035,7 +974,7 @@ class KafkaAppenderTest {
             //   them.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             // Note: start() not called
 
@@ -1226,7 +1165,7 @@ class KafkaAppenderTest {
             //   an external stop() could ever reach.
 
             // Given: an encoder whose start() throws
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val throwingStartEncoder =
                 object : EncoderBase<ILoggingEvent>() {
                     override fun start(): Unit = throw IllegalStateException("simulated encoder start failure")
@@ -1266,7 +1205,7 @@ class KafkaAppenderTest {
             //   does.
 
             // Given: breaker wiring that fails after the registry exists
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val failingBreakerRegistry =
                 object : CircuitBreakerRegistry by ResilientMessageSender.defaultCircuitBreakerRegistry() {
                     override fun circuitBreaker(name: String): CircuitBreaker = throw IllegalStateException("simulated breaker wiring failure")
@@ -1289,7 +1228,7 @@ class KafkaAppenderTest {
         @Test
         fun `should close all producers when stopping`() {
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             appender.start()
 
@@ -1303,7 +1242,7 @@ class KafkaAppenderTest {
         @Test
         fun `should stop the encoder when stopping`() {
             // Given
-            val encoder = TestEncoder()
+            val encoder = RecordingEncoder()
             val appender = newAppender(encoder = encoder)
             appender.start()
 
@@ -1364,7 +1303,7 @@ class KafkaAppenderTest {
             // When
             appender.stop()
 
-            // Then: stopped, but still attached (a restart starts it again)
+            // Then: stopped, and still inspectable through the slot
             assertThat(fallback.isStarted).isFalse()
             assertThat(appender.fallbackAppender).isSameAs(fallback)
         }
@@ -1423,7 +1362,7 @@ class KafkaAppenderTest {
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = selfLoggingFactory,
                     fallback = fallback,
                 )
@@ -1458,7 +1397,7 @@ class KafkaAppenderTest {
             //   permanently silenced application thread.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             appender.start()
 
@@ -1474,141 +1413,42 @@ class KafkaAppenderTest {
     }
 
     @Nested
-    inner class `Restart` {
+    inner class `No restart` {
         @Test
-        fun `should keep the fallback path and re-arm the error report after a stop and start cycle`() {
-            // What is to be tested? Restart symmetry: start() after stop()
-            //   must rebuild the pipeline against the still-attached
-            //   fallback appender (restarting it) and re-arm the one-shot
-            //   hot-path error report, so a restarted appender is not a
-            //   silently fallback-less one.
+        fun `should refuse to start again after stop`() {
+            // What is to be tested? The lifecycle decision of ADR-0004: a
+            //   stopped appender is not restarted - start() after stop()
+            //   is refused with a named error, no new producers are
+            //   created, and the appender stays stopped.
             // How will the test case be deemed successful and why? Successful
-            //   if, after stop() and start(), a diverted event still
-            //   reaches the fallback appender, the fallback reports
-            //   started, and the hot-path error is reported once more.
-            // Why is it important to test this test case? Before the fix,
-            //   stop() detached the fallback slot; the restarted pipeline
-            //   dropped every diversion although the operator's XML still
-            //   named the fallback - and the latched error guard hid the
-            //   first error of the new lifecycle.
+            //   if after stop() a second start() leaves isStarted false,
+            //   the producer count unchanged, and a status error naming
+            //   the ADR and the alternative (a new instance) in the
+            //   status manager; an event appended afterwards goes nowhere.
+            // Why is it important to test this test case? Logback replaces
+            //   appender instances on reconfiguration instead of restarting
+            //   them; a same-instance restart only ever comes from
+            //   application code, and silently rebuilding half a pipeline
+            //   for it (the pre-ADR behavior) lost the fallback path.
 
-            // Given: a started-then-stopped appender with a fallback
-            val fallback = RecordingAppender()
-            val appender = newAppender(encoder = ThrowingEncoder(), fallback = fallback)
-            appender.start()
-            appender.doAppend(newTestLoggingEvent(message = "first life"))
-            appender.stop()
-            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("first life")
-            assertThat(fallback.isStarted).isFalse()
-
-            // When: restarted, and an event diverts again
-            appender.start()
-            assertThat(appender.isStarted).isTrue()
-            assertThat(fallback.isStarted).isTrue()
-            appender.doAppend(newTestLoggingEvent(message = "second life"))
-            appender.stop()
-
-            // Then: the fallback path survived the cycle, and the error
-            //   was reported once per lifecycle
-            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("first life", "second life")
-            assertThat(appender.statusMessages().filter { it.contains("Hot path error") }).hasSize(2)
-        }
-
-        @Test
-        fun `should reset a breaker left open by the previous life when restarted`() {
-            // What is to be tested? Whether a restart rebuilds the
-            //   resilience state as well as the pipeline: the breaker
-            //   registry lives as long as the appender, so without a reset
-            //   the new sender would inherit an OPEN breaker from the
-            //   previous life and divert against a possibly replaced,
-            //   healthy cluster for the rest of the open-state wait.
-            // How will the test case be deemed successful and why? Successful
-            //   if a breaker forced OPEN before stop() reads CLOSED after
-            //   start() and the first event of the new life reaches the
-            //   producer instead of the fallback.
-            // Why is it important to test this test case? The restart
-            //   support (finding 4 of the 2026-09-07 analysis) made this
-            //   path real; finding R2-5 of the follow-up found the
-            //   carried-over state.
-
-            // Given: a started appender whose TECHNICAL breaker is OPEN
-            val factory = TestProducerFactory()
+            // Given: a started-then-stopped appender
+            val factory = RecordingProducerFactory()
             val fallback = RecordingAppender()
             val appender = newAppender(producerFactory = factory, fallback = fallback)
             appender.start()
-            val breaker =
-                appender.circuitBreakerRegistry
-                    .circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.TECHNICAL))
-            breaker.transitionToOpenState()
             appender.stop()
+            val producersAfterFirstLife = factory.createdProducers.size
 
-            // When: restarted
+            // When: started again
             appender.start()
-            appender.doAppend(newTestLoggingEvent(message = "second life"))
-            appender.stop()
+            appender.doAppend(newTestLoggingEvent(message = "after refusal"))
 
-            // Then: the breaker was reset and the event was sent, not diverted
-            assertThat(breaker.state).isEqualTo(CircuitBreaker.State.CLOSED)
-            assertThat(
-                factory.createdProducers
-                    .last()
-                    .history()
-                    .map { String(it.value()) },
-            ).containsExactly("second life")
+            // Then: refused, nothing rebuilt, nothing delivered anywhere
+            assertThat(appender.isStarted).isFalse()
+            assertThat(factory.createdProducers).hasSize(producersAfterFirstLife)
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("cannot be started again") && it.contains("ADR-0004") }
             assertThat(fallback.events).isEmpty()
-        }
-    }
-
-    @Nested
-    inner class `Fallback worker reentry guard` {
-        @Test
-        fun `should drop events a fallback appender logs from its own delivery instead of looping them`() {
-            // What is to be tested? Whether an event that the fallback
-            //   appender itself raises from inside doAppend (a
-            //   third-party appender logging through SLF4J per delivered
-            //   event) is dropped by the reentry guard on the fallback
-            //   worker instead of re-entering the pipeline.
-            // How will the test case be deemed successful and why? Successful
-            //   if, with the encoder failing (so every event diverts), a
-            //   fallback that re-logs each delivered event through the
-            //   appender ends up with exactly the application's own
-            //   events - and the pipeline terminates. Without the guard
-            //   every fallback delivery would spawn a new event, and the
-            //   fallback would keep receiving events until the test
-            //   stopped the appender.
-            // Why is it important to test this test case? During a Kafka
-            //   outage this loop saturates both queues and crowds out the
-            //   genuine events - exactly when the fallback is the only
-            //   remaining record.
-
-            // Given: a fallback appender that logs back through the appender
-            var appenderRef: KafkaAppender? = null
-            val delivered = Collections.synchronizedList(mutableListOf<String>())
-            val reLoggingFallback =
-                object : AppenderBase<ILoggingEvent>() {
-                    init {
-                        context = LoggerContext()
-                        start()
-                    }
-
-                    override fun append(event: ILoggingEvent) {
-                        delivered += event.formattedMessage
-                        checkNotNull(appenderRef).doAppend(
-                            newTestLoggingEvent(message = "fallback said: ${event.formattedMessage}"),
-                        )
-                    }
-                }
-            val appender = newAppender(encoder = ThrowingEncoder(), fallback = reLoggingFallback)
-            appenderRef = appender
-            appender.start()
-
-            // When: the application logs three events, all diverting
-            repeat(3) { appender.doAppend(newTestLoggingEvent(message = "app-$it")) }
-
-            // Then: the fallback received exactly the application's events;
-            //   its own re-logged events were dropped on the worker
-            appender.stop()
-            assertThat(delivered).containsExactly("app-0", "app-1", "app-2")
         }
     }
 
@@ -1631,7 +1471,7 @@ class KafkaAppenderTest {
             //   until process exit.
 
             // Given
-            val factory = TestProducerFactory()
+            val factory = RecordingProducerFactory()
             val appender = newAppender(producerFactory = factory)
             appender.start()
             val producersAfterFirstStart = factory.createdProducers.size
@@ -1723,7 +1563,7 @@ class KafkaAppenderTest {
             val factory = BlockingProducerFactory()
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = factory,
                 )
             appender.start()
@@ -1763,7 +1603,7 @@ class KafkaAppenderTest {
             val factory = BlockingProducerFactory(blockedClasses = setOf("audit"))
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = factory,
                 )
             appender.topicMapping.addMapping(
@@ -1814,7 +1654,7 @@ class KafkaAppenderTest {
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = factory,
                     fallback = fallback,
                 )
@@ -1893,7 +1733,7 @@ class KafkaAppenderTest {
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = throwingBlockedFactory,
                     fallback = fallback,
                 )
@@ -2010,7 +1850,7 @@ class KafkaAppenderTest {
             val fallback = RecordingAppender()
             val appender =
                 newAppender(
-                    encoder = StatelessEncoder(),
+                    encoder = MessageBytesEncoder(),
                     producerFactory = factory,
                     fallback = fallback,
                 )

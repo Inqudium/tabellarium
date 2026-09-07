@@ -37,6 +37,15 @@ jobs:
       - name: Build and test
         run: mvn --batch-mode --no-transfer-progress verify
 
+      # The JMH module is a standalone build against the installed
+      # library snapshot (see benchmarks/README.md). Compiling it here -
+      # not running it - keeps the regression instrument from rotting
+      # silently when an internal seam it reaches changes shape.
+      - name: Compile the benchmark module against the freshly built library
+        run: |
+          mvn --batch-mode --no-transfer-progress -DskipTests -Djacoco.skip=true -Dktlint.skip=true -Dcyclonedx.skip=true install
+          mvn --batch-mode --no-transfer-progress -f benchmarks/pom.xml compile
+
       # Repo-local script instead of a third-party reporting action (this
       # workflow pins actions to SHAs; a summary needs no new supply-chain
       # surface). Runs on failure too, so a red build still shows which
