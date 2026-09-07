@@ -20,6 +20,7 @@ import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.slf4j.MarkerFactory
@@ -30,6 +31,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Send and fallback dispatch are asynchronous (the production path).
@@ -104,6 +106,19 @@ class KafkaAppenderTest {
         }
     }
 
+    /**
+     * Every appender a test built; stopped after the test (stop() is
+     * idempotent) so no dispatcher worker, fallback worker or
+     * MockProducer outlives the test that created it.
+     */
+    private val createdAppenders = mutableListOf<KafkaAppender>()
+
+    @AfterEach
+    fun stopAppenders() {
+        createdAppenders.forEach { it.stop() }
+        createdAppenders.clear()
+    }
+
     private fun newAppender(
         encoder: Encoder<ILoggingEvent>? = TestEncoder(),
         component: String = "test-service",
@@ -115,7 +130,7 @@ class KafkaAppenderTest {
         fallback: Appender<ILoggingEvent>? = null,
         kafkaProducerProperties: String = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092",
     ): KafkaAppender =
-        KafkaAppender().apply {
+        KafkaAppender().also { createdAppenders += it }.apply {
             this.context = LoggerContext()
             this.encoder = encoder
             this.component = component
@@ -1045,8 +1060,26 @@ class KafkaAppenderTest {
         }
 
         @Test
-        fun `should not throw when both the hot path and the fallback fail`() {
-            // Given: a fallback that also throws
+        fun `should account the event as dropped when both the hot path and the fallback fail`() {
+            // What is to be tested? The double-failure path: the encoder
+            //   throws (event diverts to the fallback) and the fallback
+            //   appender's doAppend throws as well. Nothing may escape
+            //   the caller, and the loss must still be accounted - the
+            //   dispatcher counts a delivery that threw as dropped and
+            //   the appender reports the count at stop().
+            // How will the test case be deemed successful and why? Successful
+            //   if doAppend returns normally, the first hot-path error is
+            //   reported once, and after stop() the status manager carries
+            //   the "dropped 1 event(s)" warning. That warning is the only
+            //   trace of the loss without a metrics registry; a test that
+            //   merely proved "does not throw" would let it go dark.
+            // Why is it important to test this test case? A fallback that
+            //   throws (full disk, closed stream) is exactly the moment
+            //   operators must learn that the last-resort path lost data.
+
+            // Given: a fallback whose doAppend throws (overridden directly,
+            //   because AppenderBase.doAppend would swallow an exception
+            //   from append() before the dispatcher could count it)
             val fallbackContext = LoggerContext()
             val throwingFallback =
                 object : AppenderBase<ILoggingEvent>() {
@@ -1055,7 +1088,9 @@ class KafkaAppenderTest {
                         start()
                     }
 
-                    override fun append(event: ILoggingEvent): Unit = throw RuntimeException("fallback also broken")
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("fallback also broken")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
                 }
             val appender =
                 newAppender(
@@ -1064,8 +1099,14 @@ class KafkaAppenderTest {
                 )
             appender.start()
 
-            // When / Then: must not throw out of append
+            // When: must not throw out of append
             appender.doAppend(newTestLoggingEvent())
+
+            // Then: reported once on the hot path, and the loss counted at stop
+            appender.stop()
+            assertThat(appender.statusMessages().filter { it.contains("Hot path error") }).hasSize(1)
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Fallback dispatcher dropped 1 event(s)") }
         }
 
         @Test
@@ -1275,8 +1316,9 @@ class KafkaAppenderTest {
             // When
             appender.stop()
 
-            // Then
+            // Then: stopped, but still attached (a restart starts it again)
             assertThat(fallback.isStarted).isFalse()
+            assertThat(appender.fallbackAppender).isSameAs(fallback)
         }
     }
 
@@ -1380,6 +1422,101 @@ class KafkaAppenderTest {
             // Then: all delivered
             appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(3)
+        }
+    }
+
+    @Nested
+    inner class `Restart` {
+        @Test
+        fun `should keep the fallback path and re-arm the error report after a stop and start cycle`() {
+            // What is to be tested? Restart symmetry: start() after stop()
+            //   must rebuild the pipeline against the still-attached
+            //   fallback appender (restarting it) and re-arm the one-shot
+            //   hot-path error report, so a restarted appender is not a
+            //   silently fallback-less one.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after stop() and start(), a diverted event still
+            //   reaches the fallback appender, the fallback reports
+            //   started, and the hot-path error is reported once more.
+            // Why is it important to test this test case? Before the fix,
+            //   stop() detached the fallback slot; the restarted pipeline
+            //   dropped every diversion although the operator's XML still
+            //   named the fallback - and the latched error guard hid the
+            //   first error of the new lifecycle.
+
+            // Given: a started-then-stopped appender with a fallback
+            val fallback = RecordingAppender()
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = fallback)
+            appender.start()
+            appender.doAppend(newTestLoggingEvent(message = "first life"))
+            appender.stop()
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("first life")
+            assertThat(fallback.isStarted).isFalse()
+
+            // When: restarted, and an event diverts again
+            appender.start()
+            assertThat(appender.isStarted).isTrue()
+            assertThat(fallback.isStarted).isTrue()
+            appender.doAppend(newTestLoggingEvent(message = "second life"))
+            appender.stop()
+
+            // Then: the fallback path survived the cycle, and the error
+            //   was reported once per lifecycle
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("first life", "second life")
+            assertThat(appender.statusMessages().filter { it.contains("Hot path error") }).hasSize(2)
+        }
+    }
+
+    @Nested
+    inner class `Fallback worker reentry guard` {
+        @Test
+        fun `should drop events a fallback appender logs from its own delivery instead of looping them`() {
+            // What is to be tested? Whether an event that the fallback
+            //   appender itself raises from inside doAppend (a
+            //   third-party appender logging through SLF4J per delivered
+            //   event) is dropped by the reentry guard on the fallback
+            //   worker instead of re-entering the pipeline.
+            // How will the test case be deemed successful and why? Successful
+            //   if, with the encoder failing (so every event diverts), a
+            //   fallback that re-logs each delivered event through the
+            //   appender ends up with exactly the application's own
+            //   events - and the pipeline terminates. Without the guard
+            //   every fallback delivery would spawn a new event, and the
+            //   fallback would keep receiving events until the test
+            //   stopped the appender.
+            // Why is it important to test this test case? During a Kafka
+            //   outage this loop saturates both queues and crowds out the
+            //   genuine events - exactly when the fallback is the only
+            //   remaining record.
+
+            // Given: a fallback appender that logs back through the appender
+            var appenderRef: KafkaAppender? = null
+            val delivered = Collections.synchronizedList(mutableListOf<String>())
+            val reLoggingFallback =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = LoggerContext()
+                        start()
+                    }
+
+                    override fun append(event: ILoggingEvent) {
+                        delivered += event.formattedMessage
+                        checkNotNull(appenderRef).doAppend(
+                            newTestLoggingEvent(message = "fallback said: ${event.formattedMessage}"),
+                        )
+                    }
+                }
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = reLoggingFallback)
+            appenderRef = appender
+            appender.start()
+
+            // When: the application logs three events, all diverting
+            repeat(3) { appender.doAppend(newTestLoggingEvent(message = "app-$it")) }
+
+            // Then: the fallback received exactly the application's events;
+            //   its own re-logged events were dropped on the worker
+            appender.stop()
+            assertThat(delivered).containsExactly("app-0", "app-1", "app-2")
         }
     }
 
@@ -1630,10 +1767,12 @@ class KafkaAppenderTest {
 
             // Given: a producer whose send blocks uninterruptibly, then
             //   throws once released - modelling a send parked past the
-            //   interrupt grace that fails late
+            //   interrupt grace that fails late. The double also captures
+            //   the send worker thread, so the test can join it and thereby
+            //   know the sender's error path has fully run.
             val release = CountDownLatch(1)
             val sendEntered = CountDownLatch(1)
-            val sendReturned = AtomicBoolean(false)
+            val sendWorker = AtomicReference<Thread?>()
             val throwingBlockedFactory =
                 ProducerFactory { _ ->
                     val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
@@ -1642,6 +1781,7 @@ class KafkaAppenderTest {
                             record: ProducerRecord<ByteArray, ByteArray>,
                             callback: Callback?,
                         ): Future<RecordMetadata> {
+                            sendWorker.set(Thread.currentThread())
                             sendEntered.countDown()
                             var wasInterrupted = false
                             while (release.count > 0) {
@@ -1654,7 +1794,6 @@ class KafkaAppenderTest {
                             if (wasInterrupted) {
                                 Thread.currentThread().interrupt()
                             }
-                            sendReturned.set(true)
                             throw RuntimeException("late send failure")
                         }
                     }
@@ -1667,18 +1806,56 @@ class KafkaAppenderTest {
                     fallback = fallback,
                 )
             appender.start()
+            // The metrics are the observable for the late path: by then
+            // stop() has closed the fallback dispatcher and stopped the
+            // recorder, so a duplicate could never reach the recorder
+            // even with a broken claim. The sender still holds its
+            // Micrometer implementation, whose meter objects keep counting
+            // after stop() removed them from the registry - so the meters
+            // are captured before stop() and read afterwards.
+            val registry = SimpleMeterRegistry()
+            appender.bindMeterRegistry(registry)
+            val sendErrorFallbacks =
+                checkNotNull(
+                    registry
+                        .find("kafka.appender.events.fallback")
+                        .tags("topic.class", "technical", "reason", "send.error")
+                        .counter(),
+                )
+            val shutdownFallbacks =
+                checkNotNull(
+                    registry
+                        .find("kafka.appender.events.fallback")
+                        .tags("topic.class", "technical", "reason", "shutdown")
+                        .counter(),
+                )
+            val sendErrors =
+                checkNotNull(
+                    registry
+                        .find("kafka.appender.send.duration")
+                        .tags("topic.class", "technical", "outcome", "error")
+                        .timer(),
+                )
             appender.doAppend(newTestLoggingEvent(message = "pinned"))
             assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
 
-            // When: stop() claims and diverts the pinned event, then the
-            //   send unblocks and fails
+            // When: stop() claims and diverts the pinned event (reason
+            //   shutdown), then the send unblocks and fails; joining the
+            //   worker proves the sender's error routing has completed
             appender.stop()
             assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
+            assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
             release.countDown()
-            pollUntil { sendReturned.get() }
+            checkNotNull(sendWorker.get()).join(5000)
+            assertThat(sendWorker.get()!!.isAlive).isFalse()
 
-            // Then: still exactly one copy - the sender's error routing
-            //   found the diversion already claimed
+            // Then: the late failure was observed (send.duration error),
+            //   but the sender's error routing found the diversion already
+            //   claimed - no second fallback of any reason, and still
+            //   exactly one copy in the recorder
+            assertThat(sendErrors.count()).isEqualTo(1L)
+            assertThat(sendErrorFallbacks.count()).isEqualTo(0.0)
+            assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
             assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
         }
     }

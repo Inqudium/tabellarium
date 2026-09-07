@@ -77,6 +77,22 @@ import java.util.concurrent.ConcurrentHashMap
  * appender. The set of already-bound appenders is tracked by
  * reference identity.
  *
+ * ## Logback reconfiguration
+ *
+ * A Logback reconfiguration (`<configuration scan="true">`, a
+ * programmatic `LoggerContext.reset()` plus re-configuration) replaces
+ * every appender instance: the old [KafkaAppender] is stopped and
+ * removes its meters, the new one is unbound. Spring publishes no
+ * further [ContextRefreshedEvent] in a running application, and
+ * Logback fires no listener callback *after* the new configuration is
+ * in place (`LoggerContextListener.onStart` runs only for the initial
+ * start, `onReset` before the new appenders exist), so this class
+ * cannot rebind automatically. Compatibility: after a reconfiguration
+ * the metrics stay dark until [bindAppenders] is called again - it is
+ * public and idempotent for exactly this purpose (e.g. from an
+ * application-side `LoggerContextListener` that defers to the next
+ * scheduler tick, or from an operations endpoint).
+ *
  * @param meterRegistry The application's Micrometer registry. Required.
  * @param commonTags Tags attached to every metric this binding
  *                   publishes. Pass [Tags.empty] if the registry's

@@ -18,7 +18,12 @@ import org.apache.kafka.clients.producer.ProducerConfig
  * 1. **Base properties** - the caller's configuration, typically parsed
  *    from the `<kafkaProducerProperties>` XML element.
  * 2. **Default overrides** - applied via `putIfAbsent`, so the caller's
- *    value wins where both are present. When [defaultClientIdPrefix] is
+ *    value wins where both are present. One default is conditional: a
+ *    class's `acks` default is skipped when the caller explicitly
+ *    requested `enable.idempotence=true`, because the Kafka client
+ *    refuses explicit idempotence with anything but `acks=all` - the
+ *    appender's own default must never manufacture that conflict (see
+ *    [validateIdempotenceCompatibility]). When [defaultClientIdPrefix] is
  *    set, a per-class `client.id` default of
  *    `<defaultClientIdPrefix>-<topicclass>` belongs to this layer: it
  *    gives each producer a distinct, attributable client id on the
@@ -78,8 +83,14 @@ internal class ProducerPropertiesBuilder(
         val violations = mutableListOf<MandatoryOverrideViolation>()
         val merged = LinkedHashMap(baseProperties)
 
-        // Default overrides: only when the caller did not set the property
+        // Default overrides: only when the caller did not set the property.
+        // Safety: an explicit enable.idempotence=true from the caller makes
+        // the class's acks default (acks=1 for TECHNICAL/PERFORMANCE)
+        // illegal for the Kafka client, so that one default steps aside
+        // and Kafka's own acks default (all) applies.
+        val explicitIdempotence = baseProperties[ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG]?.toBoolean() == true
         topicClass.defaultOverrides.forEach { (key, value) ->
+            if (explicitIdempotence && key == ProducerConfig.ACKS_CONFIG) return@forEach
             merged.putIfAbsent(key, value)
         }
 
@@ -162,15 +173,23 @@ internal class ProducerPropertiesBuilder(
      * Rejects property combinations that the Kafka producer constructor
      * would refuse anyway - but with a clear, named message instead of
      * the generic construction failure the appender would otherwise
-     * surface. Relevant when a class mandates `enable.idempotence=true`
-     * (AUDIT) and the caller's tuning contradicts the idempotence
-     * preconditions.
+     * surface (and which the appender withholds unless `<debug>` is on).
+     * Relevant when a class mandates `enable.idempotence=true` (AUDIT)
+     * or the caller requests it, and the tuning contradicts the
+     * idempotence preconditions: `acks=all`, `retries > 0`, at most five
+     * in-flight requests per connection.
      */
     private fun validateIdempotenceCompatibility(
         merged: Map<String, String>,
         topicClass: TopicClass,
     ) {
         if (merged[ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG]?.toBoolean() != true) return
+        merged[ProducerConfig.ACKS_CONFIG]?.let { acks ->
+            require(acks == "all" || acks == "-1") {
+                "acks=$acks is incompatible with enable.idempotence=true " +
+                    "(required for $topicClass): the idempotent producer needs acks=all"
+            }
+        }
         merged[ProducerConfig.RETRIES_CONFIG]?.toIntOrNull()?.let { retries ->
             require(retries > 0) {
                 "retries=$retries is incompatible with enable.idempotence=true " +

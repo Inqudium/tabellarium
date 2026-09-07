@@ -7,7 +7,9 @@ import eu.inqudium.tabellarium.ResilientMessageSender.Companion.defaultCircuitBr
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.errors.InvalidTopicException
 import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.errors.SerializationException
@@ -43,13 +45,37 @@ import java.util.concurrent.TimeUnit
  *    invokes `producer.send` with a callback.
  *      - Callback success → [CircuitBreaker.onSuccess].
  *      - Callback error → [CircuitBreaker.onError], then route to fallback.
- *      - Synchronous throw from `producer.send` (e.g. buffer full after
- *        `max.block.ms`, or producer closed) → [CircuitBreaker.onError],
- *        then route to fallback.
+ *        Compatibility: the Kafka client (4.x) reports every
+ *        `ApiException` it hits *inside* `send` - metadata not available
+ *        within `max.block.ms`, buffer exhausted, record too large,
+ *        invalid topic - through this callback **synchronously on the
+ *        calling thread** and returns a failed future without throwing.
+ *        Such an event is therefore accounted as a fallback, never as
+ *        dispatched.
+ *      - Synchronous throw from `producer.send` (producer closed, an
+ *        `InterruptException`, a non-API `KafkaException`) →
+ *        [CircuitBreaker.onError], then route to fallback.
  *
  * The Future returned by `producer.send` is deliberately not retained:
  * delivery outcome is reported exclusively through the callback, so
  * delivery failures are never silent.
+ *
+ * ## Memory while a send is pending
+ *
+ * The callback keeps [ILoggingEvent] reachable until the client
+ * completes the record - it is the payload of the fallback path. While
+ * a broker is reachable but slow to acknowledge, the client buffers up
+ * to `buffer.memory` bytes of *serialized* records for up to
+ * `delivery.timeout.ms`, and every buffered record pins its event
+ * (MDC map, arguments, throwable proxy) on the heap - the retained set
+ * is bounded by those two producer settings, not by the appender's
+ * queue capacities. The callback deliberately captures nothing else
+ * that scales with the event: the diversion claim it receives is a
+ * detached [SendDispatcher.DiversionClaim], so the already-serialized
+ * payload copy and the [SendDispatcher.PendingSend] are released the
+ * moment `send` returns. Deployments that log exception-heavy events
+ * at high volume should size `buffer.memory` and `delivery.timeout.ms`
+ * with the event size, not the payload size, in mind.
  *
  * ## Half-open throttling
  *
@@ -211,41 +237,87 @@ internal class ResilientMessageSender(
 
         val producer = producerRegistry.producerFor(topicClass)
         val record = buildRecord(topicName, payload, enrichment)
-        val startNanos = System.nanoTime()
+        val callback = SendCallback(topicClass, circuitBreaker, m, originalEvent, claimDiversion)
 
         try {
             // The Future returned here is intentionally discarded; the callback
             // is the single source of truth for delivery outcome. The callback
-            // runs on the Kafka producer's I/O thread - sendToFallback must
-            // therefore be non-blocking (handled by FallbackDispatcher).
-            producer.send(record) { _, exception ->
-                val elapsed = System.nanoTime() - startNanos
-                val elapsedDuration = Duration.ofNanos(elapsed)
-                if (exception != null) {
-                    circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, exception)
-                    m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
-                    if (claimDiversion()) {
-                        m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
-                        sendToFallback(originalEvent)
-                    }
-                } else {
-                    circuitBreaker.onSuccess(elapsed, TimeUnit.NANOSECONDS)
-                    m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.SUCCESS, elapsedDuration)
-                }
+            // runs on the Kafka producer's I/O thread - or, for the client's
+            // synchronous ApiException path, right here on the calling thread
+            // before send returns - so sendToFallback must be non-blocking
+            // (handled by FallbackDispatcher).
+            producer.send(record, callback)
+            // Count "handed to producer.send" only after the call returns and
+            // only when the callback has not already reported the failure
+            // synchronously: an event that ended in the fallback before send
+            // returned was never dispatched. A synchronous throw below means
+            // the dispatch did not happen either. Invariant: every event
+            // leaving this method is counted exactly once as dispatched or
+            // as fallback.
+            if (!callback.errorReported) {
+                m.eventDispatched(topicClass)
             }
-            // Count "handed to producer.send successfully" only after the
-            // call returns. A synchronous throw below means the dispatch
-            // did not happen.
-            m.eventDispatched(topicClass)
         } catch (e: Exception) {
-            // Synchronous failure from producer.send: closed producer, buffer
-            // exhaustion after max.block.ms elapsed, illegal record, etc.
-            val elapsed = System.nanoTime() - startNanos
+            // Synchronous throw from producer.send: closed producer,
+            // InterruptException while parked in max.block.ms, a non-API
+            // KafkaException. (ApiExceptions - metadata timeout, buffer
+            // exhausted, record too large - do not arrive here; the client
+            // reports them through the callback, see the class KDoc.)
+            val elapsed = System.nanoTime() - callback.startNanos
             circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, e)
             m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, Duration.ofNanos(elapsed))
             if (claimDiversion()) {
                 m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                 sendToFallback(originalEvent)
+            }
+        }
+    }
+
+    /**
+     * The `producer.send` callback, one instance per send. A class
+     * rather than a lambda so that the [errorReported] outcome can be
+     * read on the calling thread after `send` returns (the Kafka client
+     * invokes the callback synchronously for its `ApiException` path)
+     * and so that the captured state is explicit: the event for the
+     * fallback, the breaker, the metrics snapshot and the diversion
+     * claim - nothing that scales with the payload (see the class KDoc
+     * on memory while a send is pending).
+     */
+    private inner class SendCallback(
+        private val topicClass: TopicClass,
+        private val circuitBreaker: CircuitBreaker,
+        private val metrics: KafkaAppenderMetrics,
+        private val originalEvent: ILoggingEvent,
+        private val claimDiversion: () -> Boolean,
+    ) : Callback {
+        val startNanos: Long = System.nanoTime()
+
+        /**
+         * True once this callback has reported an error. Volatile: written
+         * on whichever thread the client invokes the callback on, read on
+         * the sending thread right after `send` returns.
+         */
+        @Volatile
+        var errorReported: Boolean = false
+            private set
+
+        override fun onCompletion(
+            metadata: RecordMetadata?,
+            exception: Exception?,
+        ) {
+            val elapsed = System.nanoTime() - startNanos
+            val elapsedDuration = Duration.ofNanos(elapsed)
+            if (exception != null) {
+                errorReported = true
+                circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, exception)
+                metrics.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
+                if (claimDiversion()) {
+                    metrics.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                    sendToFallback(originalEvent)
+                }
+            } else {
+                circuitBreaker.onSuccess(elapsed, TimeUnit.NANOSECONDS)
+                metrics.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.SUCCESS, elapsedDuration)
             }
         }
     }

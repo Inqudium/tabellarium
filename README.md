@@ -486,6 +486,22 @@ O(1) regardless of `max.block.ms`.
 Everything else (`acks`, `enable.idempotence`, `linger.ms`) is
 decided by topic class, for servlet and reactive services alike.
 
+### Heap while a broker is slow
+
+A broker that is reachable but slow to acknowledge is the one
+condition the circuit breaker cannot see early: every `send()`
+succeeds, and the failures arrive through the callbacks only after
+`delivery.timeout.ms` (Kafka default: two minutes). Until then the
+client buffers up to `buffer.memory` bytes of serialized records, and
+every buffered record keeps its original log event (MDC map,
+arguments, throwable proxy) reachable for the fallback path. The
+retained heap is therefore bounded by `buffer.memory` measured in
+**event** size, not in payload size — exception-heavy logging at high
+volume can pin a multiple of `buffer.memory`. Size `buffer.memory`
+and `delivery.timeout.ms` per class in `<kafkaProducerProperties>`
+with that in mind; the appender itself retains nothing else per
+buffered record.
+
 ### BlockHound
 
 Services that run BlockHound (`io.projectreactor.tools:blockhound`)
@@ -577,7 +593,7 @@ Micrometer on the classpath and emits no metrics until
 | Metric                              | Type    | Tags                              | Meaning                                                       |
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
 | `kafka.appender.events.accepted`    | Counter | `topic.class`                     | Events entering `KafkaAppender.append`                        |
-| `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` (callback outcome unknown)   |
+| `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` without a synchronous failure (callback outcome unknown) |
 | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost because the fallback dispatcher queue was full    |
@@ -641,6 +657,15 @@ class LoggingConfig
 The binding listens for `ContextRefreshedEvent`, walks the Logback
 `LoggerContext`, finds every `KafkaAppender`, and calls
 `bindMeterRegistry()` on each. No further application code required.
+
+One limitation: a **Logback reconfiguration** at runtime
+(`<configuration scan="true">`, or a programmatic reset) replaces the
+appender instances, and neither Spring nor Logback offers a callback
+that fires *after* the new configuration is in place - the metrics of
+the replacement appenders stay dark until `bindAppenders()` on the
+binding bean is called again (it is public and idempotent). Wire that
+call from wherever your reconfiguration is triggered, or avoid runtime
+reconfiguration for the Kafka appender.
 
 To add application-specific common tags (e.g. service name,
 environment), pass them to the constructor:
