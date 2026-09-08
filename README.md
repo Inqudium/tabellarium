@@ -147,6 +147,7 @@ repository configuration needed:
     <groupId>eu.inqudium</groupId>
     <artifactId>tabellarium</artifactId>
     <version>1.1.0</version>
+    <scope>runtime</scope>
 </dependency>
 ```
 
