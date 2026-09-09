@@ -284,6 +284,50 @@ aborts `start()` with a named error. Full resolution rules and
 validation live in the
 [configuration guide](docs/config/kafka-appender-config-guide.md).
 
+### Why one topic cannot belong to two classes
+
+Several markers of the same class may route to one topic. What
+`start()` rejects is the same topic under two *different* classes,
+including a `<mapping>` that names the `<defaultTopic>` with a class
+other than `<defaultTopicClass>`. Allowing it would mean two producers
+with two policies writing one topic, and every guarantee this module
+makes is scoped to a class:
+
+- **Delivery guarantees would diverge on one topic.** The `AUDIT`
+  producer writes with `acks=all` and idempotence, the `TECHNICAL`
+  producer with `acks=1`. A consumer would see one topic whose records
+  are partly durable and partly best-effort, with nothing on the
+  record to tell them apart. For an audit topic that is a compliance
+  hole.
+- **Two producers would write one topic.** Idempotence and ordering
+  are per producer and partition. Records of the same trace key would
+  arrive through two producers with different `linger.ms` and batch
+  settings and could interleave on the partition. Trace affinity via
+  the MDC key survives, the relative order between the two classes
+  does not.
+- **The breaker would split.** On a broken topic the breaker of one
+  class opens after roughly ten failures, the other earlier or later
+  depending on its volume. Part of the topic's events would divert to
+  the fallback while the rest keeps hammering the broker, which
+  defeats the breaker's purpose as a health signal for one route
+  (see [Why one circuit breaker per topic class](#why-one-circuit-breaker-per-topic-class)).
+- **Attribution would blur.** Two `client.id`s, two sets of producer
+  metrics and two fallback counters would describe one topic. Broker
+  quotas and dashboards could no longer be read per topic.
+- **Mandatory overrides would become optional.** Mapping an audit
+  topic a second time as `TECHNICAL` and setting the matching marker
+  would be enough to bypass the enforced producer settings (see
+  [Mandatory override policy](#mandatory-override-policy)).
+
+The check is scoped to one appender instance. Two `KafkaAppender`
+instances in the same `logback.xml` that configure the same topic
+under different classes are not detected, because the instances do
+not know about each other, and every effect above applies. Closing
+that gap needs a process-wide registry consulted at start-up, which is
+adjacent to the
+[producer-registry consolidation](#producer-registry-consolidation)
+listed under future work.
+
 ## Resilience
 
 Three resilience mechanisms run independently per topic class:
