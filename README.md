@@ -374,6 +374,68 @@ What does hold:
   the payload and the trace id, never through Kafka offsets or Kafka
   record timestamps.
 
+### What the partitioning key does
+
+The MDC entry `traceId` of the log event becomes the Kafka record key,
+UTF-8 encoded. Kafka picks the partition from the hash of the key, and
+everything the key does follows from that.
+
+- **All records of one trace land on one partition** of a topic. Kafka
+  orders records only within a partition, so a consumer sees the log
+  lines of one request in the order the producer sent them. Without a
+  key the sticky partitioner spreads records batch by batch over all
+  partitions and the lines of one request scatter; a consumer would
+  have to reassemble them by timestamp.
+- **Locality for consumers.** Evaluating one trace means reading one
+  partition, not all of them. Kafka Streams or a log indexer can group
+  by key without parsing the payload.
+- **Even distribution.** Trace ids are random hex strings, so their
+  hashes spread evenly over the partitions. That is what keeps
+  key-based partitioning free of hot spots.
+
+Where the effect ends:
+
+- **Within one topic only.** A trace whose events go partly to the
+  audit topic and partly to the technical topic has no order across
+  the two (see [Ordering across topic classes](#ordering-across-topic-classes)).
+- **Events without a trace id have no key.** Start-up logs, scheduled
+  jobs, background threads and reactive code without an MDC bridge
+  yield a null `traceId`; those records use the sticky partitioner and
+  land anywhere. In a Reactor service without a bridge from the
+  Reactor `Context` into the MDC, that is practically every request
+  log - see [MDC propagation](#mdc-propagation-for-the-partitioning-key)
+  for the check.
+- **The snapshot is consistent.** Logback freezes the MDC into the
+  event at the `log.info` call, so the appender reads the logging
+  thread's value at that moment, never another thread's.
+
+Two risks the key brings:
+
+- **A hot partition at low cardinality.** An application that writes a
+  constant or low-variety value under `traceId` - a misconfigured
+  bridge, a job name - sends every record to one partition. The topic
+  is then effectively single-partitioned, whatever its partition
+  count.
+- **Partition steering by an attacker.** Applications commonly bridge
+  an inbound request header into the MDC; whoever controls the header
+  controls the key and thereby the partition. The appender bounds the
+  key at 128 characters so an oversized header cannot push every
+  record past `max.request.size`; it cannot prevent the steering
+  itself. A value over the bound counts as "no key" rather than being
+  truncated, because a truncated prefix would still be
+  attacker-chosen.
+
+One side effect on batching: with a key, every batch is bound to one
+partition. With many partitions and low volume a batch fills more
+slowly and `linger.ms` dominates the send duration more; the sticky
+partitioner without a key fills batches faster. For the per-class
+latency floors described under
+[Metrics](#reading-the-send-duration-timer), the key makes the
+high-volume shortening a little harder to reach.
+
+The MDC key name is not configurable today; see
+[Custom partitioning key](#custom-partitioning-key).
+
 ## Resilience
 
 Three resilience mechanisms run independently per topic class:
@@ -681,7 +743,9 @@ appender is used.
 ### MDC propagation for the partitioning key
 
 The default partitioning-key extractor reads `traceId` from the MDC
-at the moment of the `log.info(...)` call. Logback freezes the MDC
+at the moment of the `log.info(...)` call (what the key does and where
+its effect ends is described under
+[What the partitioning key does](#what-the-partitioning-key-does)). Logback freezes the MDC
 into the `ILoggingEvent` at that moment, so the appender always sees
 a consistent snapshot — there is no risk of reading "the wrong
 thread's MDC" inside the appender.
@@ -1008,8 +1072,10 @@ deliberately not a consumer contract.
 
 ### Custom partitioning key
 
-The partitioning key is read from MDC `traceId` by default. There is
-currently no configuration surface for a different key (session id,
+The partitioning key is read from MDC `traceId` by default (its
+effects are described under
+[What the partitioning key does](#what-the-partitioning-key-does)).
+There is currently no configuration surface for a different key (session id,
 user id, account id) — most deployments use the trace-id default. Per
 [ADR-0002](docs/adr/ADR-0002-public-api-is-the-operator-surface.md),
 such an override would be added as an XML-bindable `KafkaAppender`
