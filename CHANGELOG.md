@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   topic and class from the markers; `materialize`: encoded payload, key
   and headers) - pure, derived from the routing and identity
   configuration plus the encoder, nothing to close. `KafkaTransport`
-  carries records (`dispatch`, `divert`, `isOwnProducerThread`) and owns
+  carries records (`dispatch`, `divertToFallback`, `isOwnProducerThread`) and owns
   the stateful components (producers, breakers, send queues, fallback
   dispatcher), opened from a `TransportSettings` value and closed as one
   unit, so the reverse ownership close order exists once instead of

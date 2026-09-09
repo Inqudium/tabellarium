@@ -30,7 +30,7 @@ internal data class TransportSettings(
  * composes the two.
  *
  * The appender talks to the transport in three verbs: [dispatch] a
- * materialized [Record] into its class's queue, [divert] an event the
+ * materialized [Record] into its class's queue, [divertToFallback] an event the
  * hot path could not turn into a record to the fallback, and ask
  * [isOwnProducerThread] whether an event is the producers' own logging.
  * The components behind them are private; the two exposed queries
@@ -104,7 +104,7 @@ internal class KafkaTransport private constructor(
      * so the caller never blocks on the fallback's downstream I/O. No-op
      * when the operator configured no fallback (drop policy).
      */
-    fun divert(event: ILoggingEvent) {
+    fun divertToFallback(event: ILoggingEvent) {
         fallbackDispatcher?.enqueue(event)
     }
 

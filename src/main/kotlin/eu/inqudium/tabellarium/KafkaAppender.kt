@@ -562,7 +562,7 @@ class KafkaAppender :
             m.eventFallback(cls, KafkaAppenderMetrics.FallbackReason.ENCODER_ERROR)
             // Asynchronously, so the caller never blocks on the fallback
             // appender's downstream I/O.
-            transport.divert(event)
+            transport.divertToFallback(event)
         } finally {
             inAppend.set(false)
         }
