@@ -577,6 +577,47 @@ absorbs at most `max.block.ms` per event until its breaker opens
 (~10 × 500 ms = 5 s, on the worker, not on your request threads),
 and queue overflow flows to the fallback, counted.
 
+### Which thread does what
+
+The encoder runs on the application's logging thread, the one that
+calls `log.info(...)`. `append` performs, in this order, on that
+thread:
+
+1. `prepareForDeferredProcessing` freezes MDC, thread name and the
+   formatted message into the event.
+2. `callerData`, only if `<includeCallerData>` is set.
+3. `encoder.encode(event)` produces the JSON payload as a byte array.
+4. Marker routing, class lookup, and the key extraction from the MDC.
+5. The O(1) hand-off of payload, key and headers into the class queue.
+
+Only then does the thread change. The `SendDispatcher` worker of the
+class takes the finished package from the queue and calls
+`producer.send`; it encodes nothing, it receives bytes. The Kafka
+client's I/O thread takes over from there and runs the send callback.
+
+Two consequences follow from encoding on the caller:
+
+- **Encoding scales with the caller threads.** Twenty logging threads
+  encode in parallel. A single worker per class would otherwise have
+  to encode every event of its class alone and would become the
+  bottleneck at high volume - which is exactly what happens behind an
+  `AsyncAppender` (see below).
+- **Encoding is what the caller pays.** The `doAppend` figures under
+  [Reading the send-duration timer](#reading-the-send-duration-timer)
+  include the encoder. For a small event that is a fraction of a
+  microsecond; an event with a long stack trace costs the caller
+  correspondingly more, because the encoder writes out the throwable
+  proxy.
+
+A third thread can run an encoder: the fallback appender's own. A
+`FileAppender` configured as fallback encodes the original event
+again with its own encoder, on the `FallbackDispatcher` worker - not
+on the caller and not on the Kafka I/O thread. The Kafka payload is
+not reused for this, because the fallback receives the `ILoggingEvent`,
+not the bytes. This is also why `<includeCallerData>` exists: a
+fallback layout with `%caller` would otherwise walk the wrong stack on
+the fallback worker.
+
 ### Why wrapping in `AsyncAppender` now hurts
 
 Wrapping in `AsyncAppender` with its default settings introduces
