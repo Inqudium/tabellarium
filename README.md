@@ -1107,7 +1107,7 @@ A minimal dashboard typically shows:
 ┌────────────────────────────────────────────────────────────────────┐
 │                      KafkaAppender (orchestrator)                  │
 │                                                                    │
-│  start() ─→ validateConfiguration ─→ buildPipeline                 │
+│  start() ─→ validateConfiguration ─→ AppenderPipeline.build        │
 │      ┌─────────────┬──────────────┬─────────────────┐              │
 │      ▼             ▼              ▼                 ▼              │
 │  TopicRouter   TopicTable   MessageEnricher   ProducerRegistry     │

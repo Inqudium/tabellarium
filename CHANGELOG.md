@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal structure of `KafkaAppender` (no behavior change, public API
+  per ADR-0002 unchanged): the components `start()` builds and `stop()`
+  tears down are now owned by `AppenderPipeline`, so the reverse
+  ownership close order exists once instead of three times (build
+  rollback, `stop()`, parallel dispatcher close); the start-up messages
+  (mandatory-override warnings, cleartext-transport warning, `<debug>`
+  diagnostics) moved to `StartupDiagnostics` as pure functions with
+  their own unit test.
+
 ## [1.1.0] - 2026-09-07
 
 Behavior changes operators should read before upgrading: the
