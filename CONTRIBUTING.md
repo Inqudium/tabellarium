@@ -34,8 +34,8 @@ docker run --rm -v "$PWD:/repo" \
 ```
 
 The scan uses an SBOM rather than `pom.xml` because most versions come
-from the Spring Boot BOM and never appear in `pom.xml`; test-scoped
-dependencies are excluded, since they reach no consumer.
+from the imported Spring Boot BOM and never appear in `pom.xml`;
+test-scoped dependencies are excluded, since they reach no consumer.
 
 When an advisory appears, prefer fixing it — usually a version pin in
 `<dependencyManagement>` even when the affected artifact is transitive

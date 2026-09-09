@@ -7,8 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ParallelCloseTest` pins the shared parallel-close helper on its own:
+  one overall budget for all closers, a closer that overruns it does not
+  hold the caller (the `Thread.join(0)` trap), an interrupt of the caller
+  ends the wait early and is restored, and an empty task list returns at
+  once. Previously covered only through the registry and appender tests.
+- `CircuitBreakerMetricsMirrorTest` compares the appender's own
+  circuit-breaker binder against `resilience4j-micrometer`'s
+  `TaggedCircuitBreakerMetrics` (meter names, types, tags without the
+  `appender` tag) on every build; the official binder is a test-scoped
+  dependency only. A Resilience4j upgrade that changes the official
+  meters now fails the build instead of drifting the mirror.
+
 ### Changed
 
+- Build: the POM no longer inherits from `spring-boot-starter-parent`.
+  The application parent had leaked into the published POM (the
+  CI-friendly flatten mode kept the `<parent>` element, so consumers
+  resolved the Boot parent chain to read this library's dependency
+  versions). The Spring Boot dependency BOM is now an explicit import
+  (preceded by the Kotlin BOM, because an imported BOM no longer honors
+  the project's `kotlin.version` override the way the parent did), the
+  core Maven plugins are pinned to the versions the parent resolved, and
+  the three pieces of plugin configuration it contributed (compiler
+  `-parameters`, `@..@` resource delimiters, manifest implementation
+  entries) are declared in `pluginManagement`. Flatten runs in `ossrh`
+  mode without `dependencyManagement`, so the published POM carries no
+  parent and no BOM - only resolved versions; the `lz4-java` security
+  pin therefore moved from `dependencyManagement` to a direct `runtime`
+  dependency so it still reaches consumers. Verified against the
+  previous build: the resolved dependency tree is identical except that
+  `lz4-java` now appears as that direct runtime dependency instead of
+  under `kafka-clients` (same version, same scope), and the jar manifest
+  is byte-identical.
 - Internal structure of `KafkaAppender` (no behavior change, public API
   per ADR-0002 unchanged): the appender now composes two halves with one
   concern each. `RecordPlan` turns an event into a record (`route`:
@@ -22,7 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three times (open rollback, `stop()`, parallel dispatcher close). The
   start-up messages (mandatory-override warnings, cleartext-transport
   warning, `<debug>` diagnostics) moved to `StartupDiagnostics` as pure
-  functions. All three carry their own unit tests.
+  functions. `RecordPlan` and `StartupDiagnostics` carry their own unit
+  tests; `KafkaTransport` (including the rollback of a failed open) is
+  covered through the appender tests.
 - The self-logging guard derives the producer network-thread prefix
   from the Kafka client's public `KafkaProducer.NETWORK_THREAD_PREFIX`
   instead of a duplicated literal, and a contract test checks the full

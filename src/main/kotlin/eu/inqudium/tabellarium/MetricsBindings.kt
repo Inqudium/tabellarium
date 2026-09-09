@@ -43,7 +43,9 @@ import java.util.IdentityHashMap
  * plus `micrometer-core`, so the previously optional
  * `resilience4j-micrometer` bridge is no longer used. The price is
  * deliberate: resilience4j upgrades must be checked against this
- * mirror (meter names, states, tags, event semantics).
+ * mirror (meter names, states, tags, event semantics) -
+ * `CircuitBreakerMetricsMirrorTest` does the name/type/tag part on
+ * every build against the official binder on the test classpath.
  *
  * ## Lazy class-loading pattern for the optional Kafka binder
  *
