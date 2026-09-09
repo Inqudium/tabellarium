@@ -335,6 +335,60 @@ threads (recognizable because the Kafka client names them after the
 producer's `client.id`) are ignored entirely — the producer's internal
 logging is never shipped through the producer itself.
 
+### Why one circuit breaker per topic class
+
+Separate breakers only pay off if one topic class can be unhealthy
+while another is fine. In Kafka that is the normal shape of an
+outage, not the exception:
+
+- **Partition leaders live on different brokers.** When a broker
+  dies, only the partitions it led are affected. An audit topic whose
+  leader sat on that broker times out until the controller elects a
+  new leader; a technical topic led by a surviving broker keeps
+  flowing.
+- **`acks=all` meets `min.insync.replicas`.** `AUDIT` and `FUNCTIONAL`
+  enforce `acks=all`. Once a partition has too few in-sync replicas
+  the broker rejects exactly that topic's sends with
+  `NotEnoughReplicasException`, while topics with `acks=1` or healthy
+  replica sets are untouched. This is the most common way a single
+  class turns red.
+- **Broker-side limits are per topic or per client.** Quotas are keyed
+  by `client.id` (one per class, see
+  [Traceability](#traceability)), `max.message.bytes` is a topic
+  setting, and a full log directory hits only the partitions stored
+  there.
+- **Each class has its own producer.** Its own buffer, its own
+  `max.block.ms` cap and its own I/O thread. A full buffer or a
+  stalled metadata fetch in one producer is local to that class.
+  With a single shared breaker, a failure burst from the noisy
+  `PERFORMANCE` class would open the breaker for the quiet `AUDIT`
+  class and divert compliance-relevant events to the fallback although
+  their route is healthy.
+
+Where the assumption does not hold - a cluster-wide outage, a network
+partition, an authentication failure at connection level - all
+classes fail together and every breaker opens independently after
+roughly ten failures. That costs nothing beyond redundancy: the split
+helps in a partial outage and is neutral in a total one.
+
+Two design details protect the isolation:
+
+- **Deterministic payload errors are excluded from the failure
+  rate.** `RecordTooLargeException`, `InvalidTopicException`,
+  `SerializationException` and `TopicAuthorizationException` are
+  ignored by the breaker (they still reach the fallback). Otherwise
+  one oversized log statement or one misnamed topic could open the
+  breaker of its whole class and pull every healthy topic of that
+  class into the fallback with it.
+- **The granularity is the class, not the topic.** Several `<mapping>`
+  topics of the same class share one producer and one breaker. A
+  breaker per topic would be cosmetic without a producer per topic:
+  the topics would still share buffer, `max.block.ms` budget and I/O
+  thread, and a stall in one would hold the others regardless of what
+  the breaker reports. Per-class producers are the granularity at
+  which failure isolation is actually enforceable, so that is where
+  the breakers sit.
+
 ## Should I wrap this in a Logback `AsyncAppender`?
 
 **Short answer: no.** A common pattern with Kafka appenders is to
