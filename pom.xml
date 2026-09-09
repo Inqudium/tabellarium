@@ -312,6 +312,18 @@
             <scope>test</scope>
         </dependency>
         <!--
+            Test scope ONLY: the official Resilience4j binder is the
+            reference that CircuitBreakerMetricsMirrorTest compares the
+            appender's own breaker binder against (meter names, types,
+            tags). The shipped code does not use it - see the metrics
+            comment above. Version managed by the resilience4j-bom import.
+        -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-micrometer</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
             Test scope: real-broker integration tests (tag "integration",
             excluded from the default run - see surefire.excludedGroups).
             Versions are managed by the Spring Boot BOM.
