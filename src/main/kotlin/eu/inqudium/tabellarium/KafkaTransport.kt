@@ -3,6 +3,7 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.Appender
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import org.apache.kafka.clients.producer.KafkaProducer
 
 /**
  * The transport part of a [KafkaAppender]'s configuration: what the
@@ -149,11 +150,19 @@ internal class KafkaTransport private constructor(
             SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
 
         /**
-         * Kafka's fixed naming scheme for the producer's network thread;
-         * the client.id follows verbatim after this prefix. See
-         * `org.apache.kafka.clients.producer.KafkaProducer` (NETWORK_THREAD_PREFIX).
+         * Kafka's naming scheme for the producer's network thread: the
+         * public constant [KafkaProducer.NETWORK_THREAD_PREFIX], a
+         * separator, then the client.id verbatim.
+         *
+         * Compatibility: the prefix comes from the client's public API,
+         * so a rename fails compilation instead of silently disabling
+         * the guard; the separator is a literal in the KafkaProducer
+         * constructor with no constant to reference, so
+         * `KafkaProducerThreadNamingContractTest` checks the whole
+         * scheme against a real producer of the built client version -
+         * a client upgrade that changes it turns the build red.
          */
-        private const val PRODUCER_NETWORK_THREAD_PREFIX = "kafka-producer-network-thread | "
+        internal const val PRODUCER_NETWORK_THREAD_PREFIX: String = KafkaProducer.NETWORK_THREAD_PREFIX + " | "
 
         /**
          * Opens the transport for [activeTopicClasses]. See the class

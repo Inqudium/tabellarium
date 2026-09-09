@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start-up messages (mandatory-override warnings, cleartext-transport
   warning, `<debug>` diagnostics) moved to `StartupDiagnostics` as pure
   functions. All three carry their own unit tests.
+- The self-logging guard derives the producer network-thread prefix
+  from the Kafka client's public `KafkaProducer.NETWORK_THREAD_PREFIX`
+  instead of a duplicated literal, and a contract test checks the full
+  thread-naming scheme (prefix, separator, client.id) against a real
+  producer of the built client version, so a client upgrade that
+  changes the scheme fails the build instead of silently disabling the
+  guard.
 - Metric attribution of hot-path failures: the appender now routes an
   event before it encodes it, so an encoder or enrichment failure is
   counted under the topic class the event was routed to
