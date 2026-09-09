@@ -29,6 +29,14 @@ internal data class TransportSettings(
  * functions that do not change live in the [RecordPlan]; the appender
  * composes the two.
  *
+ * The appender talks to the transport in three verbs: [dispatch] a
+ * materialized [Record] into its class's queue, [divert] an event the
+ * hot path could not turn into a record to the fallback, and ask
+ * [isOwnProducerThread] whether an event is the producers' own logging.
+ * The components behind them are private; the two exposed queries
+ * ([producerRegistry], [circuitBreakerRegistry]) exist for the start-up
+ * diagnostics and the metrics binding.
+ *
  * ## Why one owner
  *
  * Before the extraction the appender held these components in separate
@@ -60,15 +68,59 @@ internal data class TransportSettings(
  */
 internal class KafkaTransport private constructor(
     val producerRegistry: ProducerRegistry,
-    val messageSender: ResilientMessageSender,
-    val sendDispatchers: Map<TopicClass, SendDispatcher>,
-    val fallbackDispatcher: FallbackDispatcher?,
+    private val messageSender: ResilientMessageSender,
+    private val sendDispatchers: Map<TopicClass, SendDispatcher>,
+    private val fallbackDispatcher: FallbackDispatcher?,
 ) {
+    /** The breaker registry the sender draws from, for the metrics binding. */
+    val circuitBreakerRegistry: CircuitBreakerRegistry
+        get() = messageSender.circuitBreakerRegistry
+
     /**
-     * The effective `client.id` values of the producers, for the
-     * appender's self-logging guard (see [KafkaAppender.append]).
+     * The effective `client.id` values of the producers, snapshot once
+     * for [isOwnProducerThread].
      */
-    val producerClientIds: Set<String> = producerRegistry.clientIds
+    private val producerClientIds: Set<String> = producerRegistry.clientIds
+
+    /**
+     * Hands a materialized record to its class's send queue in O(1).
+     * Everything before this call was CPU-bound work on the caller; the
+     * potentially-blocking `producer.send` happens on the dispatcher's
+     * worker thread. A full queue diverts to the fallback (reason
+     * `queue.full`) instead of blocking.
+     */
+    fun dispatch(
+        record: Record,
+        event: ILoggingEvent,
+    ) {
+        sendDispatchers
+            .getValue(record.route.topicClass)
+            .dispatch(record.route.topicName, record.payload, record.enrichment, event)
+    }
+
+    /**
+     * Routes an event the hot path could not turn into a record to the
+     * fallback appender, asynchronously through the fallback dispatcher
+     * so the caller never blocks on the fallback's downstream I/O. No-op
+     * when the operator configured no fallback (drop policy).
+     */
+    fun divert(event: ILoggingEvent) {
+        fallbackDispatcher?.enqueue(event)
+    }
+
+    /**
+     * Whether [threadName] is the network thread of one of this
+     * transport's producers. The Kafka client names that thread
+     * `"kafka-producer-network-thread | <client.id>"`; the match is
+     * anchored to the exact scheme (prefix plus full client.id), so an
+     * operator-supplied short client.id can never match unrelated
+     * application threads whose names merely contain it. Log events
+     * from these threads are the producer's own logging; the appender
+     * drops them instead of feeding the producer its own output.
+     */
+    fun isOwnProducerThread(threadName: String): Boolean =
+        threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
+            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in producerClientIds
 
     /** Fans a metrics implementation out to every component that reports. */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
@@ -95,6 +147,13 @@ internal class KafkaTransport private constructor(
          */
         private const val SEND_DISPATCHER_CLOSE_BUDGET_MS: Long =
             SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
+
+        /**
+         * Kafka's fixed naming scheme for the producer's network thread;
+         * the client.id follows verbatim after this prefix. See
+         * `org.apache.kafka.clients.producer.KafkaProducer` (NETWORK_THREAD_PREFIX).
+         */
+        private const val PRODUCER_NETWORK_THREAD_PREFIX = "kafka-producer-network-thread | "
 
         /**
          * Opens the transport for [activeTopicClasses]. See the class

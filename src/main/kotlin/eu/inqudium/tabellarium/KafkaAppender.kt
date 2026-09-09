@@ -22,10 +22,11 @@ import kotlin.concurrent.withLock
  * This is the composition root: it exposes the XML configuration
  * surface to Joran, runs the per-event hot path, and drives the Logback
  * lifecycle. It composes two halves with one concern each: the
- * [RecordPlan] (router, table, enricher - pure, fixed for the
- * appender's lifetime, nothing to close) and the [KafkaTransport]
- * (producers, breakers, send queues, fallback dispatcher - stateful,
- * opened in [start] and closed in [stop]). The start-up messages it
+ * [RecordPlan] turns an event into a record (routing, encoding,
+ * enrichment - pure, fixed for the appender's lifetime, nothing to
+ * close) and the [KafkaTransport] carries records to Kafka (producers,
+ * breakers, send queues, fallback dispatcher - stateful, opened in
+ * [start] and closed in [stop]). The start-up messages it
  * reports come from [StartupDiagnostics].
  *
  * ## Configuration surface
@@ -68,7 +69,8 @@ import kotlin.concurrent.withLock
  *   the appender stays `isStarted=false` and downstream `doAppend` calls
  *   are no-ops.
  * - **[append]** runs only CPU-bound work on the caller's thread:
- *   routing, encoding, enrichment. The potentially-blocking
+ *   [RecordPlan.route] and [RecordPlan.materialize] (routing, encoding,
+ *   enrichment). The potentially-blocking
  *   `producer.send` (up to the per-class `max.block.ms` cap while
  *   Kafka metadata or buffer space is missing) happens on a
  *   per-topic-class [SendDispatcher] worker - the caller enqueues in
@@ -206,9 +208,10 @@ class KafkaAppender :
     // -- Running state, built in start() --------------------------------
 
     /**
-     * The per-event-invariant half: how an event becomes a record. Built
-     * first in [start], before any resource exists; null until then.
-     * Nothing to close.
+     * The per-event-invariant half: how an event becomes a record
+     * ([RecordPlan.route], [RecordPlan.materialize]). Built first in
+     * [start], before any resource exists; null until then. Nothing to
+     * close.
      */
     private var plan: RecordPlan? = null
 
@@ -357,6 +360,7 @@ class KafkaAppender :
                     component = component,
                     cmdbId = cmdbId,
                     environment = environment,
+                    encoder = checkNotNull(encoder) { "encoder was validated non-null in validateConfiguration" },
                 )
             } catch (e: Exception) {
                 failStartup(e)
@@ -466,21 +470,15 @@ class KafkaAppender :
         if (inAppend.get()) {
             return
         }
-        // Self-logging guard: the Kafka client names its producer network
-        // thread "kafka-producer-network-thread | <client.id>". Log events
-        // from those threads are the producer's own logging; routing them
-        // back into this appender would feed the producer its own output -
-        // a feedback loop that amplifies exactly when the producer logs
+        // Self-logging guard: log events from the producers' own network
+        // threads are the producer's own logging; routing them back into
+        // this appender would feed the producer its own output - a
+        // feedback loop that amplifies exactly when the producer logs
         // most (broker trouble). Such events are ignored entirely: no
-        // metrics, no fallback. The match is anchored to the exact thread-
-        // naming scheme (prefix + full client.id), so an operator-supplied
-        // short client.id can never swallow events from unrelated
-        // application threads whose names merely contain it.
+        // metrics, no fallback. The match lives on the transport, which
+        // knows its producers' client ids.
         val threadName = event.threadName
-        if (threadName != null &&
-            threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
-            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in transport.producerClientIds
-        ) {
+        if (threadName != null && transport.isOwnProducerThread(threadName)) {
             return
         }
         // Snapshot once so all hooks for this event use the same instance.
@@ -521,19 +519,17 @@ class KafkaAppender :
             if (includeCallerData) {
                 event.callerData
             }
-            // Non-null by the start() gate: append only runs on a started
-            // appender, and start() refuses without an encoder.
-            val payload = checkNotNull(encoder).encode(event)
-            val markers = event.markerList ?: emptyList()
-            val topicName = plan.topicRouter.route(markers)
-            val topicClass = plan.topicTable.classFor(topicName)
-            topicClassForFailure = topicClass
-            m.eventAccepted(topicClass)
-            val enrichment = plan.messageEnricher.enrich(event)
+            // Route first, then materialize: a failure in encoding or
+            // enrichment is then attributed to the class the event was
+            // routed to instead of to the TECHNICAL default.
+            val route = plan.route(event)
+            topicClassForFailure = route.topicClass
+            m.eventAccepted(route.topicClass)
+            val record = plan.materialize(route, event)
             // Hand-off point: everything up to here was CPU-bound work
             // on the caller; the potentially-blocking producer.send
             // happens on the dispatcher's worker thread.
-            transport.sendDispatchers.getValue(topicClass).dispatch(topicName, payload, enrichment, event)
+            transport.dispatch(record, event)
         } catch (e: Exception) {
             // Hot-path failure (encoder bug, OOM, etc. - should be rare).
             // Log the first occurrence so operators notice, then suppress
@@ -564,10 +560,9 @@ class KafkaAppender :
                 m.eventAccepted(cls)
             }
             m.eventFallback(cls, KafkaAppenderMetrics.FallbackReason.ENCODER_ERROR)
-            // Async via dispatcher: even from the hot path, we avoid
-            // blocking the caller thread (typically a Logback AsyncAppender
-            // worker) on the fallback appender's downstream I/O.
-            transport.fallbackDispatcher?.enqueue(event)
+            // Asynchronously, so the caller never blocks on the fallback
+            // appender's downstream I/O.
+            transport.divert(event)
         } finally {
             inAppend.set(false)
         }
@@ -689,7 +684,7 @@ class KafkaAppender :
                     registry = registry,
                     commonTags = commonTags,
                     appenderName = this.name,
-                    circuitBreakerRegistry = transport.messageSender.circuitBreakerRegistry,
+                    circuitBreakerRegistry = transport.circuitBreakerRegistry,
                     producerRegistry = transport.producerRegistry,
                 )
             metrics = impl
@@ -761,14 +756,5 @@ class KafkaAppender :
             return true
         }
         return false
-    }
-
-    private companion object {
-        /**
-         * Kafka's fixed naming scheme for the producer's network thread;
-         * the client.id follows verbatim after this prefix. See
-         * `org.apache.kafka.clients.producer.KafkaProducer` (NETWORK_THREAD_PREFIX).
-         */
-        private const val PRODUCER_NETWORK_THREAD_PREFIX = "kafka-producer-network-thread | "
     }
 }

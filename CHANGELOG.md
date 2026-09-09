@@ -11,16 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Internal structure of `KafkaAppender` (no behavior change, public API
   per ADR-0002 unchanged): the appender now composes two halves with one
-  concern each. `RecordPlan` holds the per-event-invariant components
-  (router, table, enricher) - pure, derived from the routing and
-  identity configuration, nothing to close. `KafkaTransport` holds the
-  stateful components (producers, breakers, send queues, fallback
+  concern each. `RecordPlan` turns an event into a record (`route`:
+  topic and class from the markers; `materialize`: encoded payload, key
+  and headers) - pure, derived from the routing and identity
+  configuration plus the encoder, nothing to close. `KafkaTransport`
+  carries records (`dispatch`, `divert`, `isOwnProducerThread`) and owns
+  the stateful components (producers, breakers, send queues, fallback
   dispatcher), opened from a `TransportSettings` value and closed as one
   unit, so the reverse ownership close order exists once instead of
   three times (open rollback, `stop()`, parallel dispatcher close). The
   start-up messages (mandatory-override warnings, cleartext-transport
   warning, `<debug>` diagnostics) moved to `StartupDiagnostics` as pure
   functions. All three carry their own unit tests.
+- Metric attribution of hot-path failures: the appender now routes an
+  event before it encodes it, so an encoder or enrichment failure is
+  counted under the topic class the event was routed to
+  (`events.accepted` and `events.fallback{reason="encoder.error"}`).
+  Previously encoding ran first and such failures were always counted
+  under `technical`, contrary to the documented intent. Failures before
+  routing resolved a class (malformed marker input) stay under
+  `technical`.
 
 ## [1.1.0] - 2026-09-07
 
