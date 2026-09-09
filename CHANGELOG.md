@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-09
+
+Public API (ADR-0002) unchanged. Two operator-visible changes: hot-path
+failures (`events.fallback{reason="encoder.error"}` and the matching
+`events.accepted`) are now attributed to the topic class the event was
+routed to instead of always `technical`, and the published POM no longer
+declares `spring-boot-starter-parent` as its parent - `lz4-java` appears
+as a direct runtime dependency, every resolved version is unchanged.
+Everything else is internal structure, tests and build.
+
 ### Added
 
 - `ParallelCloseTest` pins the shared parallel-close helper on its own:
@@ -379,6 +389,7 @@ optional `KafkaAppenderMetricsBinding`.
   public type. Dokka's API reference now shows exactly the supported
   surface.
 
-[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Inqudium/tabellarium/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Inqudium/tabellarium/releases/tag/v1.0.0
