@@ -96,7 +96,7 @@ jobs:
           cache: maven
 
       # An SBOM of the RESOLVED graph, not a scan of pom.xml: most versions
-      # here are managed by the Spring Boot BOM and never appear in pom.xml,
+      # here are managed by the imported Spring Boot BOM and never appear in pom.xml,
       # so only the resolved graph states what actually ships. Test-scoped
       # dependencies are excluded (they reach no consumer).
       - name: Generate CycloneDX SBOM of the resolved dependencies

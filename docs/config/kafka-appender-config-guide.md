@@ -170,10 +170,10 @@ value, by one of four mechanisms:
 
 4. **Build-time resource filtering.** Placeholders like `${ARTIFACT_ID}`
    can be filled by Maven resource filtering when the logback XML lives in
-   `src/main/resources`. Note that under the Spring Boot parent, filtering
-   uses `@…@` delimiters (`@project.artifactId@`), not `${…}` — the
-   default delimiters are disabled precisely so Spring/Logback
-   placeholders survive the build.
+   `src/main/resources`. Note that a Spring Boot application (via its
+   parent) filters with `@…@` delimiters (`@project.artifactId@`), not
+   `${…}` — the default delimiters are disabled precisely so
+   Spring/Logback placeholders survive the build.
 
 **Safety net and one caveat:** if substitution yields an empty string
 (e.g. a forgotten env var resolving to nothing), the non-blank validation

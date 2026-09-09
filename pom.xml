@@ -4,13 +4,20 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.1</version>
-        <relativePath/> <!-- lookup parent from repository -->
-    </parent>
-
+    <!--
+        No parent POM on purpose. This is a library, and an application
+        parent (spring-boot-starter-parent) leaked into the published POM:
+        with the CI-friendly flatten mode the <parent> element stayed in
+        place, so every consumer resolved the Boot parent chain to read
+        this artifact's dependency versions. The version universe is now
+        an explicit BOM import (spring-boot-dependencies, see
+        dependencyManagement), the plugin versions and the three pieces
+        of plugin configuration the parent used to contribute (compiler
+        -parameters, @..@ resource delimiters, manifest implementation
+        entries) live in pluginManagement below, and the flattened POM
+        that is published carries neither a parent nor a
+        dependencyManagement section - only resolved versions.
+    -->
     <groupId>eu.inqudium</groupId>
     <artifactId>tabellarium</artifactId>
     <version>${revision}</version>
@@ -82,13 +89,23 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <!-- Java Version (Managed by Spring Boot Parent) -->
+        <!-- Java target: the artifact stays on 21 while the build needs 24+ (see .mvn/jvm.config). -->
         <java.version>21</java.version>
+        <maven.compiler.release>${java.version}</maven.compiler.release>
 
-        <!-- Kotlin Version (Override Spring Boot default) -->
+        <!-- Kotlin Version -->
         <kotlin.version>2.4.10</kotlin.version>
 
-        <!-- Third Party Dependencies (not managed by the Boot BOM) -->
+        <!--
+            The Spring Boot dependency BOM, imported (not inherited): it manages
+            the versions of Logback, SLF4J, kafka-clients, Micrometer, Spring,
+            Jackson, JUnit and AssertJ in one Dependabot entry, as the former
+            parent did - without an application parent's
+            plugin management, properties and build conventions.
+        -->
+        <spring-boot-dependencies.version>4.1.1</spring-boot-dependencies.version>
+
+        <!-- Third Party Dependencies (not managed by the imported Boot BOM) -->
         <resilience4j.version>2.4.0</resilience4j.version>
         <logstash-encoder.version>9.0</logstash-encoder.version>
         <testcontainers.version>2.0.5</testcontainers.version>
@@ -96,7 +113,7 @@
              methods run as regression tests in every verify and fuzz for
              real in the scheduled Fuzz workflow (JAZZER_FUZZ=1). -->
         <jazzer.version>0.30.0</jazzer.version>
-        <!-- Security pin; see the dependencyManagement entry for the rationale. -->
+        <!-- Security pin; see the direct lz4-java dependency for the rationale. -->
         <lz4-java.version>1.11.2</lz4-java.version>
 
         <!--
@@ -123,7 +140,20 @@
         <surefire.excluded.integration>integration</surefire.excluded.integration>
         <surefire.excludedGroups>never-tagged,${surefire.excluded.external-contract},${surefire.excluded.integration}</surefire.excludedGroups>
 
-        <!-- Plugin Versions -->
+        <!--
+            Plugin Versions. The Maven core plugins are pinned to the versions
+            the former Boot parent 4.1.1 resolved (spring-boot-dependencies
+            4.1.1 pluginManagement), so the switch away from the parent changed
+            no plugin behavior; Dependabot moves them from here on.
+        -->
+        <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
+        <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+        <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
+        <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
+        <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
+        <maven-resources-plugin.version>3.5.0</maven-resources-plugin.version>
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+        <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
         <ktlint-maven-plugin.version>3.7.1</ktlint-maven-plugin.version>
         <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
@@ -149,6 +179,11 @@
 
     <dependencyManagement>
         <dependencies>
+            <!--
+                Import order matters: the first BOM to manage an artifact wins, so
+                the two BOMs this project pins itself come BEFORE the Spring Boot
+                BOM (the same precedence the former child-over-parent layout had).
+            -->
             <!-- Resilience4j is not in the Boot BOM; the BOM keeps every resilience4j
                  artifact lockstep-versioned. -->
             <dependency>
@@ -159,8 +194,9 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- Testcontainers is not managed by the Boot parent; the BOM keeps
-                 the test-only broker-integration modules lockstep-versioned. -->
+            <!-- Testcontainers is pinned here rather than taken from the Boot BOM;
+                 the BOM keeps the test-only broker-integration modules
+                 lockstep-versioned. -->
             <dependency>
                 <groupId>org.testcontainers</groupId>
                 <artifactId>testcontainers-bom</artifactId>
@@ -170,27 +206,30 @@
             </dependency>
 
             <!--
-                Security pin, raised above the version kafka-clients resolves on its own.
-
-                lz4-java <= 1.11.0 crashes the JVM when its JNI XXHash methods are called
-                with an invalid array reference or an invalid off/len range
-                (CVE-2026-59949 / GHSA-xx22-p4ch-683r, fixed in 1.11.1). Our own exposure
-                is nil - the advisory explicitly excludes the case where only the array
-                CONTENTS are attacker-controlled, which is exactly how Kafka's LZ4 codec
-                uses it - but the library ships this transitively to every consumer, whose
-                other code shares the classpath and whose scanners would flag it. Fixing it
-                here removes both.
-
-                Relevant because lz4 is this appender's default compression.type for every
-                topic class (see TopicClass). Caveat: the offline test suite never performs
-                real LZ4 compression, so this pin is verified to resolve and build, not to
-                round-trip. Dependabot keeps it current; drop the pin once kafka-clients
-                resolves 1.11.1 or newer by itself.
+                Kotlin BOM before the Boot BOM: an imported BOM resolves its own
+                properties in its own context, so the kotlin.version override that
+                the former parent honored would otherwise be ignored and the Boot
+                BOM's Kotlin stdlib version (2.3.x) would win over the compiler's.
             -->
             <dependency>
-                <groupId>at.yawk.lz4</groupId>
-                <artifactId>lz4-java</artifactId>
-                <version>${lz4-java.version}</version>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-bom</artifactId>
+                <version>${kotlin.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+                The Spring Boot BOM, last so the pins above take precedence. Managed
+                here: Logback, SLF4J, kafka-clients, Micrometer, Spring, Jackson,
+                JUnit, AssertJ (see the property for the rationale).
+            -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot-dependencies.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -223,6 +262,35 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>
         </dependency>
+        <!--
+            Security pin, raised above the version kafka-clients resolves on its own -
+            declared as a DIRECT dependency rather than in dependencyManagement,
+            because the published (flattened) POM carries no dependencyManagement
+            section and a managed-only pin would not reach consumers' resolution
+            of this artifact's transitive dependencies.
+
+            lz4-java <= 1.11.0 crashes the JVM when its JNI XXHash methods are called
+            with an invalid array reference or an invalid off/len range
+            (CVE-2026-59949 / GHSA-xx22-p4ch-683r, fixed in 1.11.1). Our own exposure
+            is nil - the advisory explicitly excludes the case where only the array
+            CONTENTS are attacker-controlled, which is exactly how Kafka's LZ4 codec
+            uses it - but the library ships this transitively to every consumer, whose
+            other code shares the classpath and whose scanners would flag it. Fixing it
+            here removes both.
+
+            Relevant because lz4 is this appender's default compression.type for every
+            topic class (see TopicClass). Caveat: the offline test suite never performs
+            real LZ4 compression, so this pin is verified to resolve and build, not to
+            round-trip. Dependabot keeps it current; drop the pin once kafka-clients
+            resolves 1.11.1 or newer by itself.
+        -->
+        <dependency>
+            <groupId>at.yawk.lz4</groupId>
+            <artifactId>lz4-java</artifactId>
+            <version>${lz4-java.version}</version>
+            <!-- runtime, exactly as kafka-clients declares it: nothing here compiles against lz4. -->
+            <scope>runtime</scope>
+        </dependency>
 
         <!-- Resilience4j: circuit breaker + Kotlin extensions -->
         <dependency>
@@ -247,7 +315,8 @@
             <optional>true</optional>: consumers that do not want metrics
             get a smaller dependency tree, and the appender does not pull
             in a transitively-managed Micrometer version that might
-            conflict with the application's own Spring Boot BOM.
+            conflict with the application's own Spring Boot BOM (the published
+            POM carries resolved versions and no BOM of its own).
         -->
         <dependency>
             <groupId>io.micrometer</groupId>
@@ -326,7 +395,7 @@
         <!--
             Test scope: real-broker integration tests (tag "integration",
             excluded from the default run - see surefire.excludedGroups).
-            Versions are managed by the Spring Boot BOM.
+            Versions are pinned by the Testcontainers BOM import above.
         -->
         <dependency>
             <groupId>org.testcontainers</groupId>
@@ -373,15 +442,97 @@
             </resource>
         </resources>
 
+        <pluginManagement>
+            <plugins>
+                <!--
+                    What the former Boot parent contributed to the core plugins,
+                    made explicit (versions: see the properties).
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-clean-plugin</artifactId>
+                    <version>${maven-clean-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <!-- Parameter names in the class files (the Java fuzz targets). -->
+                        <parameters>true</parameters>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven-resources-plugin.version}</version>
+                    <configuration>
+                        <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
+                        <!--
+                            @..@ delimiters only, never ${..}: tabellarium-version.properties
+                            is filtered with @project.version@, and Spring/Logback
+                            placeholders in resources must survive the build untouched.
+                        -->
+                        <delimiters>
+                            <delimiter>@</delimiter>
+                        </delimiters>
+                        <useDefaultDelimiters>false</useDefaultDelimiters>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${maven-jar-plugin.version}</version>
+                    <configuration>
+                        <archive>
+                            <manifest>
+                                <!-- Implementation-Title/-Version in the manifest, as before. -->
+                                <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                            </manifest>
+                        </archive>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>${maven-source-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven-install-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>${maven-deploy-plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
         <plugins>
-            <!-- Flatten Plugin (resolves the CI-friendly ${revision} for install/deploy) -->
+            <!--
+                Flatten Plugin: resolves the CI-friendly ${revision} and produces the
+                POM that install/deploy publish. Mode ossrh keeps what Maven Central
+                requires (name, description, url, licenses, developers, scm) and the
+                resolved dependency versions; dependencyManagement is removed so
+                the published POM imports no BOM - consumers see plain versions.
+            -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>
                 <version>${flatten-maven-plugin.version}</version>
                 <configuration>
                     <updatePomFile>true</updatePomFile>
-                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                    <flattenMode>ossrh</flattenMode>
+                    <pomElements>
+                        <dependencyManagement>remove</dependencyManagement>
+                    </pomElements>
                     <outputDirectory>${project.build.directory}</outputDirectory>
                     <flattenedPomFilename>.flattened-pom.xml</flattenedPomFilename>
                 </configuration>
@@ -409,8 +560,11 @@
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
                 <configuration>
                     <jvmTarget>${java.version}</jvmTarget>
+                    <!-- Parameter names in the class files, as the former parent configured. -->
+                    <javaParameters>true</javaParameters>
                     <args>
                         <arg>-Xjsr305=strict</arg>
                     </args>
@@ -534,8 +688,8 @@
                 `mvn verify` stays fast). The CI dependency scan consumes target/bom.json.
 
                 Why an SBOM rather than scanning pom.xml directly: most versions here are
-                managed by the Spring Boot BOM and therefore do not appear in pom.xml at
-                all. Only the resolved graph states what actually ships - which is exactly
+                managed by the imported Spring Boot BOM and therefore do not appear in
+                pom.xml at all. Only the resolved graph states what actually ships - which is exactly
                 what a vulnerability scan has to look at.
 
                 Test-scoped dependencies are excluded (the plugin's default): they never

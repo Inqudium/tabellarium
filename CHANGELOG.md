@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Build: the POM no longer inherits from `spring-boot-starter-parent`.
+  The application parent had leaked into the published POM (the
+  CI-friendly flatten mode kept the `<parent>` element, so consumers
+  resolved the Boot parent chain to read this library's dependency
+  versions). The Spring Boot dependency BOM is now an explicit import
+  (preceded by the Kotlin BOM, because an imported BOM no longer honors
+  the project's `kotlin.version` override the way the parent did), the
+  core Maven plugins are pinned to the versions the parent resolved, and
+  the three pieces of plugin configuration it contributed (compiler
+  `-parameters`, `@..@` resource delimiters, manifest implementation
+  entries) are declared in `pluginManagement`. Flatten runs in `ossrh`
+  mode without `dependencyManagement`, so the published POM carries no
+  parent and no BOM - only resolved versions; the `lz4-java` security
+  pin therefore moved from `dependencyManagement` to a direct `runtime`
+  dependency so it still reaches consumers. Verified against the
+  previous build: the resolved dependency tree is identical except that
+  `lz4-java` now appears as that direct runtime dependency instead of
+  under `kafka-clients` (same version, same scope), and the jar manifest
+  is byte-identical.
 - Internal structure of `KafkaAppender` (no behavior change, public API
   per ADR-0002 unchanged): the appender now composes two halves with one
   concern each. `RecordPlan` turns an event into a record (`route`:
