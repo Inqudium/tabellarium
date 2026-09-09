@@ -325,10 +325,10 @@ The check is scoped to one appender instance. Two `KafkaAppender`
 instances in the same `logback.xml` that configure the same topic
 under different classes are not detected, because the instances do
 not know about each other, and every effect above applies. Closing
-that gap needs a process-wide registry consulted at start-up, which is
-adjacent to the
-[producer-registry consolidation](#producer-registry-consolidation)
-listed under future work.
+that gap needs a process-wide registry consulted at start-up; see
+[Cross-instance guards](#cross-instance-guards) under future work for
+the shape of that registry and the self-logging guard, which has the
+same gap.
 
 ### Ordering across topic classes
 
@@ -1187,6 +1187,39 @@ circuit-breaker isolation: if AUDIT and FUNCTIONAL share a producer,
 a fault that affects the shared producer trips both circuit breakers
 together, partially defeating the isolation guarantee. Probably worth
 doing only if a concrete deployment hits the producer-count ceiling.
+
+### Cross-instance guards
+
+Two guards are scoped to one appender instance and know nothing about
+a second `KafkaAppender` in the same JVM:
+
+- **The self-logging guard** drops log events from the network threads
+  of this instance's own producers, matched by the exact `client.id`s
+  its registry assigned. Producer logs of another instance carry that
+  instance's `client.id`s, which this guard does not know. With two
+  appenders attached to the same logger, each ships the other's
+  producer logging through its own producer, whose logging the other
+  ships in turn: a cross-instance feedback loop that, like the
+  single-instance one, amplifies during broker trouble. Widening the
+  match - to the `tabellarium-` default prefix, or to every Kafka
+  producer network thread - was considered and rejected: the first
+  fails as soon as an operator sets their own `client.id`, the second
+  silences the application's own producers, whose connection warnings
+  are exactly what one wants shipped.
+- **The topic/class exclusivity check** rejects one topic under two
+  classes within one configuration; two instances configuring the same
+  topic differently are not cross-checked (see
+  [Why one topic cannot belong to two classes](#why-one-topic-cannot-belong-to-two-classes)).
+
+Both gaps have the same shape and the same fix: a process-wide registry
+that every instance enters at `start()` and leaves at `stop()` -
+its producer `client.id`s for the guard, its topic-to-class assignments
+for the check - consulted by every instance. It is not done because
+the single-instance deployment is the only one with a known user;
+running two appenders against the same logger is unusual (one appender
+with markers routes to any number of topics). If a deployment does run
+two, the immediate safeguard is to attach them to disjoint loggers, or
+to keep `org.apache.kafka` below the level that reaches them.
 
 ## How it is tested
 
