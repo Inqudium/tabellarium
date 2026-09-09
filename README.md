@@ -759,6 +759,30 @@ Cardinality budget per appender instance: ~51 time series.
 At 100 microservices in a shared Prometheus this is ~5 100 series —
 well within the default cardinality budget.
 
+### Reading the send-duration timer
+
+`kafka.appender.send.duration` starts immediately before
+`producer.send` and stops in the producer callback. It spans the
+client's synchronous wait for metadata and buffer space (capped by
+`max.block.ms`), the wait in the record accumulator until `linger.ms`
+expires or the batch fills, the broker round trip including
+replication for `acks=all`, and client-internal retries. It does not
+span the wait in the class's send queue, encoding and enrichment, or
+events the breaker or throttle turned away; `send.queue.size` covers
+the missing leg. Percentile histograms are opt-in via a Micrometer
+`MeterFilter`; without one the timer exports count, sum and max only.
+
+Because each class has its own producer defaults, each class has its
+own latency floor: `PERFORMANCE` lingers 100 ms, the other classes
+50 ms, and `AUDIT` and `FUNCTIONAL` add replication time for
+`acks=all`. At low volume every record waits the full linger window,
+so a p99 near 100 ms on `PERFORMANCE` is the configured batching
+delay, not a slow broker; at high volume batches fill first and the
+duration drops towards the round trip. Aggregate and alert per
+`topic_class`: a quantile over all classes mixes the floors and moves
+with the class mix. The per-class table and the query patterns live in
+the [metrics overview](docs/metrics/metrics-overview.md#reading-kafkaappendersendduration).
+
 ### Additional bindings
 
 When `bindMeterRegistry()` is called, two additional metric sources
@@ -868,9 +892,13 @@ A minimal dashboard typically shows:
   cluster failed; in `throttle` means a sustained recovery probe;
   in `send.error` means individual send rejections (e.g.
   RecordTooLargeException after the deliberate exclusion).
-- **Send latency** — `histogram_quantile(0.99, kafka_appender_send_duration_seconds_bucket)`,
-  faceted by `outcome`. p99 latency under 100 ms is the healthy
-  baseline.
+- **Send latency** — `histogram_quantile(0.99, sum by (topic_class, le)
+  (rate(kafka_appender_send_duration_seconds_bucket[5m])))`, one series
+  per `topic_class`, never aggregated across classes (see
+  [Reading the send-duration timer](#reading-the-send-duration-timer)).
+  The healthy baseline is the class's linger floor plus the round
+  trip: roughly 50 ms for `AUDIT`, `FUNCTIONAL` and `TECHNICAL`,
+  roughly 100 ms for `PERFORMANCE`.
 - **Fallback queue saturation** — `kafka_appender_fallback_queue_size /
   kafka_appender_fallback_queue_capacity`. Sustained values > 0.5 mean
   the fallback appender (typically a `FileAppender`) is slower than
