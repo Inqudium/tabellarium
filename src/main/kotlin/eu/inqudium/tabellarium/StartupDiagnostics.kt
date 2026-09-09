@@ -6,7 +6,7 @@ import org.apache.kafka.clients.CommonClientConfigs
 
 /**
  * The messages [KafkaAppender.start] reports to Logback's status manager
- * once the pipeline is built: the mandatory-override warnings, the
+ * once the transport is open: the mandatory-override warnings, the
  * cleartext-transport warning for compliance-graded classes, and the
  * `<debug>` diagnostics.
  *

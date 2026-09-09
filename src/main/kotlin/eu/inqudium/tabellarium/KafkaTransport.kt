@@ -5,38 +5,48 @@ import ch.qos.logback.core.Appender
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 
 /**
- * The running components of a started [KafkaAppender], owned as one
- * unit: the immutable [RoutingPlan] (router, table, enricher) and the
- * stateful resources - producer registry, sender, one [SendDispatcher]
- * per active topic class, and the optional [FallbackDispatcher].
+ * The transport part of a [KafkaAppender]'s configuration: what the
+ * producers and the send queues are built from.
  *
- * [KafkaAppender] stays the composition root - it carries the Joran
- * surface, the hot path and the Logback lifecycle - and delegates what
- * `start()` builds and `stop()` tears down to this class, so that the
- * ownership order exists in exactly one place ([closeAll]). Before the
- * extraction the reverse-ownership close order was written three times
+ * @param kafkaProducerProperties Raw text of `<kafkaProducerProperties>`.
+ * @param component Service component identifier; feeds the per-class
+ *                  `client.id` default (`tabellarium-<component>-<class>`).
+ * @param sendQueueCapacity Capacity of each per-class send queue.
+ */
+internal data class TransportSettings(
+    val kafkaProducerProperties: String,
+    val component: String,
+    val sendQueueCapacity: Int,
+)
+
+/**
+ * The stateful half of a started [KafkaAppender]: the producers
+ * ([ProducerRegistry]), the breakers and the send path
+ * ([ResilientMessageSender]), one [SendDispatcher] per active topic
+ * class, and the optional [FallbackDispatcher]. Everything here changes
+ * with every event - queues fill, breaker windows move, producers buffer
+ * - and everything here is what [close] tears down. The per-event
+ * functions that do not change live in the [RecordPlan]; the appender
+ * composes the two.
+ *
+ * ## Why one owner
+ *
+ * Before the extraction the appender held these components in separate
+ * fields, and the reverse-ownership close order was written three times
  * (the rollback inside the build, `stop()`, and the parallel dispatcher
  * close) and kept in step by hand; the 2026-09-07 architecture review
  * ranked the appender as the unit where the lifecycle findings
- * clustered.
+ * clustered. Here the order exists once, in [closeAll], and both the
+ * rollback in [open] and [close] run it.
  *
- * ## Two kinds of components
+ * ## Open as a transaction
  *
- * The [plan] is derived from the [AppenderConfig] alone and is invariant
- * for every event: pure functions, no resources, nothing to close. The
- * remaining fields change with every event - queues fill, breaker
- * windows move, producers buffer - and are what [close] tears down. The
- * type boundary is the transaction boundary of [build].
- *
- * ## Build as a transaction
- *
- * [build] derives the plan first (cannot leak), then creates the real
- * resources. Invariant: a construction failure after the first real
- * resource exists closes everything created so far, in the same order
+ * Invariant: a construction failure in [open] after the first real
+ * resource exists closes everything created so far, in the order
  * [close] uses, so a failed or reloaded configuration never leaks
  * producers or daemon workers that only an external `stop()` could
  * reach. The encoder is not owned here: the appender starts it before
- * [build] and releases it if [build] throws.
+ * [open] and releases it if [open] throws.
  *
  * ## Close order
  *
@@ -48,8 +58,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
  * a scrape during the teardown still sees the shutdown diversions and
  * drops.
  */
-internal class AppenderPipeline private constructor(
-    val plan: RoutingPlan,
+internal class KafkaTransport private constructor(
     val producerRegistry: ProducerRegistry,
     val messageSender: ResilientMessageSender,
     val sendDispatchers: Map<TopicClass, SendDispatcher>,
@@ -88,12 +97,12 @@ internal class AppenderPipeline private constructor(
             SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
 
         /**
-         * Builds the pipeline. See the class KDoc for the transaction
-         * contract. The parameters fall into three kinds: [config] is
-         * the immutable value the plan and the producer settings derive
-         * from; [fallbackAppender], [producerFactory] and
-         * [circuitBreakerRegistry] are collaborators with state of their
-         * own; [reentryGuard] and [warn] are the appender's hooks.
+         * Opens the transport for [activeTopicClasses]. See the class
+         * KDoc for the transaction contract. [settings] is the value the
+         * producers and queues derive from; [fallbackAppender],
+         * [producerFactory] and [circuitBreakerRegistry] are
+         * collaborators with state of their own; [reentryGuard] and
+         * [warn] are the appender's hooks.
          *
          * @param reentryGuard The appender's per-thread reentry guard;
          *                     every worker created here marks itself
@@ -101,23 +110,23 @@ internal class AppenderPipeline private constructor(
          * @param warn Sink for asynchronous worker-death reports; the
          *             appender routes it to its status manager.
          */
-        fun build(
-            config: AppenderConfig,
+        fun open(
+            settings: TransportSettings,
+            activeTopicClasses: Set<TopicClass>,
             fallbackAppender: Appender<ILoggingEvent>?,
             producerFactory: ProducerFactory,
             circuitBreakerRegistry: CircuitBreakerRegistry,
             reentryGuard: ThreadLocal<Boolean>,
             warn: (message: String, cause: Throwable) -> Unit,
-        ): AppenderPipeline {
-            val plan = RoutingPlan.from(config)
+        ): KafkaTransport {
             val registry =
                 ProducerRegistry.create(
                     propertiesBuilder =
                         ProducerPropertiesBuilder(
-                            parseKafkaProducerProperties(config.kafkaProducerProperties),
-                            defaultClientIdPrefix = "tabellarium-${jmxSafe(config.component)}",
+                            parseKafkaProducerProperties(settings.kafkaProducerProperties),
+                            defaultClientIdPrefix = "tabellarium-${jmxSafe(settings.component)}",
                         ),
-                    activeTopicClasses = plan.topicTable.activeTopicClasses,
+                    activeTopicClasses = activeTopicClasses,
                     producerFactory = producerFactory,
                 )
             // From here on real resources exist; the catch below implements
@@ -175,7 +184,7 @@ internal class AppenderPipeline private constructor(
                             },
                             fallbackDispatcher = fallbackDispatcher,
                             reentryGuard = reentryGuard,
-                            queueCapacity = config.sendQueueCapacity,
+                            queueCapacity = settings.sendQueueCapacity,
                             onWorkerDeath = { t ->
                                 warn(
                                     "Send dispatcher worker for $topicClass died from ${t.javaClass.name}; " +
@@ -186,8 +195,7 @@ internal class AppenderPipeline private constructor(
                             },
                         )
                 }
-                return AppenderPipeline(
-                    plan = plan,
+                return KafkaTransport(
                     producerRegistry = registry,
                     messageSender = sender,
                     sendDispatchers = sendDispatchers,

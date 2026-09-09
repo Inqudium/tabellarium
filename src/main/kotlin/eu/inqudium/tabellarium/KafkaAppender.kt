@@ -21,12 +21,12 @@ import kotlin.concurrent.withLock
  *
  * This is the composition root: it exposes the XML configuration
  * surface to Joran, runs the per-event hot path, and drives the Logback
- * lifecycle. The components it wires ([TopicRouter], [TopicTable],
- * [MessageEnricher], [ProducerRegistry], [SendDispatcher],
- * [ResilientMessageSender], [FallbackDispatcher]) are built, owned and
- * closed as one unit by [AppenderPipeline] from an [AppenderConfig]
- * value; the start-up messages it reports come from
- * [StartupDiagnostics].
+ * lifecycle. It composes two halves with one concern each: the
+ * [RecordPlan] (router, table, enricher - pure, fixed for the
+ * appender's lifetime, nothing to close) and the [KafkaTransport]
+ * (producers, breakers, send queues, fallback dispatcher - stateful,
+ * opened in [start] and closed in [stop]). The start-up messages it
+ * reports come from [StartupDiagnostics].
  *
  * ## Configuration surface
  *
@@ -61,7 +61,8 @@ import kotlin.concurrent.withLock
  * ## Lifecycle
  *
  * - **[start]** validates configuration eagerly, builds the
- *   [AppenderPipeline], and surfaces any [MandatoryOverrideViolation] from
+ *   [RecordPlan], opens the [KafkaTransport] for the plan's active
+ *   classes, and surfaces any [MandatoryOverrideViolation] from
  *   [ProducerPropertiesBuilder] as warnings on the Logback status
  *   manager. Misconfiguration causes `addError` plus refusal to start;
  *   the appender stays `isStarted=false` and downstream `doAppend` calls
@@ -202,17 +203,25 @@ class KafkaAppender :
      */
     var sendQueueCapacity: Int = SendDispatcher.DEFAULT_QUEUE_CAPACITY
 
-    // -- Pipeline state, built in start() -------------------------------
+    // -- Running state, built in start() --------------------------------
 
     /**
-     * The running components, built as one unit in [start] and closed
-     * as one unit in [stop]; null until [start] succeeded. Its
-     * [AppenderPipeline.plan] is invariant per event, the rest is the
-     * stateful transport. The hot path reads it once per event. Publication to other threads rides on
-     * Logback's volatile `started` flag, which [start] sets after this
-     * field and which `doAppend` checks before calling [append].
+     * The per-event-invariant half: how an event becomes a record. Built
+     * first in [start], before any resource exists; null until then.
+     * Nothing to close.
      */
-    private var pipeline: AppenderPipeline? = null
+    private var plan: RecordPlan? = null
+
+    /**
+     * The stateful half: producers, breakers, send queues, fallback
+     * dispatcher. Opened in [start] after the plan, closed as one unit
+     * in [stop]; null until [start] succeeded.
+     *
+     * Both fields are published to other threads through Logback's
+     * volatile `started` flag, which [start] sets after them and which
+     * `doAppend` checks before calling [append].
+     */
+    private var transport: KafkaTransport? = null
 
     /**
      * Guard against hot-path log storms: only the first error gets
@@ -339,18 +348,32 @@ class KafkaAppender :
             return
         }
 
-        val built =
+        // Stage one, pure: how an event becomes a record. Fails only for
+        // configuration reasons, and before any resource exists.
+        val plan =
             try {
-                AppenderPipeline.build(
-                    config =
-                        AppenderConfig(
+                RecordPlan.from(
+                    topicMapping = topicMapping,
+                    component = component,
+                    cmdbId = cmdbId,
+                    environment = environment,
+                )
+            } catch (e: Exception) {
+                failStartup(e)
+                return
+            }
+        // Stage two, stateful: the transport for the plan's active classes.
+        // KafkaTransport.open rolls its own resources back on failure.
+        val transport =
+            try {
+                KafkaTransport.open(
+                    settings =
+                        TransportSettings(
                             kafkaProducerProperties = kafkaProducerProperties,
-                            topicMapping = topicMapping,
                             component = component,
-                            cmdbId = cmdbId,
-                            environment = environment,
                             sendQueueCapacity = sendQueueCapacity,
                         ),
+                    activeTopicClasses = plan.activeTopicClasses,
                     fallbackAppender = fallbackAppender,
                     producerFactory = producerFactory,
                     circuitBreakerRegistry = circuitBreakerRegistry,
@@ -358,41 +381,50 @@ class KafkaAppender :
                     warn = { message, cause -> addWarn(message, cause) },
                 )
             } catch (e: Exception) {
-                // The build rolled its own resources back; the encoder
-                // started before it is the only thing left to release.
-                runCatching { encoder?.stop() }
-                // The exception text originates in the Kafka client and is
-                // built from credential-bearing configuration. Kafka masks
-                // Password-typed values in its own output, but that text is
-                // not under this appender's control - so the default path
-                // reports only the exception type, and the message plus the
-                // stack trace stay behind <debug>. See SECURITY.md on
-                // credential leakage through status output.
-                if (debug) {
-                    addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
-                } else {
-                    addError(
-                        "Failed to build KafkaAppender pipeline (${e.javaClass.name}). " +
-                            "Set <debug>true</debug> to include the cause and stack trace; " +
-                            "the details are withheld here because they may echo producer " +
-                            "configuration values.",
-                    )
-                }
+                failStartup(e)
                 return
             }
-        pipeline = built
+        this.plan = plan
+        this.transport = transport
 
-        built.producerRegistry.mandatoryOverrideViolations.forEach { violation ->
+        transport.producerRegistry.mandatoryOverrideViolations.forEach { violation ->
             addWarn(StartupDiagnostics.mandatoryOverrideWarning(violation))
         }
-        StartupDiagnostics.cleartextTransportWarning(built.producerRegistry)?.let(::addWarn)
+        StartupDiagnostics.cleartextTransportWarning(transport.producerRegistry)?.let(::addWarn)
         if (debug) {
             StartupDiagnostics
-                .debugMessages(built.producerRegistry, fallbackAppender, kafkaProducerProperties)
+                .debugMessages(transport.producerRegistry, fallbackAppender, kafkaProducerProperties)
                 .forEach(::addInfo)
         }
 
         super.start()
+    }
+
+    /**
+     * Reports a failed [start] after the encoder was started: releases
+     * the encoder (the plan holds nothing, the transport rolled itself
+     * back) and records the failure at the level of detail `<debug>`
+     * allows.
+     */
+    private fun failStartup(e: Exception) {
+        runCatching { encoder?.stop() }
+        // The exception text originates in the Kafka client and is
+        // built from credential-bearing configuration. Kafka masks
+        // Password-typed values in its own output, but that text is
+        // not under this appender's control - so the default path
+        // reports only the exception type, and the message plus the
+        // stack trace stay behind <debug>. See SECURITY.md on
+        // credential leakage through status output.
+        if (debug) {
+            addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
+        } else {
+            addError(
+                "Failed to build KafkaAppender pipeline (${e.javaClass.name}). " +
+                    "Set <debug>true</debug> to include the cause and stack trace; " +
+                    "the details are withheld here because they may echo producer " +
+                    "configuration values.",
+            )
+        }
     }
 
     private fun validateConfiguration(): Boolean {
@@ -423,9 +455,10 @@ class KafkaAppender :
     // -- Hot path -------------------------------------------------------
 
     override fun append(event: ILoggingEvent) {
-        // Non-null whenever doAppend lets an event through: start() sets
-        // the field before it flips the started flag that doAppend checks.
-        val pipeline = this.pipeline ?: return
+        // Both non-null whenever doAppend lets an event through: start()
+        // sets them before it flips the started flag that doAppend checks.
+        val plan = this.plan ?: return
+        val transport = this.transport ?: return
         // Reentry guard: a log event created synchronously from inside
         // this very append path (most relevantly the Kafka client's
         // caller-thread DEBUG logging in its synchronous send-failure
@@ -446,7 +479,7 @@ class KafkaAppender :
         val threadName = event.threadName
         if (threadName != null &&
             threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
-            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in pipeline.producerClientIds
+            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in transport.producerClientIds
         ) {
             return
         }
@@ -492,15 +525,15 @@ class KafkaAppender :
             // appender, and start() refuses without an encoder.
             val payload = checkNotNull(encoder).encode(event)
             val markers = event.markerList ?: emptyList()
-            val topicName = pipeline.plan.topicRouter.route(markers)
-            val topicClass = pipeline.plan.topicTable.classFor(topicName)
+            val topicName = plan.topicRouter.route(markers)
+            val topicClass = plan.topicTable.classFor(topicName)
             topicClassForFailure = topicClass
             m.eventAccepted(topicClass)
-            val enrichment = pipeline.plan.messageEnricher.enrich(event)
+            val enrichment = plan.messageEnricher.enrich(event)
             // Hand-off point: everything up to here was CPU-bound work
             // on the caller; the potentially-blocking producer.send
             // happens on the dispatcher's worker thread.
-            pipeline.sendDispatchers.getValue(topicClass).dispatch(topicName, payload, enrichment, event)
+            transport.sendDispatchers.getValue(topicClass).dispatch(topicName, payload, enrichment, event)
         } catch (e: Exception) {
             // Hot-path failure (encoder bug, OOM, etc. - should be rare).
             // Log the first occurrence so operators notice, then suppress
@@ -534,7 +567,7 @@ class KafkaAppender :
             // Async via dispatcher: even from the hot path, we avoid
             // blocking the caller thread (typically a Logback AsyncAppender
             // worker) on the fallback appender's downstream I/O.
-            pipeline.fallbackDispatcher?.enqueue(event)
+            transport.fallbackDispatcher?.enqueue(event)
         } finally {
             inAppend.set(false)
         }
@@ -555,11 +588,11 @@ class KafkaAppender :
         // overlap for microseconds - the dispatchers' post-close
         // accounting covers that residual window.
         super.stop()
-        // The pipeline closes its components in reverse ownership order
+        // The transport closes its components in reverse ownership order
         // (send dispatchers, producer registry, fallback dispatcher); the
-        // order and its rationale live in AppenderPipeline. Null when
-        // start() never succeeded.
-        pipeline?.close { message, cause ->
+        // order and its rationale live in KafkaTransport. Null when
+        // start() never succeeded. The plan has nothing to close.
+        transport?.close { message, cause ->
             if (cause != null) addWarn(message, cause) else addWarn(message)
         }
         // Unbind the metrics only now: the dispatcher closes are where
@@ -650,17 +683,17 @@ class KafkaAppender :
             }
             // A repeated bind (context refresh, manual re-wiring) replaces the
             // previous registration - MetricsBindings tears it down first.
-            val pipeline = checkNotNull(pipeline) { "a started appender always has a pipeline" }
+            val transport = checkNotNull(transport) { "a started appender always has a transport" }
             val impl =
                 metricsBindings.bind(
                     registry = registry,
                     commonTags = commonTags,
                     appenderName = this.name,
-                    circuitBreakerRegistry = pipeline.messageSender.circuitBreakerRegistry,
-                    producerRegistry = pipeline.producerRegistry,
+                    circuitBreakerRegistry = transport.messageSender.circuitBreakerRegistry,
+                    producerRegistry = transport.producerRegistry,
                 )
             metrics = impl
-            pipeline.setMetrics(impl)
+            transport.setMetrics(impl)
         }
     }
 
