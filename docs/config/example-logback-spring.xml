@@ -173,7 +173,11 @@
          See README,
          "Should I wrap this in a Logback AsyncAppender?".
 
-         Only for sub-100 ms hard-latency SLAs is a wrapper justified,
+         The caller-side cost is sub-microsecond at the median and
+         well under a millisecond at the p99 even under saturation
+         (README, "Reading the send-duration timer"), so a wrapper is
+         justified only for latency budgets in the tens of
+         microseconds or for large events on a latency-critical path -
          and then with non-default settings:
 
            <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
@@ -184,8 +188,11 @@
              <includeCallerData>false</includeCallerData>
            </appender>
 
-         (Be aware that neverBlock=true drops events silently without
-         routing them to the fallback.)
+         (Be aware that neverBlock=true drops events silently: they
+         reach neither the fallback nor any metric, one wrapper queue
+         sits in front of all topic classes, and encoding is
+         serialized onto the wrapper's single worker. See README,
+         "When AsyncAppender is still justified".)
          ================================================================= -->
     <root level="INFO">
         <appender-ref ref="KAFKA"/>

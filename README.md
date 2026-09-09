@@ -577,6 +577,47 @@ absorbs at most `max.block.ms` per event until its breaker opens
 (~10 × 500 ms = 5 s, on the worker, not on your request threads),
 and queue overflow flows to the fallback, counted.
 
+### Which thread does what
+
+The encoder runs on the application's logging thread, the one that
+calls `log.info(...)`. `append` performs, in this order, on that
+thread:
+
+1. `prepareForDeferredProcessing` freezes MDC, thread name and the
+   formatted message into the event.
+2. `callerData`, only if `<includeCallerData>` is set.
+3. `encoder.encode(event)` produces the JSON payload as a byte array.
+4. Marker routing, class lookup, and the key extraction from the MDC.
+5. The O(1) hand-off of payload, key and headers into the class queue.
+
+Only then does the thread change. The `SendDispatcher` worker of the
+class takes the finished package from the queue and calls
+`producer.send`; it encodes nothing, it receives bytes. The Kafka
+client's I/O thread takes over from there and runs the send callback.
+
+Two consequences follow from encoding on the caller:
+
+- **Encoding scales with the caller threads.** Twenty logging threads
+  encode in parallel. A single worker per class would otherwise have
+  to encode every event of its class alone and would become the
+  bottleneck at high volume - which is exactly what happens behind an
+  `AsyncAppender` (see below).
+- **Encoding is what the caller pays.** The `doAppend` figures under
+  [Reading the send-duration timer](#reading-the-send-duration-timer)
+  include the encoder. For a small event that is a fraction of a
+  microsecond; an event with a long stack trace costs the caller
+  correspondingly more, because the encoder writes out the throwable
+  proxy.
+
+A third thread can run an encoder: the fallback appender's own. A
+`FileAppender` configured as fallback encodes the original event
+again with its own encoder, on the `FallbackDispatcher` worker - not
+on the caller and not on the Kafka I/O thread. The Kafka payload is
+not reused for this, because the fallback receives the `ILoggingEvent`,
+not the bytes. This is also why `<includeCallerData>` exists: a
+fallback layout with `%caller` would otherwise walk the wrong stack on
+the fallback worker.
+
 ### Why wrapping in `AsyncAppender` now hurts
 
 Wrapping in `AsyncAppender` with its default settings introduces
@@ -627,10 +668,24 @@ If an existing `logback-spring.xml` wraps the Kafka appender in an
 ### When `AsyncAppender` is still justified
 
 The one cost that remains on the logging thread is the synchronous
-encoding/enrichment work in `append()`. Latency-critical paths with
-hard sub-millisecond budgets (trading, real-time risk) that cannot
-afford even that may still want to move it off the request thread.
-In that case, use `AsyncAppender` with these non-default settings:
+part of `append`: freezing the event's lazy state, JSON encoding,
+routing, key extraction and the O(1) hand-off into the class queue.
+It is measured, not estimated (see
+[Reading the send-duration timer](#reading-the-send-duration-timer)
+for the table and the regime): a p50 of 0.12 µs and a p99 of 0.45 µs
+on one thread, and a p99 of 352 µs at 32 threads under open-loop
+saturation with shedding engaged. A sub-millisecond latency budget is
+therefore met without a wrapper. Two cases remain:
+
+- **Budgets in the tens of microseconds** on the request path itself,
+  where even the encoding of a small event counts.
+- **Large events on a latency-critical path.** Encoding cost grows
+  with the event size; a long stack trace costs the caller far more
+  than a one-line message, and an `AsyncAppender` moves that off the
+  request thread.
+
+Beyond those, an organisational convention may simply require the
+wrapper. In every such case use these non-default settings:
 
 ```xml
 <appender name="ASYNC_KAFKA" class="ch.qos.logback.classic.AsyncAppender">
@@ -642,9 +697,36 @@ In that case, use `AsyncAppender` with these non-default settings:
 </appender>
 ```
 
-Be aware that `neverBlock=true` drops events silently without routing
-them to the fallback — a weaker loss guarantee than the appender's
-built-in resilience.
+Know what the wrapper saves and what it costs:
+
+- **It saves the encoding, little else.** Logback's `AsyncAppender`
+  calls `prepareForDeferredProcessing` on the caller, exactly as this
+  appender does, so freezing the MDC and the formatted message stays
+  on the logging thread either way. The hand-off into the class queue
+  is replaced by the hand-off into the wrapper's `ArrayBlockingQueue`,
+  another lock. What actually moves is encoding, routing and key
+  extraction.
+- **It caps throughput at one encoder thread.** Attached directly,
+  encoding runs in parallel on the caller threads. Behind the wrapper
+  every event is encoded by the single `AsyncAppender` worker. At high
+  volume that worker becomes the bottleneck, its queue fills, and
+  `neverBlock` discards.
+- **Its loss is invisible to every metric.** An event the wrapper
+  discards never reaches this appender: it appears neither in
+  `events.fallback` nor in `fallback.dropped`, does not reach the
+  fallback appender, and the `AsyncAppender` keeps no counter of its
+  own. The loss signals and alerts documented under
+  [Metrics](#metrics) are blind to it.
+- **It defeats the per-class isolation upstream.** One queue sits in
+  front of all topic classes. A burst of `PERFORMANCE` logging fills
+  the wrapper's queue, and `neverBlock` discards `AUDIT` events before
+  they ever reach their own class queue, producer and breaker.
+- **Caller data must be captured by the wrapper.** This appender's
+  own `<includeCallerData>` captures the logging site on the thread
+  that calls it, which behind the wrapper is the `AsyncAppender`
+  worker. Set the flag on the `AsyncAppender` instead if a fallback
+  layout consumes `%caller`, and leave it off otherwise: the stack walk
+  is the most expensive step of the whole path.
 
 ## Reactive applications
 
