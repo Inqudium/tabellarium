@@ -737,6 +737,16 @@ Micrometer on the classpath and emits no metrics until
 
 ### Metric inventory
 
+Every metric below additionally carries the tag `appender`, whose
+value is the Logback appender name from `<appender name="...">`
+(`unnamed` if none is set). It keeps two appender instances bound to
+the same registry apart: without it their meter IDs would be
+identical, Micrometer would hand both the same meter, and stopping one
+appender would deregister the other's meters as well. One appender
+means one tag value, so the cardinality budget below already includes
+it. The tags listed per metric are the ones that vary within an
+appender instance.
+
 | Metric                              | Type    | Tags                              | Meaning                                                       |
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
 | `kafka.appender.events.accepted`    | Counter | `topic.class`                     | Events entering `KafkaAppender.append`                        |
