@@ -82,7 +82,9 @@ configuration guide, metrics overview, and Grafana dashboards.
   the payload.
 - **Trace affinity, attributable producers.** The record key is the MDC
   trace id, so the records of one trace share a partition and keep their
-  relative order; each producer announces itself to the broker as
+  relative order within a topic (order across topics is
+  [not a guarantee](#ordering-across-topic-classes)); each producer
+  announces itself to the broker as
   `tabellarium-<component>-<class>`, so connections, quotas and
   `kafka.producer.*` metrics name the service and its service level
   instead of a generic `producer-N`.
@@ -327,6 +329,50 @@ that gap needs a process-wide registry consulted at start-up, which is
 adjacent to the
 [producer-registry consolidation](#producer-registry-consolidation)
 listed under future work.
+
+### Ordering across topic classes
+
+A consequence of the class isolation: the relative order of events in
+*different* classes is not preserved, and nothing downstream may rely
+on it. Four independent mechanisms reorder across classes:
+
+- **Separate queues and workers.** FIFO holds within one class's
+  `SendDispatcher`. An `AUDIT` event logged before a `TECHNICAL` event
+  may reach `producer.send` later if the `AUDIT` worker is sitting at
+  its `max.block.ms` cap.
+- **Different batching windows.** `PERFORMANCE` lingers 100 ms, the
+  other classes 50 ms. Even with empty queues, records leave the
+  process at a class-dependent cadence.
+- **Independent breakers.** With one class's breaker open, its events
+  go to the fallback appender while the other class keeps writing to
+  Kafka. Order between the fallback file and Kafka is then lost, not
+  merely shifted.
+- **No record timestamp is set.** Kafka stamps the record with the
+  time of the `send` call (or the broker append), not with the time of
+  the log event. Sorting by Kafka timestamp sorts by delivery order.
+
+This costs nothing that Kafka offered: Kafka orders records only
+within a partition, different classes always mean different topics
+(one topic under two classes is rejected, see above), and different
+topics never share a partition. A consumer reading an audit topic and
+a technical topic would have had no reliable order between them with
+a single producer and a single queue either. What the isolation gives
+up is the approximate wall-clock proximity that never guaranteed
+anything.
+
+What does hold:
+
+- **Within one topic, per trace.** The MDC trace id keys all records
+  of a trace onto one partition. `AUDIT` enforces idempotence, so a
+  retry cannot reorder within the partition. `TECHNICAL` and
+  `PERFORMANCE` default to `acks=1`, which makes the Kafka client
+  silently disable idempotence; a retry with
+  `max.in.flight.requests.per.connection > 1` can then reorder even
+  within a partition, which is the "Reorder cost: acceptable /
+  tolerated" cell in the class table.
+- **Correlation across topics** goes through the event timestamp in
+  the payload and the trace id, never through Kafka offsets or Kafka
+  record timestamps.
 
 ## Resilience
 
