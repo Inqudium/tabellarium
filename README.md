@@ -737,6 +737,16 @@ Micrometer on the classpath and emits no metrics until
 
 ### Metric inventory
 
+Every metric below additionally carries the tag `appender`, whose
+value is the Logback appender name from `<appender name="...">`
+(`unnamed` if none is set). It keeps two appender instances bound to
+the same registry apart: without it their meter IDs would be
+identical, Micrometer would hand both the same meter, and stopping one
+appender would deregister the other's meters as well. One appender
+means one tag value, so the cardinality budget below already includes
+it. The tags listed per metric are the ones that vary within an
+appender instance.
+
 | Metric                              | Type    | Tags                              | Meaning                                                       |
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
 | `kafka.appender.events.accepted`    | Counter | `topic.class`                     | Events entering `KafkaAppender.append`                        |
@@ -758,6 +768,68 @@ Micrometer on the classpath and emits no metrics until
 Cardinality budget per appender instance: ~51 time series.
 At 100 microservices in a shared Prometheus this is ~5 100 series —
 well within the default cardinality budget.
+
+### Reading the send-duration timer
+
+`kafka.appender.send.duration` starts immediately before
+`producer.send` and stops in the producer callback. It spans the
+client's synchronous wait for metadata and buffer space (capped by
+`max.block.ms`), the wait in the record accumulator until `linger.ms`
+expires or the batch fills, the broker round trip including
+replication for `acks=all`, and client-internal retries. It does not
+span the wait in the class's send queue, encoding and enrichment, or
+events the breaker or throttle turned away; `send.queue.size` covers
+the missing leg. Percentile histograms are opt-in via a Micrometer
+`MeterFilter`; without one the timer exports count, sum and max only.
+
+Because each class has its own producer defaults, each class has its
+own latency floor: `PERFORMANCE` lingers 100 ms, the other classes
+50 ms, and `AUDIT` and `FUNCTIONAL` add replication time for
+`acks=all`. At low volume every record waits the full linger window,
+so a p99 near 100 ms on `PERFORMANCE` is the configured batching
+delay, not a slow broker; at high volume batches fill first and the
+duration drops towards the round trip. Aggregate and alert per
+`topic_class`: a quantile over all classes mixes the floors and moves
+with the class mix. The per-class table and the query patterns live in
+the [metrics overview](docs/metrics/metrics-overview.md#reading-kafkaappendersendduration).
+
+The timer therefore says nothing about the delay the **application**
+experiences when it logs. That delay is the synchronous part of
+`doAppend`: Logback builds the event, the appender routes, encodes,
+enriches and offers the package to the class's queue in O(1); a full
+queue diverts to the fallback instead of waiting. No metric times this
+path, deliberately: a timer sample per event would itself be hot-path
+cost. It is measured by the JMH benchmark `AppendPipelineBenchmark`
+([benchmarks/README.md](benchmarks/README.md)). Measured `doAppend`
+cost per event, sample mode, from the raw output of the
+[bench report of 2026-08-29](docs/assessment/BENCH_REPORT-2026-08-29T11-38-12.md)
+(`benchmarks/results/2026-08-29/r6-pipeline-sample-t{1,8,32}.txt`):
+
+| Caller threads | p50     | p90     | p99     | p99.9   | Mean     |
+|----------------|---------|---------|---------|---------|----------|
+| 1              | 0.12 µs | 0.22 µs | 0.45 µs | 2.6 µs  | 0.37 µs  |
+| 8              | 0.25 µs | 1.3 µs  | 34 µs   | 62 µs   | 2.4 µs   |
+| 32             | 0.50 µs | 3.8 µs  | 352 µs  | 428 µs  | 26 µs    |
+
+The regime is deliberately the worst the design allows: open-loop
+callers saturate the single per-class worker, the queue fills and
+shedding to the fallback is engaged, on a 12-core workstation with the
+CPU governor on powersave and JDK 26 against the Java 21 target. Read
+the figures as orders of magnitude: the tail growth at 32 threads
+comes from oversubscribing the cores and from the saturated regime,
+not from Kafka, which the caller never touches. Encoding cost is
+inside these figures and grows with the event size; a long stack trace
+costs the caller more than a one-line message. In production,
+`send.queue.size` is the
+early indicator that the worker falls behind, and
+`events.fallback{reason="queue.full"}` marks the point where the
+caller starts losing events to the fallback; the caller itself stays
+fast throughout. The end-to-end latency from log call to broker ack is
+caller path plus queue wait plus `send.duration`, and the middle leg is
+what no metric covers. A consumer can reconstruct it: the appender
+sets no record timestamp, so the client stamps `CreateTime` at the
+`send` call, and `CreateTime` minus the event's own timestamp in the
+payload is caller path plus queue wait.
 
 ### Additional bindings
 
@@ -868,9 +940,13 @@ A minimal dashboard typically shows:
   cluster failed; in `throttle` means a sustained recovery probe;
   in `send.error` means individual send rejections (e.g.
   RecordTooLargeException after the deliberate exclusion).
-- **Send latency** — `histogram_quantile(0.99, kafka_appender_send_duration_seconds_bucket)`,
-  faceted by `outcome`. p99 latency under 100 ms is the healthy
-  baseline.
+- **Send latency** — `histogram_quantile(0.99, sum by (topic_class, le)
+  (rate(kafka_appender_send_duration_seconds_bucket[5m])))`, one series
+  per `topic_class`, never aggregated across classes (see
+  [Reading the send-duration timer](#reading-the-send-duration-timer)).
+  The healthy baseline is the class's linger floor plus the round
+  trip: roughly 50 ms for `AUDIT`, `FUNCTIONAL` and `TECHNICAL`,
+  roughly 100 ms for `PERFORMANCE`.
 - **Fallback queue saturation** — `kafka_appender_fallback_queue_size /
   kafka_appender_fallback_queue_capacity`. Sustained values > 0.5 mean
   the fallback appender (typically a `FileAppender`) is slower than
