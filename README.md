@@ -790,12 +790,27 @@ enriches and offers the package to the class's queue in O(1); a full
 queue diverts to the fallback instead of waiting. No metric times this
 path, deliberately: a timer sample per event would itself be hot-path
 cost. It is measured by the JMH benchmark `AppendPipelineBenchmark`
-([benchmarks/README.md](benchmarks/README.md), numbers in the
-[bench report](docs/assessment/BENCH_REPORT-2026-08-29T11-38-12.md)):
-sub-microsecond on one
-thread, a p99 in the hundreds of microseconds at 32 contending
-threads, dominated by the queue's put lock and by encoding, which
-grows with the event size. In production, `send.queue.size` is the
+([benchmarks/README.md](benchmarks/README.md)). Measured `doAppend`
+cost per event, sample mode, from the raw output of the
+[bench report of 2026-08-29](docs/assessment/BENCH_REPORT-2026-08-29T11-38-12.md)
+(`benchmarks/results/2026-08-29/r6-pipeline-sample-t{1,8,32}.txt`):
+
+| Caller threads | p50     | p90     | p99     | p99.9   | Mean     |
+|----------------|---------|---------|---------|---------|----------|
+| 1              | 0.12 µs | 0.22 µs | 0.45 µs | 2.6 µs  | 0.37 µs  |
+| 8              | 0.25 µs | 1.3 µs  | 34 µs   | 62 µs   | 2.4 µs   |
+| 32             | 0.50 µs | 3.8 µs  | 352 µs  | 428 µs  | 26 µs    |
+
+The regime is deliberately the worst the design allows: open-loop
+callers saturate the single per-class worker, the queue fills and
+shedding to the fallback is engaged, on a 12-core workstation with the
+CPU governor on powersave and JDK 26 against the Java 21 target. Read
+the figures as orders of magnitude: the tail growth at 32 threads
+comes from oversubscribing the cores and from the saturated regime,
+not from Kafka, which the caller never touches. Encoding cost is
+inside these figures and grows with the event size; a long stack trace
+costs the caller more than a one-line message. In production,
+`send.queue.size` is the
 early indicator that the worker falls behind, and
 `events.fallback{reason="queue.full"}` marks the point where the
 caller starts losing events to the fallback; the caller itself stays
