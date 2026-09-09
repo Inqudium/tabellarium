@@ -82,7 +82,9 @@ configuration guide, metrics overview, and Grafana dashboards.
   the payload.
 - **Trace affinity, attributable producers.** The record key is the MDC
   trace id, so the records of one trace share a partition and keep their
-  relative order; each producer announces itself to the broker as
+  relative order within a topic (order across topics is
+  [not a guarantee](#ordering-across-topic-classes)); each producer
+  announces itself to the broker as
   `tabellarium-<component>-<class>`, so connections, quotas and
   `kafka.producer.*` metrics name the service and its service level
   instead of a generic `producer-N`.
@@ -284,6 +286,94 @@ aborts `start()` with a named error. Full resolution rules and
 validation live in the
 [configuration guide](docs/config/kafka-appender-config-guide.md).
 
+### Why one topic cannot belong to two classes
+
+Several markers of the same class may route to one topic. What
+`start()` rejects is the same topic under two *different* classes,
+including a `<mapping>` that names the `<defaultTopic>` with a class
+other than `<defaultTopicClass>`. Allowing it would mean two producers
+with two policies writing one topic, and every guarantee this module
+makes is scoped to a class:
+
+- **Delivery guarantees would diverge on one topic.** The `AUDIT`
+  producer writes with `acks=all` and idempotence, the `TECHNICAL`
+  producer with `acks=1`. A consumer would see one topic whose records
+  are partly durable and partly best-effort, with nothing on the
+  record to tell them apart. For an audit topic that is a compliance
+  hole.
+- **Two producers would write one topic.** Idempotence and ordering
+  are per producer and partition. Records of the same trace key would
+  arrive through two producers with different `linger.ms` and batch
+  settings and could interleave on the partition. Trace affinity via
+  the MDC key survives, the relative order between the two classes
+  does not.
+- **The breaker would split.** On a broken topic the breaker of one
+  class opens after roughly ten failures, the other earlier or later
+  depending on its volume. Part of the topic's events would divert to
+  the fallback while the rest keeps hammering the broker, which
+  defeats the breaker's purpose as a health signal for one route
+  (see [Why one circuit breaker per topic class](#why-one-circuit-breaker-per-topic-class)).
+- **Attribution would blur.** Two `client.id`s, two sets of producer
+  metrics and two fallback counters would describe one topic. Broker
+  quotas and dashboards could no longer be read per topic.
+- **Mandatory overrides would become optional.** Mapping an audit
+  topic a second time as `TECHNICAL` and setting the matching marker
+  would be enough to bypass the enforced producer settings (see
+  [Mandatory override policy](#mandatory-override-policy)).
+
+The check is scoped to one appender instance. Two `KafkaAppender`
+instances in the same `logback.xml` that configure the same topic
+under different classes are not detected, because the instances do
+not know about each other, and every effect above applies. Closing
+that gap needs a process-wide registry consulted at start-up, which is
+adjacent to the
+[producer-registry consolidation](#producer-registry-consolidation)
+listed under future work.
+
+### Ordering across topic classes
+
+A consequence of the class isolation: the relative order of events in
+*different* classes is not preserved, and nothing downstream may rely
+on it. Four independent mechanisms reorder across classes:
+
+- **Separate queues and workers.** FIFO holds within one class's
+  `SendDispatcher`. An `AUDIT` event logged before a `TECHNICAL` event
+  may reach `producer.send` later if the `AUDIT` worker is sitting at
+  its `max.block.ms` cap.
+- **Different batching windows.** `PERFORMANCE` lingers 100 ms, the
+  other classes 50 ms. Even with empty queues, records leave the
+  process at a class-dependent cadence.
+- **Independent breakers.** With one class's breaker open, its events
+  go to the fallback appender while the other class keeps writing to
+  Kafka. Order between the fallback file and Kafka is then lost, not
+  merely shifted.
+- **No record timestamp is set.** Kafka stamps the record with the
+  time of the `send` call (or the broker append), not with the time of
+  the log event. Sorting by Kafka timestamp sorts by delivery order.
+
+This costs nothing that Kafka offered: Kafka orders records only
+within a partition, different classes always mean different topics
+(one topic under two classes is rejected, see above), and different
+topics never share a partition. A consumer reading an audit topic and
+a technical topic would have had no reliable order between them with
+a single producer and a single queue either. What the isolation gives
+up is the approximate wall-clock proximity that never guaranteed
+anything.
+
+What does hold:
+
+- **Within one topic, per trace.** The MDC trace id keys all records
+  of a trace onto one partition. `AUDIT` enforces idempotence, so a
+  retry cannot reorder within the partition. `TECHNICAL` and
+  `PERFORMANCE` default to `acks=1`, which makes the Kafka client
+  silently disable idempotence; a retry with
+  `max.in.flight.requests.per.connection > 1` can then reorder even
+  within a partition, which is the "Reorder cost: acceptable /
+  tolerated" cell in the class table.
+- **Correlation across topics** goes through the event timestamp in
+  the payload and the trace id, never through Kafka offsets or Kafka
+  record timestamps.
+
 ## Resilience
 
 Three resilience mechanisms run independently per topic class:
@@ -334,6 +424,60 @@ loops: log events originating from the appender's own Kafka producer
 threads (recognizable because the Kafka client names them after the
 producer's `client.id`) are ignored entirely — the producer's internal
 logging is never shipped through the producer itself.
+
+### Why one circuit breaker per topic class
+
+Separate breakers only pay off if one topic class can be unhealthy
+while another is fine. In Kafka that is the normal shape of an
+outage, not the exception:
+
+- **Partition leaders live on different brokers.** When a broker
+  dies, only the partitions it led are affected. An audit topic whose
+  leader sat on that broker times out until the controller elects a
+  new leader; a technical topic led by a surviving broker keeps
+  flowing.
+- **`acks=all` meets `min.insync.replicas`.** `AUDIT` and `FUNCTIONAL`
+  enforce `acks=all`. Once a partition has too few in-sync replicas
+  the broker rejects exactly that topic's sends with
+  `NotEnoughReplicasException`, while topics with `acks=1` or healthy
+  replica sets are untouched. This is the most common way a single
+  class turns red.
+- **Broker-side limits are per topic or per client.** Quotas are keyed
+  by `client.id` (one per class, see
+  [Traceability](#traceability)), `max.message.bytes` is a topic
+  setting, and a full log directory hits only the partitions stored
+  there.
+- **Each class has its own producer.** Its own buffer, its own
+  `max.block.ms` cap and its own I/O thread. A full buffer or a
+  stalled metadata fetch in one producer is local to that class.
+  With a single shared breaker, a failure burst from the noisy
+  `PERFORMANCE` class would open the breaker for the quiet `AUDIT`
+  class and divert compliance-relevant events to the fallback although
+  their route is healthy.
+
+Where the assumption does not hold - a cluster-wide outage, a network
+partition, an authentication failure at connection level - all
+classes fail together and every breaker opens independently after
+roughly ten failures. That costs nothing beyond redundancy: the split
+helps in a partial outage and is neutral in a total one.
+
+Two design details protect the isolation:
+
+- **Deterministic payload errors are excluded from the failure
+  rate.** `RecordTooLargeException`, `InvalidTopicException`,
+  `SerializationException` and `TopicAuthorizationException` are
+  ignored by the breaker (they still reach the fallback). Otherwise
+  one oversized log statement or one misnamed topic could open the
+  breaker of its whole class and pull every healthy topic of that
+  class into the fallback with it.
+- **The granularity is the class, not the topic.** Several `<mapping>`
+  topics of the same class share one producer and one breaker. A
+  breaker per topic would be cosmetic without a producer per topic:
+  the topics would still share buffer, `max.block.ms` budget and I/O
+  thread, and a stall in one would hold the others regardless of what
+  the breaker reports. Per-class producers are the granularity at
+  which failure isolation is actually enforceable, so that is where
+  the breakers sit.
 
 ## Should I wrap this in a Logback `AsyncAppender`?
 
