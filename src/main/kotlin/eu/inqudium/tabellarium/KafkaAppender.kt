@@ -24,8 +24,9 @@ import kotlin.concurrent.withLock
  * lifecycle. The components it wires ([TopicRouter], [TopicTable],
  * [MessageEnricher], [ProducerRegistry], [SendDispatcher],
  * [ResilientMessageSender], [FallbackDispatcher]) are built, owned and
- * closed as one unit by [AppenderPipeline]; the start-up messages it
- * reports come from [StartupDiagnostics].
+ * closed as one unit by [AppenderPipeline] from an [AppenderConfig]
+ * value; the start-up messages it reports come from
+ * [StartupDiagnostics].
  *
  * ## Configuration surface
  *
@@ -205,8 +206,9 @@ class KafkaAppender :
 
     /**
      * The running components, built as one unit in [start] and closed
-     * as one unit in [stop]; null until [start] succeeded. The hot path
-     * reads it once per event. Publication to other threads rides on
+     * as one unit in [stop]; null until [start] succeeded. Its
+     * [AppenderPipeline.plan] is invariant per event, the rest is the
+     * stateful transport. The hot path reads it once per event. Publication to other threads rides on
      * Logback's volatile `started` flag, which [start] sets after this
      * field and which `doAppend` checks before calling [append].
      */
@@ -340,15 +342,18 @@ class KafkaAppender :
         val built =
             try {
                 AppenderPipeline.build(
-                    kafkaProducerProperties = kafkaProducerProperties,
-                    topicMapping = topicMapping,
-                    component = component,
-                    cmdbId = cmdbId,
-                    environment = environment,
+                    config =
+                        AppenderConfig(
+                            kafkaProducerProperties = kafkaProducerProperties,
+                            topicMapping = topicMapping,
+                            component = component,
+                            cmdbId = cmdbId,
+                            environment = environment,
+                            sendQueueCapacity = sendQueueCapacity,
+                        ),
                     fallbackAppender = fallbackAppender,
                     producerFactory = producerFactory,
                     circuitBreakerRegistry = circuitBreakerRegistry,
-                    sendQueueCapacity = sendQueueCapacity,
                     reentryGuard = inAppend,
                     warn = { message, cause -> addWarn(message, cause) },
                 )
@@ -487,11 +492,11 @@ class KafkaAppender :
             // appender, and start() refuses without an encoder.
             val payload = checkNotNull(encoder).encode(event)
             val markers = event.markerList ?: emptyList()
-            val topicName = pipeline.topicRouter.route(markers)
-            val topicClass = pipeline.topicTable.classFor(topicName)
+            val topicName = pipeline.plan.topicRouter.route(markers)
+            val topicClass = pipeline.plan.topicTable.classFor(topicName)
             topicClassForFailure = topicClass
             m.eventAccepted(topicClass)
-            val enrichment = pipeline.messageEnricher.enrich(event)
+            val enrichment = pipeline.plan.messageEnricher.enrich(event)
             // Hand-off point: everything up to here was CPU-bound work
             // on the caller; the potentially-blocking producer.send
             // happens on the dispatcher's worker thread.

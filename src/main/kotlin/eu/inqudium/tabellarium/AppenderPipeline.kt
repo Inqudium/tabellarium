@@ -6,9 +6,9 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 
 /**
  * The running components of a started [KafkaAppender], owned as one
- * unit: router, table, enricher, producer registry, sender, one
- * [SendDispatcher] per active topic class, and the optional
- * [FallbackDispatcher].
+ * unit: the immutable [RoutingPlan] (router, table, enricher) and the
+ * stateful resources - producer registry, sender, one [SendDispatcher]
+ * per active topic class, and the optional [FallbackDispatcher].
  *
  * [KafkaAppender] stays the composition root - it carries the Joran
  * surface, the hot path and the Logback lifecycle - and delegates what
@@ -20,16 +20,23 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
  * ranked the appender as the unit where the lifecycle findings
  * clustered.
  *
+ * ## Two kinds of components
+ *
+ * The [plan] is derived from the [AppenderConfig] alone and is invariant
+ * for every event: pure functions, no resources, nothing to close. The
+ * remaining fields change with every event - queues fill, breaker
+ * windows move, producers buffer - and are what [close] tears down. The
+ * type boundary is the transaction boundary of [build].
+ *
  * ## Build as a transaction
  *
- * [build] parses, routes and classifies first (pure, nothing to roll
- * back), then creates the real resources. Invariant: a construction
- * failure after the first real resource exists closes everything
- * created so far, in the same order [close] uses, so a failed or
- * reloaded configuration never leaks producers or daemon workers that
- * only an external `stop()` could reach. The encoder is not owned here:
- * the appender starts it before [build] and releases it if [build]
- * throws.
+ * [build] derives the plan first (cannot leak), then creates the real
+ * resources. Invariant: a construction failure after the first real
+ * resource exists closes everything created so far, in the same order
+ * [close] uses, so a failed or reloaded configuration never leaks
+ * producers or daemon workers that only an external `stop()` could
+ * reach. The encoder is not owned here: the appender starts it before
+ * [build] and releases it if [build] throws.
  *
  * ## Close order
  *
@@ -42,9 +49,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
  * drops.
  */
 internal class AppenderPipeline private constructor(
-    val topicRouter: TopicRouter,
-    val topicTable: TopicTable,
-    val messageEnricher: MessageEnricher,
+    val plan: RoutingPlan,
     val producerRegistry: ProducerRegistry,
     val messageSender: ResilientMessageSender,
     val sendDispatchers: Map<TopicClass, SendDispatcher>,
@@ -83,9 +88,12 @@ internal class AppenderPipeline private constructor(
             SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
 
         /**
-         * Builds the pipeline from the appender's validated
-         * configuration. See the class KDoc for the transaction
-         * contract.
+         * Builds the pipeline. See the class KDoc for the transaction
+         * contract. The parameters fall into three kinds: [config] is
+         * the immutable value the plan and the producer settings derive
+         * from; [fallbackAppender], [producerFactory] and
+         * [circuitBreakerRegistry] are collaborators with state of their
+         * own; [reentryGuard] and [warn] are the appender's hooks.
          *
          * @param reentryGuard The appender's per-thread reentry guard;
          *                     every worker created here marks itself
@@ -94,35 +102,22 @@ internal class AppenderPipeline private constructor(
          *             appender routes it to its status manager.
          */
         fun build(
-            kafkaProducerProperties: String,
-            topicMapping: TopicMappingConfig,
-            component: String,
-            cmdbId: String,
-            environment: String,
+            config: AppenderConfig,
             fallbackAppender: Appender<ILoggingEvent>?,
             producerFactory: ProducerFactory,
             circuitBreakerRegistry: CircuitBreakerRegistry,
-            sendQueueCapacity: Int,
             reentryGuard: ThreadLocal<Boolean>,
             warn: (message: String, cause: Throwable) -> Unit,
         ): AppenderPipeline {
-            val baseProperties = parseKafkaProducerProperties(kafkaProducerProperties)
-            val topicRouter = topicMapping.toTopicRouter()
-            val topicTable = topicMapping.toTopicTable()
-            val messageEnricher =
-                MessageEnricher(
-                    component = component,
-                    cmdbId = cmdbId,
-                    environment = environment,
-                )
+            val plan = RoutingPlan.from(config)
             val registry =
                 ProducerRegistry.create(
                     propertiesBuilder =
                         ProducerPropertiesBuilder(
-                            baseProperties,
-                            defaultClientIdPrefix = "tabellarium-${jmxSafe(component)}",
+                            parseKafkaProducerProperties(config.kafkaProducerProperties),
+                            defaultClientIdPrefix = "tabellarium-${jmxSafe(config.component)}",
                         ),
-                    activeTopicClasses = topicTable.activeTopicClasses,
+                    activeTopicClasses = plan.topicTable.activeTopicClasses,
                     producerFactory = producerFactory,
                 )
             // From here on real resources exist; the catch below implements
@@ -180,7 +175,7 @@ internal class AppenderPipeline private constructor(
                             },
                             fallbackDispatcher = fallbackDispatcher,
                             reentryGuard = reentryGuard,
-                            queueCapacity = sendQueueCapacity,
+                            queueCapacity = config.sendQueueCapacity,
                             onWorkerDeath = { t ->
                                 warn(
                                     "Send dispatcher worker for $topicClass died from ${t.javaClass.name}; " +
@@ -192,9 +187,7 @@ internal class AppenderPipeline private constructor(
                         )
                 }
                 return AppenderPipeline(
-                    topicRouter = topicRouter,
-                    topicTable = topicTable,
-                    messageEnricher = messageEnricher,
+                    plan = plan,
                     producerRegistry = registry,
                     messageSender = sender,
                     sendDispatchers = sendDispatchers,
