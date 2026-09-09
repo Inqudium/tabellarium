@@ -783,6 +783,29 @@ duration drops towards the round trip. Aggregate and alert per
 with the class mix. The per-class table and the query patterns live in
 the [metrics overview](docs/metrics/metrics-overview.md#reading-kafkaappendersendduration).
 
+The timer therefore says nothing about the delay the **application**
+experiences when it logs. That delay is the synchronous part of
+`doAppend`: Logback builds the event, the appender routes, encodes,
+enriches and offers the package to the class's queue in O(1); a full
+queue diverts to the fallback instead of waiting. No metric times this
+path, deliberately: a timer sample per event would itself be hot-path
+cost. It is measured by the JMH benchmark `AppendPipelineBenchmark`
+([benchmarks/README.md](benchmarks/README.md), numbers in the
+[bench report](docs/assessment/BENCH_REPORT-2026-08-29T11-38-12.md)):
+sub-microsecond on one
+thread, a p99 in the hundreds of microseconds at 32 contending
+threads, dominated by the queue's put lock and by encoding, which
+grows with the event size. In production, `send.queue.size` is the
+early indicator that the worker falls behind, and
+`events.fallback{reason="queue.full"}` marks the point where the
+caller starts losing events to the fallback; the caller itself stays
+fast throughout. The end-to-end latency from log call to broker ack is
+caller path plus queue wait plus `send.duration`, and the middle leg is
+what no metric covers. A consumer can reconstruct it: the appender
+sets no record timestamp, so the client stamps `CreateTime` at the
+`send` call, and `CreateTime` minus the event's own timestamp in the
+payload is caller path plus queue wait.
+
 ### Additional bindings
 
 When `bindMeterRegistry()` is called, two additional metric sources
