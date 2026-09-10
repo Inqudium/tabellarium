@@ -9,7 +9,7 @@ import java.time.Duration
 
 /**
  * Pins the assumption behind the self-logging guard
- * ([KafkaTransport.isOwnProducerThread]) to the Kafka client version
+ * ([ClientIdSelfLoggingGuard.isOwnProducerThread]) to the Kafka client version
  * the build actually uses: the producer names its network thread
  * `<KafkaProducer.NETWORK_THREAD_PREFIX> | <client.id>`. The prefix is
  * public API and referenced directly; the separator is a literal inside
@@ -58,7 +58,7 @@ class KafkaProducerThreadNamingContractTest {
                     .filter { clientId in it }
 
             // Then
-            assertThat(matching).containsExactly(KafkaTransport.PRODUCER_NETWORK_THREAD_PREFIX + clientId)
+            assertThat(matching).containsExactly(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId)
         } finally {
             producer.close(Duration.ZERO)
         }

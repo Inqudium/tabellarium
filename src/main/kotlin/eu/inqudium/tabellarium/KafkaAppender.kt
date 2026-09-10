@@ -196,6 +196,14 @@ class KafkaAppender :
         ResilientMessageSender.defaultCircuitBreakerRegistry()
 
     /**
+     * Chooses the [SelfLoggingGuard] implementation. Default builds a
+     * [ClientIdSelfLoggingGuard] over the producers' client ids; the
+     * transport calls the factory once in [start], after the producers
+     * exist. Tests substitute a guard with recorded decisions.
+     */
+    internal var selfLoggingGuardFactory: SelfLoggingGuardFactory = SelfLoggingGuardFactory.default()
+
+    /**
      * Capacity of each per-topic-class [SendDispatcher] queue - the
      * bounded hand-off between the logging caller and the worker that
      * performs `producer.send`. Configurable via
@@ -251,45 +259,6 @@ class KafkaAppender :
      * rationale.
      */
     private val metricsBindings = MetricsBindings(this)
-
-    /**
-     * Per-thread reentry guard for [append]. Logback's
-     * `UnsynchronizedAppenderBase` ships only a no-op guard, so a log
-     * event emitted *synchronously from inside the append path itself*
-     * would re-enter [append] on the same thread. The guard covers two
-     * distinct threads with one mechanism:
-     *
-     * - **Send workers** ([SendDispatcher] marks its worker once, for
-     *   its entire lifetime): `producer.send` runs there since the
-     *   asynchronous dispatch, and the Kafka 4.x client logs
-     *   `ApiException`s at DEBUG *synchronously on the `send` caller*
-     *   in `KafkaProducer.doSend`'s failure path. With
-     *   `org.apache.kafka` at DEBUG and the appender attached at the
-     *   root logger, each such log would feed a new event back into
-     *   the pipeline - a feedback loop that amplifies exactly during
-     *   broker trouble. (The network-thread-name guard in [append]
-     *   cannot catch it: the event carries the worker's thread name.)
-     * - **Application (caller) threads** (set around each [append]
-     *   call): the remaining synchronous work - `encoder.encode`,
-     *   metric hooks - can itself log through SLF4J (an encoder's
-     *   internal warnings, a `MeterRegistry` complaining about meter
-     *   conflicts). Without the guard that is unbounded recursion
-     *   (append → encode → log → append …) ending in a
-     *   `StackOverflowError`.
-     *
-     * Reentrant events are dropped entirely - same policy as the
-     * network-thread guard: no metrics, no fallback.
-     *
-     * **Deliberately also active on virtual threads.** Skipping the
-     * guard for virtual callers (our own workers are always platform
-     * threads) was considered and rejected: the recursion protection is
-     * needed exactly where virtual threads occur - safety must not
-     * depend on the thread type. The cost is one cached-Boolean
-     * `ThreadLocal` entry per thread that ever logs; the derivation and
-     * the `ScopedValue` outlook (JDK 25+) are in
-     * `docs/assessment/PERF_ANALYSIS-2026-08-29T11-01-08.md`, finding 6.
-     */
-    private val inAppend = ThreadLocal.withInitial { false }
 
     /**
      * Serializes [bindMeterRegistry] against the unbind in [stop]: a
@@ -381,7 +350,7 @@ class KafkaAppender :
                     fallbackAppender = fallbackAppender,
                     producerFactory = producerFactory,
                     circuitBreakerRegistry = circuitBreakerRegistry,
-                    reentryGuard = inAppend,
+                    selfLoggingGuardFactory = selfLoggingGuardFactory,
                     warn = { message, cause -> addWarn(message, cause) },
                 )
             } catch (e: Exception) {
@@ -463,22 +432,13 @@ class KafkaAppender :
         // sets them before it flips the started flag that doAppend checks.
         val plan = this.plan ?: return
         val transport = this.transport ?: return
-        // Reentry guard: a log event created synchronously from inside
-        // this very append path (most relevantly the Kafka client's
-        // caller-thread DEBUG logging in its synchronous send-failure
-        // path) must not recurse into the producer. See the field KDoc.
-        if (inAppend.get()) {
-            return
-        }
-        // Self-logging guard: log events from the producers' own network
-        // threads are the producer's own logging; routing them back into
-        // this appender would feed the producer its own output - a
-        // feedback loop that amplifies exactly when the producer logs
-        // most (broker trouble). Such events are ignored entirely: no
-        // metrics, no fallback. The match lives on the transport, which
-        // knows its producers' client ids.
-        val threadName = event.threadName
-        if (threadName != null && transport.isOwnProducerThread(threadName)) {
+        // Self-logging guard: an event that is this appender's own echo -
+        // logged synchronously from inside this append path on this very
+        // thread, or by the network thread of one of its own producers -
+        // is ignored entirely: no metrics, no fallback. Both cases and
+        // their rationale live on SelfLoggingGuard.
+        val guard = transport.selfLoggingGuard
+        if (guard.shouldDrop(event)) {
             return
         }
         // Snapshot once so all hooks for this event use the same instance.
@@ -488,7 +448,7 @@ class KafkaAppender :
         // the catch with topicClass=null and we report the failure
         // without a class tag (rare; only on malformed marker input).
         var topicClassForFailure: TopicClass? = null
-        inAppend.set(true)
+        guard.enter()
         try {
             // Freeze the event's lazy state (formatted message, thread
             // name, MDC snapshot) on the caller's thread: the event
@@ -564,7 +524,7 @@ class KafkaAppender :
             // appender's downstream I/O.
             transport.divertToFallback(event)
         } finally {
-            inAppend.set(false)
+            guard.exit()
         }
     }
 

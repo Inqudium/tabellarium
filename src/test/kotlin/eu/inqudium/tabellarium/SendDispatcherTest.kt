@@ -158,13 +158,14 @@ class SendDispatcherTest {
 
         @Test
         fun `should mark the worker thread with the reentry guard`() {
-            // What is to be tested? Whether the worker carries the
-            //   appender's reentry-guard ThreadLocal. The Kafka client
+            // What is to be tested? Whether the worker marks itself with
+            //   the appender's SelfLoggingGuard. The Kafka client
             //   logs synchronously on the producer.send caller - which is
             //   the worker now - and append() must drop those events via
             //   the guard instead of feeding them back into the queue.
             // How will the test case be deemed successful and why? Successful
-            //   if the guard reads true inside the send action.
+            //   if the guard would drop an event logged from inside the
+            //   send action, i.e. on the worker thread.
             // Why is it important to test this test case? Without the
             //   marking, Kafka-DEBUG self-logging would re-enter the
             //   pipeline from the worker thread - no longer as unbounded
@@ -174,12 +175,12 @@ class SendDispatcherTest {
             //   amplifies during broker trouble.
 
             // Given
-            val guard = ThreadLocal.withInitial { false }
+            val guard = ClientIdSelfLoggingGuard(emptySet())
             val guardSeenTrue = AtomicBoolean(false)
             val dispatcher =
                 SendDispatcher(
                     topicClass = TopicClass.TECHNICAL,
-                    sendAction = { guardSeenTrue.set(guard.get()) },
+                    sendAction = { guardSeenTrue.set(guard.shouldDrop(it.originalEvent)) },
                     fallbackDispatcher = null,
                     reentryGuard = guard,
                 )

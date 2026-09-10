@@ -49,10 +49,10 @@ import java.util.concurrent.atomic.AtomicReference
  *   item), so it must never come before the budget has been used. An
  *   interrupt of the *closing* thread ends its waits early, never the
  *   accounting, and is restored before returning.
- * - **Reentry mark**: the worker sets the appender's [reentryGuard]
- *   once for its lifetime, so anything delivered work logs through
- *   SLF4J from this thread is dropped by [KafkaAppender.append] instead
- *   of looping back into a queue.
+ * - **Reentry mark**: the worker marks itself with the appender's
+ *   [SelfLoggingGuard] once for its lifetime, so anything delivered
+ *   work logs through SLF4J from this thread is dropped by
+ *   [KafkaAppender.append] instead of looping back into a queue.
  *
  * Safety: the worker thread starts in the constructor and therefore
  * sees `this` before a subclass has initialized its own state - but it
@@ -65,7 +65,8 @@ import java.util.concurrent.atomic.AtomicReference
  *                      rejection instead of growth.
  * @param drainTimeoutMs Time [close] lets the worker drain by
  *                       delivering before interrupting it.
- * @param reentryGuard The appender's per-thread reentry guard; null
+ * @param reentryGuard The appender's [SelfLoggingGuard], which the
+ *                     worker marks itself with for its lifetime; null
  *                     disables the marking (tests).
  * @param onWorkerDeath Invoked after a worker death has been accounted
  *                      for, so the owner can report it - a dead worker
@@ -75,7 +76,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
     threadName: String,
     queueCapacity: Int,
     private val drainTimeoutMs: Long,
-    private val reentryGuard: ThreadLocal<Boolean>?,
+    private val reentryGuard: SelfLoggingGuard?,
     private val onWorkerDeath: (Throwable) -> Unit,
 ) : AutoCloseable {
     /** Why an item will never be delivered; the subclass decides how to account for it. */
@@ -220,7 +221,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         // Safety: set once for the worker's lifetime - it never
         // legitimately logs through the appender, so everything raised on
         // this thread is a loop and must be dropped.
-        reentryGuard?.set(true)
+        reentryGuard?.markCurrentThreadForLife()
         while (running) {
             val item =
                 try {
