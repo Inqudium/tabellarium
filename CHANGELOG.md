@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-instance guards (README, "Future work"), would be plugged in.
   An appender test pins that the configured factory's guard is the one
   the hot path and the workers use.
+- `ClientIdSelfLoggingGuard` derives the complete network-thread names
+  of its producers once from the client ids and answers the hot-path
+  question with a single set lookup, instead of a prefix check, a
+  substring and a second lookup per event from a producer thread. Same
+  exact-scheme semantics, same tests.
 
 ## [1.1.1] - 2026-09-09
 

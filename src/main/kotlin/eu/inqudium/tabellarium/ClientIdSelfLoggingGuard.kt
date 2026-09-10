@@ -60,7 +60,17 @@ import org.apache.kafka.clients.producer.KafkaProducer
 internal class ClientIdSelfLoggingGuard(
     producerClientIds: Set<String>,
 ) : SelfLoggingGuard {
-    private val producerClientIds: Set<String> = producerClientIds.filterTo(HashSet()) { it.isNotBlank() }
+    /**
+     * The complete network-thread names of this appender's producers,
+     * derived once from the client ids: the scheme is fully known
+     * without looking at any live thread, so the hot path needs one
+     * set lookup instead of a prefix check plus a substring and a
+     * second lookup. A `HashSet` for O(1) membership; `Thread.getName`
+     * returns the same `String` instance per thread, whose hash is
+     * cached after the first computation.
+     */
+    private val producerThreadNames: Set<String> =
+        producerClientIds.filter { it.isNotBlank() }.mapTo(HashSet()) { PRODUCER_NETWORK_THREAD_PREFIX + it }
 
     /** True on a thread that is inside the append path, or is a worker of this appender. */
     private val inAppend: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
@@ -71,7 +81,7 @@ internal class ClientIdSelfLoggingGuard(
      * workers), or logged by the network thread of one of the
      * appender's producers. Called first thing on the hot path; reads
      * one `ThreadLocal` and, only for events from other threads, does
-     * one prefix check plus one set lookup.
+     * one set lookup on the event's thread name.
      */
     override fun shouldDrop(event: ILoggingEvent): Boolean {
         if (inAppend.get()) {
@@ -83,12 +93,10 @@ internal class ClientIdSelfLoggingGuard(
 
     /**
      * Whether [threadName] is the network thread of one of this
-     * appender's producers: the exact scheme
-     * [PRODUCER_NETWORK_THREAD_PREFIX] followed by one full client id.
+     * appender's producers: exactly [PRODUCER_NETWORK_THREAD_PREFIX]
+     * followed by one full client id, nothing more and nothing less.
      */
-    fun isOwnProducerThread(threadName: String): Boolean =
-        threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
-            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in producerClientIds
+    fun isOwnProducerThread(threadName: String): Boolean = threadName in producerThreadNames
 
     override fun enter() {
         inAppend.set(true)
