@@ -141,8 +141,9 @@ internal class KafkaTransport private constructor(
          * producers and queues derive from; [fallbackAppender],
          * [producerFactory] and [circuitBreakerRegistry] are
          * collaborators with state of their own; [warn] is the
-         * appender's hook. The [SelfLoggingGuard] is built here from the
-         * registry's client ids; every worker created here marks itself
+         * appender's hook. The [SelfLoggingGuard] (its default
+         * implementation, [ClientIdSelfLoggingGuard]) is built here from
+         * the registry's client ids; every worker created here marks itself
          * with it for its whole lifetime.
          *
          * @param warn Sink for asynchronous worker-death reports; the
@@ -168,7 +169,7 @@ internal class KafkaTransport private constructor(
                 )
             // The guard needs the producers' client ids, so it comes right
             // after the registry and before the workers that carry its mark.
-            val selfLoggingGuard = SelfLoggingGuard(registry.clientIds)
+            val selfLoggingGuard: SelfLoggingGuard = ClientIdSelfLoggingGuard(registry.clientIds)
             // From here on real resources exist; the catch below implements
             // the rollback contract from the class KDoc.
             var fallbackDispatcher: FallbackDispatcher? = null

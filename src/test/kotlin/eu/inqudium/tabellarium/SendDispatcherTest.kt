@@ -175,7 +175,7 @@ class SendDispatcherTest {
             //   amplifies during broker trouble.
 
             // Given
-            val guard = SelfLoggingGuard(emptySet())
+            val guard = ClientIdSelfLoggingGuard(emptySet())
             val guardSeenTrue = AtomicBoolean(false)
             val dispatcher =
                 SendDispatcher(

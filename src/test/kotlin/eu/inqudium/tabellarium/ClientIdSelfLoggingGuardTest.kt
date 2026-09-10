@@ -7,12 +7,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-class SelfLoggingGuardTest {
+class ClientIdSelfLoggingGuardTest {
     // -- Test fixtures --------------------------------------------------
 
     private val clientId = "tabellarium-payments-audit"
 
-    private fun guard(vararg clientIds: String) = SelfLoggingGuard(clientIds.toSet())
+    private fun guard(vararg clientIds: String) = ClientIdSelfLoggingGuard(clientIds.toSet())
 
     private fun eventFrom(threadName: String) = newTestLoggingEvent(message = "probe", threadName = threadName)
 
@@ -38,8 +38,8 @@ class SelfLoggingGuardTest {
             val guard = guard(clientId)
 
             // When / Then
-            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId))).isTrue()
-            assertThat(guard.isOwnProducerThread(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId)).isTrue()
+            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId))).isTrue()
+            assertThat(guard.isOwnProducerThread(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId)).isTrue()
         }
 
         @Test
@@ -63,8 +63,8 @@ class SelfLoggingGuardTest {
 
             // When / Then
             assertThat(guard.shouldDrop(eventFrom("app-worker-$clientId"))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "other-instance-audit"))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "other-instance-audit"))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
             assertThat(guard.shouldDrop(eventFrom("main"))).isFalse()
         }
 
@@ -85,8 +85,8 @@ class SelfLoggingGuardTest {
             val guard = guard("", "  ")
 
             // When / Then
-            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "  "))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "  "))).isFalse()
         }
     }
 

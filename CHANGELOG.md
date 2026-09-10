@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Internal structure (no behavior change, public API per ADR-0002
-  unchanged): the self-logging guard lives in its own `SelfLoggingGuard`.
-  It answers one question for every event on the hot path - is this the
-  appender's own echo? - for both cases that used to be spread over
-  three classes: the network-thread match against the appender's own
+  unchanged): the self-logging guard lives behind its own
+  `SelfLoggingGuard` interface, whose default implementation
+  `ClientIdSelfLoggingGuard` answers one question for every event on
+  the hot path - is this the appender's own echo? - for both cases that
+  used to be spread over three classes: the network-thread match against the appender's own
   producer client ids (previously on `KafkaTransport`) and the per-thread
   reentry mark that the append path brackets and the dispatcher workers
   carry for life (previously a `ThreadLocal` on `KafkaAppender`, handed
@@ -22,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mark themselves through it. A dedicated unit test pins the exact-scheme
   match, the blank-id exclusion, the thread locality of the mark and the
   for-life mark; the appender-level and dispatcher tests keep exercising
-  the guard through `doAppend` and the workers. This is also the single
-  seam a future process-wide client-id registry (README, "Cross-instance
-  guards") would plug into.
+  the guard through `doAppend` and the workers. The interface is the
+  seam for the one named second implementation, a process-wide
+  client-id registry for the cross-instance guards (README, "Future
+  work").
 
 ## [1.1.1] - 2026-09-09
 

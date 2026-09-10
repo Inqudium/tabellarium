@@ -455,7 +455,7 @@ class FallbackDispatcherTest {
             //   root logger -> appender -> Kafka (down) -> fallback -> log.
 
             // Given
-            val guard = SelfLoggingGuard(emptySet())
+            val guard = ClientIdSelfLoggingGuard(emptySet())
             val guardSeen = AtomicReference<Boolean?>()
             val probingAppender =
                 object : AppenderBase<ILoggingEvent>() {
