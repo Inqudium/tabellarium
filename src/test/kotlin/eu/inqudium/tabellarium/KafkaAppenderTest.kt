@@ -68,6 +68,7 @@ class KafkaAppenderTest {
         producerFactory: ProducerFactory = RecordingProducerFactory(),
         fallback: Appender<ILoggingEvent>? = null,
         kafkaProducerProperties: String = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092",
+        selfLoggingGuardFactory: SelfLoggingGuardFactory = SelfLoggingGuardFactory.default(),
     ): KafkaAppender =
         KafkaAppender().also { createdAppenders += it }.apply {
             this.context = LoggerContext()
@@ -82,6 +83,7 @@ class KafkaAppenderTest {
                 }
             this.debug = debug
             this.producerFactory = producerFactory
+            this.selfLoggingGuardFactory = selfLoggingGuardFactory
             // The fallback slot is filled via addAppender (the same path
             // Joran's AppenderRefAction takes for <appender-ref>).
             fallback?.let { addAppender(it) }
@@ -878,6 +880,67 @@ class KafkaAppenderTest {
 
     @Nested
     inner class `Producer self-logging guard` {
+        @Test
+        fun `should consult the guard the configured factory creates`() {
+            // What is to be tested? Whether the guard implementation is
+            //   really replaceable through the factory seam: the transport
+            //   must call the configured factory with the producers'
+            //   effective client ids, the hot path must ask the returned
+            //   guard, and the workers must mark themselves through it.
+            // How will the test case be deemed successful and why? Successful
+            //   if the factory received the derived client id of the active
+            //   class, an event the substitute guard rejects is neither
+            //   encoded nor sent while an ordinary event is, and the
+            //   for-life mark was requested at least once (the send worker).
+            // Why is it important to test this test case? The factory exists
+            //   for a future process-wide guard (README, cross-instance
+            //   guards); if any caller bypassed it and instantiated the
+            //   default directly, that replacement would silently cover
+            //   only part of the pipeline.
+
+            // Given: a factory recording its input and returning a guard
+            //   that rejects "echo:" messages and counts for-life marks
+            val receivedClientIds = AtomicReference<Set<String>>()
+            val lifeMarks = AtomicInteger(0)
+            val substituteFactory =
+                SelfLoggingGuardFactory { clientIds ->
+                    receivedClientIds.set(clientIds)
+                    object : SelfLoggingGuard {
+                        override fun shouldDrop(event: ILoggingEvent): Boolean = event.formattedMessage.startsWith("echo:")
+
+                        override fun enter() = Unit
+
+                        override fun exit() = Unit
+
+                        override fun markCurrentThreadForLife() {
+                            lifeMarks.incrementAndGet()
+                        }
+                    }
+                }
+            val encoder = RecordingEncoder()
+            val factory = RecordingProducerFactory()
+            val appender =
+                newAppender(
+                    encoder = encoder,
+                    producerFactory = factory,
+                    component = "checkout-service",
+                    selfLoggingGuardFactory = substituteFactory,
+                )
+            appender.start()
+
+            // When: one event the substitute rejects, one it lets through
+            appender.doAppend(newTestLoggingEvent(message = "echo: producer noise"))
+            appender.doAppend(newTestLoggingEvent(message = "ordinary event"))
+            appender.stop()
+
+            // Then: the factory saw the derived client id, the substitute
+            //   decided, and the worker marked itself through it
+            assertThat(receivedClientIds.get()).containsExactly("tabellarium-checkout-service-technical")
+            assertThat(encoder.encodedEvents.map { it.formattedMessage }).containsExactly("ordinary event")
+            assertThat(factory.createdProducers[0].history()).hasSize(1)
+            assertThat(lifeMarks.get()).isGreaterThanOrEqualTo(1)
+        }
+
         @Test
         fun `should ignore events from threads whose name contains a producer client id`() {
             // What is to be tested? Whether a log event originating from one

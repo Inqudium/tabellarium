@@ -26,7 +26,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent
  * README's "Cross-instance guards" describes, which would answer
  * [shouldDrop] for every appender instance's producers instead of only
  * this one's. Until it exists, [ClientIdSelfLoggingGuard] is the only
- * implementation and the transport's default.
+ * implementation and the default of [SelfLoggingGuardFactory] - the one
+ * place an implementation is chosen, so swapping it touches nothing on
+ * the hot path or in the transport.
  */
 internal interface SelfLoggingGuard {
     /**
@@ -47,4 +49,30 @@ internal interface SelfLoggingGuard {
      * appender, so everything raised on them is a loop.
      */
     fun markCurrentThreadForLife()
+}
+
+/**
+ * The single place a [SelfLoggingGuard] implementation is chosen.
+ * [KafkaTransport.open] calls [create] once per started appender, right
+ * after the producer registry exists, with the effective client ids of
+ * that appender's producers; every worker and the hot path then use the
+ * returned guard. The appender holds the factory as an internal seam
+ * (like [ProducerFactory]): tests substitute a guard with recorded
+ * decisions, and a future process-wide implementation is plugged in
+ * here without touching any caller.
+ */
+internal fun interface SelfLoggingGuardFactory {
+    /**
+     * Creates the guard for one appender.
+     *
+     * @param producerClientIds The effective `client.id` values of the
+     *                          appender's producers; blank ids may be
+     *                          present and must be ignored.
+     */
+    fun create(producerClientIds: Set<String>): SelfLoggingGuard
+
+    companion object {
+        /** The default: a [ClientIdSelfLoggingGuard] over the given client ids. */
+        fun default(): SelfLoggingGuardFactory = SelfLoggingGuardFactory { clientIds -> ClientIdSelfLoggingGuard(clientIds) }
+    }
 }

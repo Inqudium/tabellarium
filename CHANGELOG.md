@@ -23,10 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mark themselves through it. A dedicated unit test pins the exact-scheme
   match, the blank-id exclusion, the thread locality of the mark and the
   for-life mark; the appender-level and dispatcher tests keep exercising
-  the guard through `doAppend` and the workers. The interface is the
-  seam for the one named second implementation, a process-wide
-  client-id registry for the cross-instance guards (README, "Future
-  work").
+  the guard through `doAppend` and the workers. The implementation is
+  chosen in exactly one place, `SelfLoggingGuardFactory` (an internal
+  seam on the appender like `ProducerFactory`, called by the transport
+  once the producers exist); that is where the one named second
+  implementation, a process-wide client-id registry for the
+  cross-instance guards (README, "Future work"), would be plugged in.
+  An appender test pins that the configured factory's guard is the one
+  the hot path and the workers use.
 
 ## [1.1.1] - 2026-09-09
 

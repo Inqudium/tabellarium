@@ -196,6 +196,14 @@ class KafkaAppender :
         ResilientMessageSender.defaultCircuitBreakerRegistry()
 
     /**
+     * Chooses the [SelfLoggingGuard] implementation. Default builds a
+     * [ClientIdSelfLoggingGuard] over the producers' client ids; the
+     * transport calls the factory once in [start], after the producers
+     * exist. Tests substitute a guard with recorded decisions.
+     */
+    internal var selfLoggingGuardFactory: SelfLoggingGuardFactory = SelfLoggingGuardFactory.default()
+
+    /**
      * Capacity of each per-topic-class [SendDispatcher] queue - the
      * bounded hand-off between the logging caller and the worker that
      * performs `producer.send`. Configurable via
@@ -342,6 +350,7 @@ class KafkaAppender :
                     fallbackAppender = fallbackAppender,
                     producerFactory = producerFactory,
                     circuitBreakerRegistry = circuitBreakerRegistry,
+                    selfLoggingGuardFactory = selfLoggingGuardFactory,
                     warn = { message, cause -> addWarn(message, cause) },
                 )
             } catch (e: Exception) {
