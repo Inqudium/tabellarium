@@ -9,7 +9,7 @@ import java.time.Duration
 
 /**
  * Pins the assumption behind the self-logging guard
- * ([ClientIdSelfLoggingGuard.isOwnProducerThread]) to the Kafka client version
+ * ([ClientIdSelfLoggingGuard], its producer-thread names) to the Kafka client version
  * the build actually uses: the producer names its network thread
  * `<KafkaProducer.NETWORK_THREAD_PREFIX> | <client.id>`. The prefix is
  * public API and referenced directly; the separator is a literal inside
@@ -29,8 +29,8 @@ class KafkaProducerThreadNamingContractTest {
         // How will the test case be deemed successful and why? Successful
         //   if exactly one live thread carries the client.id in its name and
         //   that name equals the prefix constant followed by the client.id -
-        //   the string isOwnProducerThread would receive from such a
-        //   thread's log events.
+        //   the thread name shouldDrop would see on such a thread's log
+        //   events.
         // Why is it important to test this test case? The guard exists to
         //   stop a feedback loop that amplifies exactly during broker
         //   trouble. A silent naming change in the client would disable it

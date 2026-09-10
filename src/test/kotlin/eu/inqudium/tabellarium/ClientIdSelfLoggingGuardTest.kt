@@ -39,7 +39,6 @@ class ClientIdSelfLoggingGuardTest {
 
             // When / Then
             assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId))).isTrue()
-            assertThat(guard.isOwnProducerThread(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId)).isTrue()
         }
 
         @Test

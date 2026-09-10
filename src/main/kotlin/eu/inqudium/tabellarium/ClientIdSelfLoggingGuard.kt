@@ -16,7 +16,7 @@ import org.apache.kafka.clients.producer.KafkaProducer
  *   the producer whose logging they are - a loop that amplifies exactly
  *   when the producer logs most, during broker trouble. The match is
  *   anchored to the exact scheme (prefix plus one of this appender's
- *   full client ids, see [isOwnProducerThread]), so an operator-supplied
+ *   full client ids, see [ownThreadNames]), so an operator-supplied
  *   short client id can never match unrelated application threads whose
  *   names merely contain it, and another appender instance's producers
  *   are not matched either - that is the limit this implementation's
@@ -106,15 +106,6 @@ internal class ClientIdSelfLoggingGuard(
         val threadName = event.threadName ?: return false
         return threadName in ownThreadNames
     }
-
-    /**
-     * Whether [threadName] is the network thread of one of this
-     * appender's producers: exactly [PRODUCER_NETWORK_THREAD_PREFIX]
-     * followed by one full client id, nothing more and nothing less.
-     * The same set answers for the worker threads; this accessor names
-     * the producer case for the naming-contract test.
-     */
-    fun isOwnProducerThread(threadName: String): Boolean = threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) && threadName in ownThreadNames
 
     override fun enter() {
         inAppend.set(true)
