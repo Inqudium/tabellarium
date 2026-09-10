@@ -673,10 +673,11 @@ class KafkaAppender :
      *
      * **Self-logging:** the fallback appender must not log through
      * SLF4J per delivered event. Its `doAppend` runs on the fallback
-     * dispatcher's worker, which carries this appender's reentry guard:
-     * such log events are dropped by [append] (no metrics, no fallback)
-     * instead of looping back into the pipeline. Logback's own file
-     * appenders report through the status manager and are unaffected.
+     * dispatcher's worker, whose fixed thread name the self-logging
+     * guard recognizes: such log events are dropped by [append] (no
+     * metrics, no fallback) instead of looping back into the pipeline.
+     * Logback's own file appenders report through the status manager
+     * and are unaffected.
      */
     override fun addAppender(newAppender: Appender<ILoggingEvent>) {
         if (fallbackAppender != null) {

@@ -50,11 +50,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ## Threading and self-logging
  *
- * The worker carries the appender's reentry guard: the Kafka client
- * logs synchronously on the `producer.send` caller - which is now this
- * worker - and those events must be dropped by [KafkaAppender.append]
- * instead of being fed back into the queue (a feedback loop that
- * amplifies exactly during broker trouble).
+ * The Kafka client logs synchronously on the `producer.send` caller -
+ * which is now this worker - and those events must be dropped by
+ * [KafkaAppender.append] instead of being fed back into the queue (a
+ * feedback loop that amplifies exactly during broker trouble). The
+ * worker's fixed name ([threadNameFor]) is what the [SelfLoggingGuard]
+ * recognizes them by; the worker carries no state for it.
  *
  * The [ILoggingEvent] crosses to the worker thread only as the payload
  * for the *fallback* path - the same cross-thread exposure the
@@ -72,7 +73,6 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param fallbackDispatcher Receives diverted events. Null means
  *                           "drop" - the operator's explicit choice,
  *                           consistent with the rest of the pipeline.
- * @param reentryGuard Passed through to [BoundedWorkerDispatcher].
  * @param queueCapacity Passed through to [BoundedWorkerDispatcher];
  *                      the default matches the fallback dispatcher's.
  * @param drainTimeoutMs Passed through to [BoundedWorkerDispatcher];
@@ -87,15 +87,13 @@ internal class SendDispatcher(
     private val topicClass: TopicClass,
     private val sendAction: (PendingSend) -> Unit,
     private val fallbackDispatcher: FallbackDispatcher?,
-    reentryGuard: SelfLoggingGuard? = null,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     drainTimeoutMs: Long = DEFAULT_DRAIN_TIMEOUT_MS,
     onWorkerDeath: (Throwable) -> Unit = {},
 ) : BoundedWorkerDispatcher<SendDispatcher.PendingSend>(
-        threadName = "kafka-appender-send-dispatcher-${topicClass.tag}",
+        threadName = threadNameFor(topicClass),
         queueCapacity = queueCapacity,
         drainTimeoutMs = drainTimeoutMs,
-        reentryGuard = reentryGuard,
         onWorkerDeath = onWorkerDeath,
     ) {
     /**
@@ -219,5 +217,11 @@ internal class SendDispatcher(
 
         /** Default time allowed in [close] for the worker to drain by sending, in milliseconds. */
         const val DEFAULT_DRAIN_TIMEOUT_MS: Long = 1000
+
+        /**
+         * The worker thread name for [topicClass]. Fixed and library-owned:
+         * the [SelfLoggingGuard] recognizes the worker's own log events by it.
+         */
+        fun threadNameFor(topicClass: TopicClass): String = "kafka-appender-send-dispatcher-${topicClass.tag}"
     }
 }

@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicReference
  * `producer.send`) and [FallbackDispatcher] (any thread → the fallback
  * appender). Everything the two have in common lives here exactly once
  * - the queue, the worker, the accepting state, the in-flight ownership
- * protocol, the death handler, the two-phase close, the reentry mark -
- * and the two differences are the two abstract methods: what
+ * protocol, the death handler, the two-phase close - and the two
+ * differences are the two abstract methods: what
  * *delivering* an item means ([deliver]) and what happens to an item
  * that will never be delivered ([reject]).
  *
@@ -49,10 +49,11 @@ import java.util.concurrent.atomic.AtomicReference
  *   item), so it must never come before the budget has been used. An
  *   interrupt of the *closing* thread ends its waits early, never the
  *   accounting, and is restored before returning.
- * - **Reentry mark**: the worker marks itself with the appender's
- *   [SelfLoggingGuard] once for its lifetime, so anything delivered
- *   work logs through SLF4J from this thread is dropped by
- *   [KafkaAppender.append] instead of looping back into a queue.
+ * - **Self-logging**: the worker carries no guard state. Its fixed
+ *   [threadName] is what the [SelfLoggingGuard] recognizes its own
+ *   log events by, so anything delivered work logs through SLF4J from
+ *   this thread is dropped by [KafkaAppender.append] instead of looping
+ *   back into a queue.
  *
  * Safety: the worker thread starts in the constructor and therefore
  * sees `this` before a subclass has initialized its own state - but it
@@ -65,9 +66,6 @@ import java.util.concurrent.atomic.AtomicReference
  *                      rejection instead of growth.
  * @param drainTimeoutMs Time [close] lets the worker drain by
  *                       delivering before interrupting it.
- * @param reentryGuard The appender's [SelfLoggingGuard], which the
- *                     worker marks itself with for its lifetime; null
- *                     disables the marking (tests).
  * @param onWorkerDeath Invoked after a worker death has been accounted
  *                      for, so the owner can report it - a dead worker
  *                      must not masquerade as a merely slow consumer.
@@ -76,7 +74,6 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
     threadName: String,
     queueCapacity: Int,
     private val drainTimeoutMs: Long,
-    private val reentryGuard: SelfLoggingGuard?,
     private val onWorkerDeath: (Throwable) -> Unit,
 ) : AutoCloseable {
     /** Why an item will never be delivered; the subclass decides how to account for it. */
@@ -218,10 +215,6 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
     }
 
     private fun runWorker() {
-        // Safety: set once for the worker's lifetime - it never
-        // legitimately logs through the appender, so everything raised on
-        // this thread is a loop and must be dropped.
-        reentryGuard?.markCurrentThreadForLife()
         while (running) {
             val item =
                 try {

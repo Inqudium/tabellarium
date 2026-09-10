@@ -48,11 +48,13 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## Threading and self-logging
  *
- * The worker carries the appender's reentry guard: a fallback appender
- * that logs through SLF4J per delivered event would otherwise feed each
- * such log back through the root logger into [KafkaAppender.append],
- * on to Kafka and - while Kafka is down - back into this very queue, a
- * loop that saturates both queues for the duration of an outage.
+ * A fallback appender that logs through SLF4J per delivered event would
+ * feed each such log back through the root logger into
+ * [KafkaAppender.append], on to Kafka and - while Kafka is down - back
+ * into this very queue, a loop that saturates both queues for the
+ * duration of an outage. The worker's fixed name ([THREAD_NAME]) is what
+ * the [SelfLoggingGuard] recognizes those events by; the worker carries
+ * no state for it.
  *
  * @param fallbackAppender The appender to which events are dispatched.
  * @param queueCapacity Passed through to [BoundedWorkerDispatcher];
@@ -62,7 +64,6 @@ import java.util.concurrent.atomic.AtomicLong
  * @param shutdownTimeoutMs Passed through to [BoundedWorkerDispatcher]
  *                          as its drain budget; here the drain means
  *                          delivering to the fallback appender.
- * @param reentryGuard Passed through to [BoundedWorkerDispatcher].
  * @param onWorkerDeath Invoked after a worker death was accounted for
  *                      (in-flight and queued events counted as
  *                      dropped); the appender reports it to the status
@@ -73,13 +74,11 @@ internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    reentryGuard: SelfLoggingGuard? = null,
     onWorkerDeath: (Throwable) -> Unit = {},
 ) : BoundedWorkerDispatcher<ILoggingEvent>(
-        threadName = "kafka-appender-fallback-dispatcher",
+        threadName = THREAD_NAME,
         queueCapacity = queueCapacity,
         drainTimeoutMs = shutdownTimeoutMs,
-        reentryGuard = reentryGuard,
         onWorkerDeath = onWorkerDeath,
     ) {
     private val droppedCount = AtomicLong(0)
@@ -143,5 +142,11 @@ internal class FallbackDispatcher(
 
         /** Default time allowed in close() for the worker to drain by delivering, in milliseconds. */
         const val DEFAULT_SHUTDOWN_TIMEOUT_MS: Long = 5000
+
+        /**
+         * The worker thread name. Fixed and library-owned: the
+         * [SelfLoggingGuard] recognizes the worker's own log events by it.
+         */
+        const val THREAD_NAME: String = "kafka-appender-fallback-dispatcher"
     }
 }
