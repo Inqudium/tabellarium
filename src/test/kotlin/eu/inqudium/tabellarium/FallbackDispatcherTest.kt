@@ -441,13 +441,15 @@ class FallbackDispatcherTest {
     @Nested
     inner class `Reentry guard` {
         @Test
-        fun `should mark the worker thread with the reentry guard`() {
-            // What is to be tested? Whether the fallback worker marks itself
-            //   with the appender's SelfLoggingGuard, like the send worker
-            //   does, so a fallback appender that logs through SLF4J from
-            //   doAppend cannot feed those events back into the pipeline.
+        fun `should deliver on the worker thread the guard recognizes`() {
+            // What is to be tested? Whether the fallback worker runs under
+            //   the fixed, library-owned thread name the SelfLoggingGuard
+            //   matches, like the send worker does, so a fallback appender
+            //   that logs through SLF4J from doAppend cannot feed those
+            //   events back into the pipeline.
             // How will the test case be deemed successful and why? Successful
-            //   if the guard would drop an event logged from inside the
+            //   if the worker's name is FallbackDispatcher.THREAD_NAME and
+            //   the guard would drop an event created from inside the
             //   fallback appender's append, i.e. on the worker thread.
             // Why is it important to test this test case? Without the mark,
             //   an SLF4J-logging fallback appender combined with a Kafka
@@ -456,6 +458,7 @@ class FallbackDispatcherTest {
 
             // Given
             val guard = ClientIdSelfLoggingGuard(emptySet())
+            val workerName = AtomicReference<String?>()
             val guardSeen = AtomicReference<Boolean?>()
             val probingAppender =
                 object : AppenderBase<ILoggingEvent>() {
@@ -465,16 +468,19 @@ class FallbackDispatcherTest {
                     }
 
                     override fun append(event: ILoggingEvent) {
-                        guardSeen.set(guard.shouldDrop(event))
+                        workerName.set(Thread.currentThread().name)
+                        // An event logged from here carries the worker's name.
+                        guardSeen.set(guard.shouldDrop(newTestLoggingEvent(message = "fallback appender log")))
                     }
                 }
-            val dispatcher = FallbackDispatcher(probingAppender, reentryGuard = guard)
+            val dispatcher = FallbackDispatcher(probingAppender)
             try {
                 // When
                 dispatcher.enqueue(newTestLoggingEvent(message = "probe"))
 
                 // Then
                 pollUntil { guardSeen.get() != null }
+                assertThat(workerName.get()).isEqualTo(FallbackDispatcher.THREAD_NAME)
                 assertThat(guardSeen.get()).isTrue()
             } finally {
                 dispatcher.close()

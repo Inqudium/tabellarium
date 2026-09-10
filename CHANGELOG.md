@@ -16,14 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the hot path - is this the appender's own echo? - for both cases that
   used to be spread over three classes: the network-thread match against the appender's own
   producer client ids (previously on `KafkaTransport`) and the per-thread
-  reentry mark that the append path brackets and the dispatcher workers
-  carry for life (previously a `ThreadLocal` on `KafkaAppender`, handed
-  through to `BoundedWorkerDispatcher`). `KafkaTransport` builds the
-  guard right after the producer registry and exposes it; the workers
-  mark themselves through it. A dedicated unit test pins the exact-scheme
-  match, the blank-id exclusion, the thread locality of the mark and the
-  for-life mark; the appender-level and dispatcher tests keep exercising
-  the guard through `doAppend` and the workers. The implementation is
+  reentry mark that the append path brackets (previously a `ThreadLocal`
+  on `KafkaAppender`). `KafkaTransport` builds the guard right after the
+  producer registry and exposes it. The dispatcher workers carry no guard
+  state any more: their fixed, library-owned thread names
+  (`SendDispatcher.threadNameFor`, `FallbackDispatcher.THREAD_NAME`) are
+  in the guard's name set next to the producer network threads, which
+  also drops the worker echoes of another appender instance in the same
+  JVM. The `ThreadLocal` remains only for reentry on application threads
+  - the one case a thread name cannot tell. A dedicated unit test pins
+  the exact-scheme match, the blank-id exclusion, the worker names and
+  the thread locality of the mark; the appender-level and dispatcher
+  tests keep exercising the guard through `doAppend` and the workers. The implementation is
   chosen in exactly one place, `SelfLoggingGuardFactory` (an internal
   seam on the appender like `ProducerFactory`, called by the transport
   once the producers exist); that is where the one named second

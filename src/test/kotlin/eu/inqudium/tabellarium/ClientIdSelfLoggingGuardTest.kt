@@ -139,36 +139,36 @@ class ClientIdSelfLoggingGuardTest {
         }
 
         @Test
-        fun `should keep a thread marked for life`() {
-            // What is to be tested? Whether markCurrentThreadForLife sets
-            //   the mark without a matching exit - the contract the
-            //   dispatcher workers rely on, which mark themselves once and
-            //   never log legitimately through the appender.
+        fun `should drop events from its own worker threads`() {
+            // What is to be tested? Whether the guard recognizes the
+            //   library's own worker threads by their fixed names - the
+            //   send dispatcher of every topic class and the fallback
+            //   dispatcher - without any mark on the worker. The Kafka
+            //   client logs synchronously on the send caller (the worker)
+            //   in its failure path, and a fallback appender may log from
+            //   doAppend on the fallback worker.
             // How will the test case be deemed successful and why? Successful
-            //   if, on a thread that marked itself, shouldDrop stays true
-            //   across repeated calls.
-            // Why is it important to test this test case? The Kafka client
-            //   logs synchronously on the send caller - the worker - in its
-            //   failure path; a mark that expired after one call would let
-            //   the second such event back into the queue during an outage.
+            //   if events named after every send worker and the fallback
+            //   worker are dropped, while a similar but foreign name is not.
+            // Why is it important to test this test case? Without the
+            //   worker names in the set, an outage with org.apache.kafka at
+            //   DEBUG would feed the client's own send failures back into
+            //   the queue from the worker - the loop that used to need a
+            //   ThreadLocal mark on every worker.
 
             // Given
             val guard = guard(clientId)
-            val results = AtomicReference<List<Boolean>>()
-            val done = CountDownLatch(1)
 
-            // When: a worker marks itself and then "logs" twice
-            Thread {
-                guard.markCurrentThreadForLife()
-                results.set(listOf(guard.shouldDrop(eventFrom("worker")), guard.shouldDrop(eventFrom("worker"))))
-                done.countDown()
-            }.start()
-
-            // Then
-            assertThat(done.await(2, TimeUnit.SECONDS)).isTrue()
-            assertThat(results.get()).containsExactly(true, true)
-            // ... and the test thread is unaffected
-            assertThat(guard.shouldDrop(eventFrom("test"))).isFalse()
+            // When / Then: every worker name is dropped ...
+            TopicClass.entries.forEach { topicClass ->
+                assertThat(guard.shouldDrop(eventFrom(SendDispatcher.threadNameFor(topicClass))))
+                    .describedAs("send worker of %s", topicClass)
+                    .isTrue()
+            }
+            assertThat(guard.shouldDrop(eventFrom(FallbackDispatcher.THREAD_NAME))).isTrue()
+            // ... a look-alike is not
+            assertThat(guard.shouldDrop(eventFrom("kafka-appender-send-dispatcher-unknown"))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom("kafka-appender-fallback-dispatcher-2"))).isFalse()
         }
     }
 }

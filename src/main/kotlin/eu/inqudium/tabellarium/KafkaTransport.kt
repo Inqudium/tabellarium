@@ -72,7 +72,7 @@ internal class KafkaTransport private constructor(
      * The feedback-loop guard for this transport's producers and
      * workers; the appender consults it first thing on the hot path.
      * Built here because its client ids exist only once the producers
-     * do, and the workers that carry its mark are created right after.
+     * do.
      */
     val selfLoggingGuard: SelfLoggingGuard,
     private val messageSender: ResilientMessageSender,
@@ -142,9 +142,7 @@ internal class KafkaTransport private constructor(
          * [producerFactory] and [circuitBreakerRegistry] are
          * collaborators with state of their own; [warn] is the
          * appender's hook. The [SelfLoggingGuard] is created here by
-         * [selfLoggingGuardFactory] from the registry's client ids; every
-         * worker created here marks itself with it for its whole
-         * lifetime.
+         * [selfLoggingGuardFactory] from the registry's client ids.
          *
          * @param warn Sink for asynchronous worker-death reports; the
          *             appender routes it to its status manager.
@@ -169,7 +167,7 @@ internal class KafkaTransport private constructor(
                     producerFactory = producerFactory,
                 )
             // The guard needs the producers' client ids, so it comes right
-            // after the registry and before the workers that carry its mark.
+            // after the registry.
             val selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
             // From here on real resources exist; the catch below implements
             // the rollback contract from the class KDoc.
@@ -183,7 +181,6 @@ internal class KafkaTransport private constructor(
                     fallbackAppender?.let {
                         FallbackDispatcher(
                             it,
-                            reentryGuard = selfLoggingGuard,
                             onWorkerDeath = { t ->
                                 warn(
                                     "Fallback dispatcher worker died from ${t.javaClass.name}; " +
@@ -225,7 +222,6 @@ internal class KafkaTransport private constructor(
                                 )
                             },
                             fallbackDispatcher = fallbackDispatcher,
-                            reentryGuard = selfLoggingGuard,
                             queueCapacity = settings.sendQueueCapacity,
                             onWorkerDeath = { t ->
                                 warn(

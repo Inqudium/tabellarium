@@ -17,9 +17,10 @@ import ch.qos.logback.classic.spi.ILoggingEvent
  *   the calling thread; an event logged from inside that bracket, on
  *   the same thread, is the appender's own echo. The pair is always
  *   used in a `try`/`finally`.
- * - [markCurrentThreadForLife] is what the appender's own workers call
- *   once at start: nothing a worker logs is ever legitimate output, so
- *   the mark is never cleared.
+ *
+ * The appender's own worker threads need no marking: they have fixed
+ * names, and an implementation recognizes their echoes the same way it
+ * recognizes the producers' - by the event's thread name.
  *
  * Rationale: the interface exists for one named second implementation,
  * not for mockability - the process-wide client-id registry that the
@@ -42,24 +43,17 @@ internal interface SelfLoggingGuard {
 
     /** Clears the mark set by [enter]. */
     fun exit()
-
-    /**
-     * Marks the current thread for its whole lifetime: for the
-     * appender's own workers, which never legitimately log through the
-     * appender, so everything raised on them is a loop.
-     */
-    fun markCurrentThreadForLife()
 }
 
 /**
  * The single place a [SelfLoggingGuard] implementation is chosen.
  * [KafkaTransport.open] calls [create] once per started appender, right
  * after the producer registry exists, with the effective client ids of
- * that appender's producers; every worker and the hot path then use the
- * returned guard. The appender holds the factory as an internal seam
- * (like [ProducerFactory]): tests substitute a guard with recorded
- * decisions, and a future process-wide implementation is plugged in
- * here without touching any caller.
+ * that appender's producers; the hot path then uses the returned guard.
+ * The appender holds the factory as an internal seam (like
+ * [ProducerFactory]): tests substitute a guard with recorded decisions,
+ * and a future process-wide implementation is plugged in here without
+ * touching any caller.
  */
 internal fun interface SelfLoggingGuardFactory {
     /**

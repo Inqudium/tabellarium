@@ -885,13 +885,12 @@ class KafkaAppenderTest {
             // What is to be tested? Whether the guard implementation is
             //   really replaceable through the factory seam: the transport
             //   must call the configured factory with the producers'
-            //   effective client ids, the hot path must ask the returned
-            //   guard, and the workers must mark themselves through it.
+            //   effective client ids and the hot path must ask the
+            //   returned guard.
             // How will the test case be deemed successful and why? Successful
             //   if the factory received the derived client id of the active
-            //   class, an event the substitute guard rejects is neither
-            //   encoded nor sent while an ordinary event is, and the
-            //   for-life mark was requested at least once (the send worker).
+            //   class and an event the substitute guard rejects is neither
+            //   encoded nor sent while an ordinary event is.
             // Why is it important to test this test case? The factory exists
             //   for a future process-wide guard (README, cross-instance
             //   guards); if any caller bypassed it and instantiated the
@@ -899,9 +898,8 @@ class KafkaAppenderTest {
             //   only part of the pipeline.
 
             // Given: a factory recording its input and returning a guard
-            //   that rejects "echo:" messages and counts for-life marks
+            //   that rejects "echo:" messages
             val receivedClientIds = AtomicReference<Set<String>>()
-            val lifeMarks = AtomicInteger(0)
             val substituteFactory =
                 SelfLoggingGuardFactory { clientIds ->
                     receivedClientIds.set(clientIds)
@@ -911,10 +909,6 @@ class KafkaAppenderTest {
                         override fun enter() = Unit
 
                         override fun exit() = Unit
-
-                        override fun markCurrentThreadForLife() {
-                            lifeMarks.incrementAndGet()
-                        }
                     }
                 }
             val encoder = RecordingEncoder()
@@ -933,12 +927,10 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "ordinary event"))
             appender.stop()
 
-            // Then: the factory saw the derived client id, the substitute
-            //   decided, and the worker marked itself through it
+            // Then: the factory saw the derived client id and the substitute decided
             assertThat(receivedClientIds.get()).containsExactly("tabellarium-checkout-service-technical")
             assertThat(encoder.encodedEvents.map { it.formattedMessage }).containsExactly("ordinary event")
             assertThat(factory.createdProducers[0].history()).hasSize(1)
-            assertThat(lifeMarks.get()).isGreaterThanOrEqualTo(1)
         }
 
         @Test
@@ -1652,8 +1644,8 @@ class KafkaAppenderTest {
             // Then: only the application's event was sent; the reentrant
             //   Kafka-internal event was dropped entirely - no recursion,
             //   no second send, nothing in the fallback. (The reentrant
-            //   doAppend now happens on the send worker, which carries
-            //   the reentry guard for its entire lifetime.)
+            //   doAppend now happens on the send worker, whose fixed
+            //   thread name the guard recognizes.)
             appender.stop()
             assertThat(mock.history()).hasSize(1)
             assertThat(fallback.events).isEmpty()
