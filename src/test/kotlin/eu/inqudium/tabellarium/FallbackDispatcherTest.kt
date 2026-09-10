@@ -442,20 +442,20 @@ class FallbackDispatcherTest {
     inner class `Reentry guard` {
         @Test
         fun `should mark the worker thread with the reentry guard`() {
-            // What is to be tested? Whether the fallback worker carries the
-            //   appender's reentry-guard ThreadLocal, like the send worker
+            // What is to be tested? Whether the fallback worker marks itself
+            //   with the appender's SelfLoggingGuard, like the send worker
             //   does, so a fallback appender that logs through SLF4J from
             //   doAppend cannot feed those events back into the pipeline.
             // How will the test case be deemed successful and why? Successful
-            //   if the guard reads true inside the fallback appender's
-            //   append, i.e. on the worker thread.
+            //   if the guard would drop an event logged from inside the
+            //   fallback appender's append, i.e. on the worker thread.
             // Why is it important to test this test case? Without the mark,
             //   an SLF4J-logging fallback appender combined with a Kafka
             //   outage produces a queue-saturating loop: fallback log ->
             //   root logger -> appender -> Kafka (down) -> fallback -> log.
 
             // Given
-            val guard = ThreadLocal.withInitial { false }
+            val guard = SelfLoggingGuard(emptySet())
             val guardSeen = AtomicReference<Boolean?>()
             val probingAppender =
                 object : AppenderBase<ILoggingEvent>() {
@@ -465,7 +465,7 @@ class FallbackDispatcherTest {
                     }
 
                     override fun append(event: ILoggingEvent) {
-                        guardSeen.set(guard.get())
+                        guardSeen.set(guard.shouldDrop(event))
                     }
                 }
             val dispatcher = FallbackDispatcher(probingAppender, reentryGuard = guard)

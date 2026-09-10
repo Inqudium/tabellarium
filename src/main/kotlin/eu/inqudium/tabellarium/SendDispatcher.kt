@@ -87,7 +87,7 @@ internal class SendDispatcher(
     private val topicClass: TopicClass,
     private val sendAction: (PendingSend) -> Unit,
     private val fallbackDispatcher: FallbackDispatcher?,
-    reentryGuard: ThreadLocal<Boolean>? = null,
+    reentryGuard: SelfLoggingGuard? = null,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     drainTimeoutMs: Long = DEFAULT_DRAIN_TIMEOUT_MS,
     onWorkerDeath: (Throwable) -> Unit = {},

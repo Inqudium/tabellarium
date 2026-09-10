@@ -73,7 +73,7 @@ internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
     shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    reentryGuard: ThreadLocal<Boolean>? = null,
+    reentryGuard: SelfLoggingGuard? = null,
     onWorkerDeath: (Throwable) -> Unit = {},
 ) : BoundedWorkerDispatcher<ILoggingEvent>(
         threadName = "kafka-appender-fallback-dispatcher",

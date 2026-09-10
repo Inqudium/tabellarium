@@ -3,7 +3,6 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.Appender
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
-import org.apache.kafka.clients.producer.KafkaProducer
 
 /**
  * The transport part of a [KafkaAppender]'s configuration: what the
@@ -30,13 +29,13 @@ internal data class TransportSettings(
  * functions that do not change live in the [RecordPlan]; the appender
  * composes the two.
  *
- * The appender talks to the transport in three verbs: [dispatch] a
- * materialized [Record] into its class's queue, [divertToFallback] an event the
- * hot path could not turn into a record to the fallback, and ask
- * [isOwnProducerThread] whether an event is the producers' own logging.
- * The components behind them are private; the two exposed queries
- * ([producerRegistry], [circuitBreakerRegistry]) exist for the start-up
- * diagnostics and the metrics binding.
+ * The appender talks to the transport in two verbs: [dispatch] a
+ * materialized [Record] into its class's queue and [divertToFallback] an
+ * event the hot path could not turn into a record to the fallback - after
+ * asking the [selfLoggingGuard] whether the event is the appender's own
+ * echo. The components behind them are private; the exposed queries
+ * ([producerRegistry], [circuitBreakerRegistry], [selfLoggingGuard]) exist
+ * for the start-up diagnostics, the metrics binding and the hot path.
  *
  * ## Why one owner
  *
@@ -69,6 +68,13 @@ internal data class TransportSettings(
  */
 internal class KafkaTransport private constructor(
     val producerRegistry: ProducerRegistry,
+    /**
+     * The feedback-loop guard for this transport's producers and
+     * workers; the appender consults it first thing on the hot path.
+     * Built here because its client ids exist only once the producers
+     * do, and the workers that carry its mark are created right after.
+     */
+    val selfLoggingGuard: SelfLoggingGuard,
     private val messageSender: ResilientMessageSender,
     private val sendDispatchers: Map<TopicClass, SendDispatcher>,
     private val fallbackDispatcher: FallbackDispatcher?,
@@ -76,12 +82,6 @@ internal class KafkaTransport private constructor(
     /** The breaker registry the sender draws from, for the metrics binding. */
     val circuitBreakerRegistry: CircuitBreakerRegistry
         get() = messageSender.circuitBreakerRegistry
-
-    /**
-     * The effective `client.id` values of the producers, snapshot once
-     * for [isOwnProducerThread].
-     */
-    private val producerClientIds: Set<String> = producerRegistry.clientIds
 
     /**
      * Hands a materialized record to its class's send queue in O(1).
@@ -108,20 +108,6 @@ internal class KafkaTransport private constructor(
     fun divertToFallback(event: ILoggingEvent) {
         fallbackDispatcher?.enqueue(event)
     }
-
-    /**
-     * Whether [threadName] is the network thread of one of this
-     * transport's producers. The Kafka client names that thread
-     * `"kafka-producer-network-thread | <client.id>"`; the match is
-     * anchored to the exact scheme (prefix plus full client.id), so an
-     * operator-supplied short client.id can never match unrelated
-     * application threads whose names merely contain it. Log events
-     * from these threads are the producer's own logging; the appender
-     * drops them instead of feeding the producer its own output.
-     */
-    fun isOwnProducerThread(threadName: String): Boolean =
-        threadName.startsWith(PRODUCER_NETWORK_THREAD_PREFIX) &&
-            threadName.removePrefix(PRODUCER_NETWORK_THREAD_PREFIX) in producerClientIds
 
     /** Fans a metrics implementation out to every component that reports. */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
@@ -150,31 +136,15 @@ internal class KafkaTransport private constructor(
             SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS + 1000
 
         /**
-         * Kafka's naming scheme for the producer's network thread: the
-         * public constant [KafkaProducer.NETWORK_THREAD_PREFIX], a
-         * separator, then the client.id verbatim.
-         *
-         * Compatibility: the prefix comes from the client's public API,
-         * so a rename fails compilation instead of silently disabling
-         * the guard; the separator is a literal in the KafkaProducer
-         * constructor with no constant to reference, so
-         * `KafkaProducerThreadNamingContractTest` checks the whole
-         * scheme against a real producer of the built client version -
-         * a client upgrade that changes it turns the build red.
-         */
-        internal const val PRODUCER_NETWORK_THREAD_PREFIX: String = KafkaProducer.NETWORK_THREAD_PREFIX + " | "
-
-        /**
          * Opens the transport for [activeTopicClasses]. See the class
          * KDoc for the transaction contract. [settings] is the value the
          * producers and queues derive from; [fallbackAppender],
          * [producerFactory] and [circuitBreakerRegistry] are
-         * collaborators with state of their own; [reentryGuard] and
-         * [warn] are the appender's hooks.
+         * collaborators with state of their own; [warn] is the
+         * appender's hook. The [SelfLoggingGuard] is built here from the
+         * registry's client ids; every worker created here marks itself
+         * with it for its whole lifetime.
          *
-         * @param reentryGuard The appender's per-thread reentry guard;
-         *                     every worker created here marks itself
-         *                     with it for its whole lifetime.
          * @param warn Sink for asynchronous worker-death reports; the
          *             appender routes it to its status manager.
          */
@@ -184,7 +154,6 @@ internal class KafkaTransport private constructor(
             fallbackAppender: Appender<ILoggingEvent>?,
             producerFactory: ProducerFactory,
             circuitBreakerRegistry: CircuitBreakerRegistry,
-            reentryGuard: ThreadLocal<Boolean>,
             warn: (message: String, cause: Throwable) -> Unit,
         ): KafkaTransport {
             val registry =
@@ -197,6 +166,9 @@ internal class KafkaTransport private constructor(
                     activeTopicClasses = activeTopicClasses,
                     producerFactory = producerFactory,
                 )
+            // The guard needs the producers' client ids, so it comes right
+            // after the registry and before the workers that carry its mark.
+            val selfLoggingGuard = SelfLoggingGuard(registry.clientIds)
             // From here on real resources exist; the catch below implements
             // the rollback contract from the class KDoc.
             var fallbackDispatcher: FallbackDispatcher? = null
@@ -209,7 +181,7 @@ internal class KafkaTransport private constructor(
                     fallbackAppender?.let {
                         FallbackDispatcher(
                             it,
-                            reentryGuard = reentryGuard,
+                            reentryGuard = selfLoggingGuard,
                             onWorkerDeath = { t ->
                                 warn(
                                     "Fallback dispatcher worker died from ${t.javaClass.name}; " +
@@ -251,7 +223,7 @@ internal class KafkaTransport private constructor(
                                 )
                             },
                             fallbackDispatcher = fallbackDispatcher,
-                            reentryGuard = reentryGuard,
+                            reentryGuard = selfLoggingGuard,
                             queueCapacity = settings.sendQueueCapacity,
                             onWorkerDeath = { t ->
                                 warn(
@@ -265,6 +237,7 @@ internal class KafkaTransport private constructor(
                 }
                 return KafkaTransport(
                     producerRegistry = registry,
+                    selfLoggingGuard = selfLoggingGuard,
                     messageSender = sender,
                     sendDispatchers = sendDispatchers,
                     fallbackDispatcher = fallbackDispatcher,
