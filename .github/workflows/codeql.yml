@@ -62,9 +62,20 @@ jobs:
 
       # Main sources only: tests do not ship, and skipping them keeps the
       # extraction to the code an attacker could actually reach.
+      #
+      # TEMPORARY (added 2026-09-11): the extraction compiles with Kotlin
+      # 2.4.10 instead of the POM's 2.4.20. CodeQL hooks the Kotlin compiler
+      # and the newest bundle (2.27.0) rejects 2.4.20 with "Kotlin version
+      # 2.4.20 is too recent"; support is announced for CodeQL 2.27.1
+      # (github/codeql#22381). The sources are identical, so the analysis
+      # still covers the shipped code - only the compiler doing the
+      # extraction is one patch level older. Drop the -Dkotlin.version
+      # override once the bundle the init step logs is >= 2.27.1.
       - name: Compile (CodeQL extraction)
         if: matrix.build-mode == 'manual'
-        run: mvn --batch-mode --no-transfer-progress -DskipTests compile
+        run: >-
+          mvn --batch-mode --no-transfer-progress -DskipTests
+          -Dkotlin.version=2.4.10 compile
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
