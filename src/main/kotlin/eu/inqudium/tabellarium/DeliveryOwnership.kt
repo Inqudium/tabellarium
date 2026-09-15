@@ -74,6 +74,19 @@ internal class DeliveryOwnership {
      */
     fun tryDivertAfterSend(): Boolean = state.compareAndSet(PENDING, DIVERTED) || state.compareAndSet(HANDED_OFF, DIVERTED)
 
+    /**
+     * Returns to PENDING. **Benchmark instrument only**: production
+     * allocates one ownership per [SendDispatcher.PendingSend] and
+     * never reuses it, and reusing one whose event is still in the
+     * client would let two events share one outcome. `SenderPathBenchmark`
+     * calls this on a pre-built ring so the measured send path carries
+     * no per-event allocation that production puts on the caller path.
+     */
+    @JvmName("reset")
+    internal fun reset() {
+        state.set(PENDING)
+    }
+
     private companion object {
         const val PENDING = 0
         const val HANDED_OFF = 1
