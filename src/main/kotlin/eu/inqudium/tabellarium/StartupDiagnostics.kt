@@ -78,8 +78,9 @@ internal object StartupDiagnostics {
         messages +=
             "Fallback appender: " +
             (
-                fallbackAppender?.let { "configured (${it.javaClass.simpleName})" }
-                    ?: "none - events will be silently dropped on send failure"
+                fallbackAppender?.let {
+                    "configured (${it.javaClass.simpleName}" + (if (it.isStarted) ")" else ", NOT STARTED)")
+                } ?: "none - events will be silently dropped on send failure"
             )
         val baseProperties = parseKafkaProducerProperties(kafkaProducerProperties)
         registry.activeTopicClasses.forEach { topicClass ->

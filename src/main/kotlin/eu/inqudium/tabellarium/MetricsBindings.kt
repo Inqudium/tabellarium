@@ -245,9 +245,13 @@ internal class MetricsBindings(
                 bindBreakerMeters(registry, commonTags, appenderTag, breaker)
             }
         } catch (e: Exception) {
-            status.addInfo(
+            // WARN like the teardown failures: an operator filtering the
+            // status output for warnings must learn that the breaker
+            // meters are missing.
+            status.addWarn(
                 "Failed to bind Resilience4j metrics to MeterRegistry " +
                     "(circuit-breaker state metrics will be unavailable): ${e.message}",
+                e,
             )
         }
     }
@@ -379,9 +383,10 @@ internal class MetricsBindings(
         try {
             doBindKafkaProducerMetrics(registry, commonTags, appenderTag, producerRegistry)
         } catch (e: Exception) {
-            status.addInfo(
+            status.addWarn(
                 "Failed to bind Kafka producer metrics to MeterRegistry " +
                     "(producer-internal metrics will be unavailable): ${e.message}",
+                e,
             )
         }
     }

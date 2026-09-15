@@ -376,6 +376,73 @@ class SendDispatcherTest {
         }
 
         @Test
+        fun `should interrupt a worker parked in an interruptible send once the drain budget is used`() {
+            // What is to be tested? Phase 2 of the two-phase close: after the
+            //   drain budget a worker still parked in an INTERRUPTIBLE send
+            //   (the real producer.send waits in max.block.ms this way) is
+            //   interrupted, unparks with the interrupt, accounts for the
+            //   item it carried exactly once and exits.
+            // How will the test case be deemed successful and why? Successful
+            //   if the send action observed the InterruptedException, the
+            //   worker thread is dead after close() returned, and the event
+            //   reached the fallback exactly once with reason send.error
+            //   (the worker's own DELIVERY_FAILED accounting wins the
+            //   in-flight claim because it runs inside the interrupt grace).
+            //   Without the interrupt the send action never wakes, so the
+            //   interrupt flag stays unobserved - a bounded red, not a hang,
+            //   because close() itself is bounded by budget plus grace.
+            // Why is it important to test this test case? Every other
+            //   forced-close test pins the worker uninterruptibly, so
+            //   deleting worker.interrupt() or the grace join kept the suite
+            //   green while every stop() would take the full grace longer
+            //   and a send parked in max.block.ms would never be unparked
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 22).
+
+            // Given: a send action parked in an interruptible wait that
+            //   records whether the interrupt reached it
+            val entered = CountDownLatch(1)
+            val neverReleased = CountDownLatch(1)
+            val interruptObserved = AtomicBoolean(false)
+            val workerThread = AtomicReference<Thread>()
+            val recorder = RecordingAppender(testContext)
+            val metrics = RecordingMetrics()
+            val fallbackDispatcher = newFallback(recorder)
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = {
+                        workerThread.set(Thread.currentThread())
+                        entered.countDown()
+                        try {
+                            neverReleased.await()
+                        } catch (e: InterruptedException) {
+                            interruptObserved.set(true)
+                            throw e
+                        }
+                    },
+                    fallbackDispatcher = fallbackDispatcher,
+                    drainTimeoutMs = 100,
+                )
+            dispatcher.setMetrics(metrics)
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("parked"))
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+
+            // When: the drain budget passes with the worker still parked
+            dispatcher.close()
+
+            // Then: the interrupt reached the parked send and ended the worker
+            assertThat(interruptObserved.get()).isTrue()
+            pollUntil { !workerThread.get().isAlive }
+
+            // And: the parked event was diverted exactly once, as a send error
+            fallbackDispatcher.close()
+            assertThat(recorder.events.map { it.formattedMessage }).containsExactly("parked")
+            assertThat(metrics.fallbackReasons)
+                .containsExactly(KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+        }
+
+        @Test
         fun `should divert events dispatched after close to the fallback`() {
             // What is to be tested? The post-close contract: a dispatch after
             //   close() is rejected on the caller and diverted to the fallback
@@ -513,6 +580,65 @@ class SendDispatcherTest {
                 assertThat(metrics.fallbackReasons)
                     .hasSize(3)
                     .containsOnly(KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+            } finally {
+                dispatcher.close()
+            }
+        }
+    }
+
+    @Nested
+    inner class `Failed delivery` {
+        @Test
+        fun `should divert an event whose send action throws with reason send-error and keep the worker alive`() {
+            // What is to be tested? The Exception path of the skeleton as seen
+            //   through the send dispatcher: a send action that throws (the
+            //   sender failing before its own try - a registry lookup for an
+            //   inactive class, a broken enrichment) rejects the item as
+            //   DELIVERY_FAILED, which this dispatcher maps to reason
+            //   send.error, and the worker goes on delivering.
+            // How will the test case be deemed successful and why? Successful
+            //   if the failing event reaches the fallback exactly once tagged
+            //   send.error and the next event is delivered by the same
+            //   worker. A mapping of DELIVERY_FAILED to shutdown or a dead
+            //   worker would fail one of the two assertions.
+            // Why is it important to test this test case? Only the Error
+            //   (worker death) path of the send dispatcher was pinned; the
+            //   thrown-Exception handling was covered through the fallback
+            //   dispatcher alone, and the send dispatcher's reason mapping
+            //   for it through nothing
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 23).
+
+            // Given: a send action that throws once, then delivers
+            val failOnce = AtomicBoolean(true)
+            val delivered = AtomicInteger(0)
+            val recorder = RecordingAppender(testContext)
+            val metrics = RecordingMetrics()
+            val fallbackDispatcher = newFallback(recorder)
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = {
+                        if (failOnce.compareAndSet(true, false)) {
+                            throw RuntimeException("simulated send failure")
+                        }
+                        delivered.incrementAndGet()
+                    },
+                    fallbackDispatcher = fallbackDispatcher,
+                )
+            dispatcher.setMetrics(metrics)
+            try {
+                // When: the first event fails, the second follows
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("failing"))
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("later"))
+
+                // Then: the failing event was diverted as a send error, the
+                //   later one was delivered by the still-living worker
+                pollUntil { delivered.get() == 1 }
+                fallbackDispatcher.close()
+                assertThat(recorder.events.map { it.formattedMessage }).containsExactly("failing")
+                assertThat(metrics.fallbackReasons)
+                    .containsExactly(KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
             } finally {
                 dispatcher.close()
             }

@@ -900,8 +900,8 @@ appender instance.
 | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost by the fallback dispatcher (queue full, `doAppend` threw, worker died, shutdown remainder) |
-| `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue                |
-| `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue                |
+| `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue (only with a fallback appender) |
+| `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue (only with a fallback appender) |
 | `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     | Current depth of the class's send dispatcher queue            |
 | `kafka.appender.send.queue.capacity`     | Gauge   | `topic.class`                     | Maximum depth of the class's send dispatcher queue            |
 

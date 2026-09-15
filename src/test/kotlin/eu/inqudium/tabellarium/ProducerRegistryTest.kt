@@ -9,6 +9,9 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class ProducerRegistryTest {
     private val baseProperties =
@@ -30,6 +33,55 @@ class ProducerRegistryTest {
             ByteArraySerializer(),
         ) {
         override fun close(timeout: Duration): Unit = throw RuntimeException("simulated close failure")
+    }
+
+    /** Test producer that records the timeout its [close] was called with. */
+    private class TimeoutRecordingProducer :
+        MockProducer<ByteArray, ByteArray>(
+            true,
+            FixedZeroPartitioner(),
+            ByteArraySerializer(),
+            ByteArraySerializer(),
+        ) {
+        val closedWith = AtomicReference<Duration>()
+
+        override fun close(timeout: Duration) {
+            closedWith.set(timeout)
+            super.close(timeout)
+        }
+    }
+
+    /**
+     * Test producer whose [close] parks uninterruptibly until [unblock]
+     * - a client that never finishes flushing, the case the registry's
+     * overall close budget exists for.
+     */
+    private class ParkedCloseProducer :
+        MockProducer<ByteArray, ByteArray>(
+            true,
+            FixedZeroPartitioner(),
+            ByteArraySerializer(),
+            ByteArraySerializer(),
+        ) {
+        private val release = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+
+        override fun close(timeout: Duration) {
+            entered.countDown()
+            var wasInterrupted = false
+            while (release.count > 0) {
+                try {
+                    release.await()
+                } catch (_: InterruptedException) {
+                    wasInterrupted = true
+                }
+            }
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt()
+            }
+        }
+
+        fun unblock() = release.countDown()
     }
 
     @Nested
@@ -82,6 +134,51 @@ class ProducerRegistryTest {
             assertThat(factory.createdProducers).hasSize(2)
             assertThat(registry.activeTopicClasses)
                 .containsExactlyInAnyOrder(TopicClass.AUDIT, TopicClass.TECHNICAL)
+        }
+
+        @Test
+        fun `should exclude a blank client id from clientIds and expose the effective properties per class`() {
+            // What is to be tested? The two registry-level views the transport
+            //   and the diagnostics read: clientIds - the input of the
+            //   self-logging guard - must leave out a blank operator client.id
+            //   (a blank id would match every thread name), and
+            //   effectiveProperties must hold, per class, exactly the map the
+            //   factory was given.
+            // How will the test case be deemed successful and why? Successful
+            //   if a blank `client.id` in the base properties yields an empty
+            //   clientIds set although both producers were created, and each
+            //   class's effectiveProperties equals the properties recorded by
+            //   the factory for that class. Neither accessor was asserted in
+            //   this file before.
+            // Why is it important to test this test case? A blank id reaching
+            //   the guard would make it drop every event from every thread;
+            //   effectiveProperties feeds the <debug> diagnostics and the
+            //   cleartext-transport warning, which read it as the truth
+            //   about the producers (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 26).
+
+            // Given: an operator client.id that is blank
+            val factory = RecordingProducerFactory()
+
+            // When
+            val registry =
+                ProducerRegistry.create(
+                    propertiesBuilder = newBuilder(baseProperties + (ProducerConfig.CLIENT_ID_CONFIG to "   ")),
+                    activeTopicClasses = setOf(TopicClass.AUDIT, TopicClass.TECHNICAL),
+                    producerFactory = factory,
+                )
+
+            // Then: the blank id is not a guard input; the effective map is
+            //   what each producer was built from
+            assertThat(factory.createdProducers).hasSize(2)
+            assertThat(registry.clientIds).isEmpty()
+            assertThat(registry.effectiveProperties.keys).containsExactlyInAnyOrder(TopicClass.AUDIT, TopicClass.TECHNICAL)
+            assertThat(registry.effectiveProperties.getValue(TopicClass.AUDIT))
+                .isEqualTo(factory.createdWithProperties[0])
+                .containsEntry(ProducerConfig.CLIENT_ID_CONFIG, "   ")
+            assertThat(registry.effectiveProperties.getValue(TopicClass.TECHNICAL))
+                .isEqualTo(factory.createdWithProperties[1])
+            registry.close()
         }
 
         @Test
@@ -225,8 +322,10 @@ class ProducerRegistryTest {
             //   to avoid leaking Kafka network threads.
             // How will the test case be deemed successful and why? Successful
             //   if the partially-created MockProducers report as closed after
-            //   the exception propagates, AND the original exception reaches
-            //   the caller unchanged. This confirms the rollback path.
+            //   the exception propagates, AND the factory's exception reaches
+            //   the caller as the cause of a ProducerConstructionException
+            //   naming the class that failed - the type the appender withholds
+            //   by default. This confirms the rollback path and the wrapping.
             // Why is it important to test this test case? Without rollback, a
             //   failed registry init would leak Kafka network threads,
             //   accumulating with every retry attempt at application startup.
@@ -243,7 +342,7 @@ class ProducerRegistryTest {
                         .also { createdMocks += it }
                 }
 
-            // When / Then: exception propagates unchanged
+            // When / Then: the factory failure propagates, wrapped and attributed
             assertThatThrownBy {
                 ProducerRegistry.create(
                     propertiesBuilder = newBuilder(),
@@ -255,7 +354,11 @@ class ProducerRegistryTest {
                         ),
                     producerFactory = failingFactory,
                 )
-            }.isInstanceOf(RuntimeException::class.java)
+            }.isInstanceOf(ProducerConstructionException::class.java)
+                .hasMessageContaining("TECHNICAL")
+                .hasMessageContaining("simulated factory failure")
+                .cause()
+                .isInstanceOf(RuntimeException::class.java)
                 .hasMessage("simulated factory failure")
 
             // And: the two already-created producers were closed by rollback
@@ -294,6 +397,107 @@ class ProducerRegistryTest {
             assertThat(factory.createdProducers).hasSize(4)
             assertThat(factory.createdProducers).allSatisfy { producer ->
                 assertThat(producer.closed()).isTrue()
+            }
+        }
+
+        @Test
+        fun `should pass the configured close timeout to every producer close`() {
+            // What is to be tested? Whether the registry's closeTimeout - the
+            //   value the "10 s fits a 30 s termination grace" argument rests
+            //   on - actually reaches producer.close(Duration) for each
+            //   producer, rather than a bare close() or some other budget.
+            // How will the test case be deemed successful and why? Successful
+            //   if every producer double recorded exactly the configured
+            //   1234 ms as its close timeout. MockProducer.close(Duration)
+            //   ignores its argument, so without the recording double a
+            //   close() (0 ms) or close(Duration.ZERO) mutation stayed green.
+            // Why is it important to test this test case? The close timeout
+            //   is what gives the Kafka client's retry loop time to flush
+            //   buffered records on shutdown; a close that silently passed
+            //   zero would abort every in-flight record on each pod stop
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 26).
+
+            // Given: recording producers and an unmistakable timeout
+            val created = mutableListOf<TimeoutRecordingProducer>()
+            val registry =
+                ProducerRegistry.create(
+                    propertiesBuilder = newBuilder(),
+                    activeTopicClasses = setOf(TopicClass.AUDIT, TopicClass.TECHNICAL),
+                    producerFactory = { _ -> TimeoutRecordingProducer().also { created += it } },
+                    closeTimeout = Duration.ofMillis(1234),
+                )
+
+            // When
+            registry.close()
+
+            // Then: each producer was closed with exactly that timeout
+            assertThat(created).hasSize(2)
+            assertThat(created).allSatisfy { producer ->
+                assertThat(producer.closedWith.get()).isEqualTo(Duration.ofMillis(1234))
+            }
+        }
+
+        @Test
+        fun `should return from close within the overall budget when a producer close never finishes`() {
+            // What is to be tested? The registry's overall close budget: with
+            //   one producer parked in close() for good, registry.close() must
+            //   still return once closeTimeout plus the join margin have
+            //   passed, instead of waiting for the parked closer thread.
+            // How will the test case be deemed successful and why? Successful
+            //   if a close() run on a helper thread completes (observed via a
+            //   latch, generously bounded) while the parked producer is
+            //   provably inside close and is never released before the
+            //   assertion, and the healthy producer was still closed. The
+            //   elapsed bound is deliberately wide - 200 ms budget, 500 ms
+            //   margin, seconds of slack - so it pins "bounded" rather than
+            //   an exact figure; the exact deadline arithmetic lives in
+            //   ParallelCloseTest.
+            // Why is it important to test this test case? A registry close
+            //   that joined a hung producer without a budget would hold the
+            //   appender's stop() and with it the pod's termination grace
+            //   hostage to one flaky broker connection; nothing in this file
+            //   proved the budget reaches the join
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 26).
+
+            // Given: one producer that never finishes closing, one healthy
+            val parked = ParkedCloseProducer()
+            var parkedHandedOut = false
+            val healthy = mutableListOf<MockProducer<ByteArray, ByteArray>>()
+            val registry =
+                ProducerRegistry.create(
+                    propertiesBuilder = newBuilder(),
+                    activeTopicClasses = setOf(TopicClass.AUDIT, TopicClass.TECHNICAL),
+                    producerFactory = { _ ->
+                        if (!parkedHandedOut) {
+                            parkedHandedOut = true
+                            parked
+                        } else {
+                            MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                                .also { healthy += it }
+                        }
+                    },
+                    closeTimeout = Duration.ofMillis(200),
+                )
+            val closeReturned = CountDownLatch(1)
+            val closer = Thread({ registry.close().also { closeReturned.countDown() } }, "test-registry-closer")
+            try {
+                // When: close runs while the parked producer stays parked
+                val startNanos = System.nanoTime()
+                closer.start()
+                assertThat(parked.entered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // Then: close returned within the budget plus a wide margin
+                assertThat(closeReturned.await(5, TimeUnit.SECONDS)).isTrue()
+                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+                assertThat(elapsedMs).isLessThan(200 + 500 + 3000)
+                assertThat(healthy).singleElement().satisfies({ producer ->
+                    assertThat(producer.closed()).isTrue()
+                })
+            } finally {
+                parked.unblock()
+                closer.join(2000)
             }
         }
 

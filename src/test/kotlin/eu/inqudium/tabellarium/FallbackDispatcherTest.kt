@@ -74,6 +74,37 @@ class FallbackDispatcherTest {
         fun unblock() = release.countDown()
     }
 
+    /**
+     * Appender parked in an interruptible wait that records whether the
+     * worker interrupt reached it and re-sets the flag the way a
+     * well-behaved appender would (AppenderBase swallows the exception
+     * itself, so the flag is the only thing the worker can see).
+     */
+    private inner class InterruptObservingAppender : AppenderBase<ILoggingEvent>() {
+        private val neverReleased = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        val interruptObserved = AtomicBoolean(false)
+        val workerThread = AtomicReference<Thread>()
+
+        init {
+            context = testContext
+            start()
+        }
+
+        override fun append(event: ILoggingEvent) {
+            workerThread.set(Thread.currentThread())
+            entered.countDown()
+            try {
+                neverReleased.await()
+            } catch (_: InterruptedException) {
+                interruptObserved.set(true)
+                Thread.currentThread().interrupt()
+            }
+        }
+
+        fun unblock() = neverReleased.countDown()
+    }
+
     // -- Tests ----------------------------------------------------------
 
     @Nested
@@ -357,6 +388,52 @@ class FallbackDispatcherTest {
         }
 
         @Test
+        fun `should interrupt a worker parked in an interruptible append once the shutdown budget is used`() {
+            // What is to be tested? Phase 2 of the two-phase close for the
+            //   fallback dispatcher: a worker still parked in an
+            //   INTERRUPTIBLE doAppend after the drain budget is
+            //   interrupted, the appender observes it, and the worker exits
+            //   once the delivery returns.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender recorded the InterruptedException and the
+            //   worker thread is dead after close() returned, with nothing
+            //   counted as dropped: the delivery returned (the appender
+            //   handled the interrupt itself), so the event is neither lost
+            //   nor double-accounted. Without the interrupt the appender
+            //   never wakes, so the flag stays false - a bounded red, because
+            //   close() is bounded by budget plus grace.
+            // Why is it important to test this test case? The other
+            //   forced-close tests pin the worker uninterruptibly and every
+            //   interruptible blocker is released before close(), so the
+            //   interrupt that makes an interruptible fallback appender
+            //   return at shutdown was pinned nowhere
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 22).
+
+            // Given: an appender parked interruptibly, short shutdown budget
+            val appender = InterruptObservingAppender()
+            val dispatcher =
+                FallbackDispatcher(
+                    fallbackAppender = appender,
+                    shutdownTimeoutMs = 100,
+                )
+            try {
+                dispatcher.enqueue(newTestLoggingEvent(message = "parked"))
+                assertThat(appender.entered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // When: the drain budget passes with the worker still parked
+                dispatcher.close()
+
+                // Then: the interrupt reached the parked append and ended the worker
+                assertThat(appender.interruptObserved.get()).isTrue()
+                pollUntil { !appender.workerThread.get().isAlive }
+                assertThat(dispatcher.droppedEventCount).isEqualTo(0L)
+            } finally {
+                appender.unblock()
+            }
+        }
+
+        @Test
         fun `should count an event as dropped when the fallback appender throws`() {
             // What is to be tested? Whether an event whose doAppend throws
             //   is accounted as dropped instead of silently vanishing -
@@ -504,13 +581,18 @@ class FallbackDispatcherTest {
             //   operators would tune queue sizes instead of finding the
             //   dead thread.
 
-            // Given: an appender whose doAppend dies with an Error
+            // Given: a started appender whose doAppend dies with an Error
+            //   (started, because the dispatcher refuses to deliver to a
+            //   not-started appender before doAppend is ever reached)
             val death = AtomicReference<Throwable?>()
             val dyingAppender =
                 object : AppenderBase<ILoggingEvent>() {
                     override fun doAppend(eventObject: ILoggingEvent): Unit = throw AssertionError("simulated fallback death")
 
                     override fun append(event: ILoggingEvent) = error("unreachable")
+                }.apply {
+                    context = testContext
+                    start()
                 }
             val dispatcher =
                 FallbackDispatcher(

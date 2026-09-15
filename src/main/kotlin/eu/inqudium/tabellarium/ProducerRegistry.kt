@@ -183,10 +183,15 @@ internal class ProducerRegistry private constructor(
          *
          * If [producerFactory] throws while creating any producer, all
          * already-created producers are closed (with a short rollback
-         * timeout) before the exception is rethrown. The registry is
-         * never partially initialized.
+         * timeout) before the failure is rethrown as a
+         * [ProducerConstructionException]. The registry is never
+         * partially initialized.
          *
-         * @throws IllegalArgumentException if [activeTopicClasses] is empty.
+         * @throws IllegalArgumentException if [activeTopicClasses] is
+         *         empty, or when [ProducerPropertiesBuilder.buildFor]
+         *         rejects the merged properties (a named message; see
+         *         [ProducerPropertiesBuilder]).
+         * @throws ProducerConstructionException when the factory fails.
          */
         fun create(
             propertiesBuilder: ProducerPropertiesBuilder,
@@ -211,7 +216,14 @@ internal class ProducerRegistry private constructor(
                         ?.takeIf { it.isNotBlank() }
                         ?.let { clientIds += it }
                     effectiveProperties[topicClass] = resolved.properties
-                    createdProducers[topicClass] = producerFactory.create(resolved.properties)
+                    createdProducers[topicClass] =
+                        try {
+                            producerFactory.create(resolved.properties)
+                        } catch (e: Exception) {
+                            // The one failure whose text the appender withholds by
+                            // default - see ProducerConstructionException.
+                            throw ProducerConstructionException(topicClass, e)
+                        }
                 }
             } catch (e: Exception) {
                 // Roll back: close producers that were already created.
@@ -236,6 +248,27 @@ internal class ProducerRegistry private constructor(
         }
     }
 }
+
+/**
+ * A [ProducerFactory] failure while building the producer for
+ * [topicClass] - the one start-up failure whose text the appender must
+ * not report by default. The Kafka client composes its construction
+ * errors from the credential-bearing producer configuration and that
+ * text is not under this library's control, so [KafkaAppender] reports
+ * only the cause's type unless `<debug>` is on. Every other start-up
+ * exception is the library's own validation (topic, marker and class
+ * names, identity fields, idempotence tuning), which names no
+ * credential and is reported verbatim; this type is what tells the two
+ * apart (`docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md`,
+ * finding 2).
+ */
+internal class ProducerConstructionException(
+    val topicClass: TopicClass,
+    override val cause: Exception,
+) : RuntimeException(
+        "Kafka producer for $topicClass could not be constructed (${cause.javaClass.name}): ${cause.message}",
+        cause,
+    )
 
 /**
  * Constructs a Kafka [Producer] from a property map.

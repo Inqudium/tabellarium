@@ -4,12 +4,16 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
+import ch.qos.logback.classic.util.LogbackMDCAdapter
 import ch.qos.logback.core.Appender
 import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
+import ch.qos.logback.core.status.Status
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.producer.Callback
@@ -32,6 +36,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.ToDoubleFunction
 
 /**
  * Send and fallback dispatch are asynchronous (the production path).
@@ -90,6 +95,8 @@ class KafkaAppenderTest {
         }
 
     private fun KafkaAppender.statusMessages(): List<String> = context.statusManager.copyOfStatusList.map { it.message }
+
+    private fun KafkaAppender.statusEntries(): List<Status> = context.statusManager.copyOfStatusList
 
     // -- Tests ----------------------------------------------------------
 
@@ -200,22 +207,26 @@ class KafkaAppenderTest {
         }
 
         @Test
-        fun `should refuse to start when default topic is blank`() {
+        fun `should refuse to start when default topic is blank and name it with debug off`() {
             // What is to be tested? Whether a blank <defaultTopic> in
-            //   <topicMapping> is caught during pipeline construction
-            //   (via TopicRouter validation) rather than slipping through
-            //   to runtime.
+            //   <topicMapping> is caught during pipeline construction (via
+            //   TopicRouter validation) AND reported with its message on the
+            //   documented production default, debug=false - the "named
+            //   error" README and guide promise.
             // How will the test case be deemed successful and why? Successful
-            //   if the appender stays unstarted and the status manager
-            //   contains an error message referencing the blank default topic.
-            //   This confirms that build-time exceptions from TopicRouter
-            //   are caught and surfaced rather than silently swallowed.
-            // Why is it important to test this test case? A blank default
-            //   topic would otherwise cause every event in the hot path to
-            //   fail Kafka's topic validation, after the appender had
-            //   already reported successful start - a latent misconfiguration.
+            //   if the appender stays unstarted and one status error carries
+            //   the TopicRouter text "Default topic must not be blank". The
+            //   assertion is conjunctive on purpose: the former disjunction
+            //   ("Failed to build" OR "Default topic") passed on the generic
+            //   line alone and hid that the message was withheld
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   findings 2 and 3).
+            // Why is it important to test this test case? Without the text the
+            //   operator sees only the exception type, must enable <debug>,
+            //   restart, read, fix and restart again - with every event lost
+            //   in between, because a refused appender has no active fallback.
 
-            // Given
+            // Given: the fixture default, debug = false
             val appender = newAppender(defaultTopic = "")
 
             // When
@@ -224,7 +235,115 @@ class KafkaAppenderTest {
             // Then
             assertThat(appender.isStarted).isFalse()
             assertThat(appender.statusMessages())
-                .anyMatch { it.contains("Failed to build") || it.contains("Default topic") }
+                .anyMatch { it.contains("Failed to build KafkaAppender pipeline") && it.contains("Default topic must not be blank") }
+        }
+
+        @Test
+        fun `should name an unknown topic class with debug off`() {
+            // What is to be tested? Whether a <mapping> with a <topicClass>
+            //   that is not a TopicClass constant refuses start() with the
+            //   TopicMappingConfig message visible on the default debug=false
+            //   path.
+            // How will the test case be deemed successful and why? Successful
+            //   if a status error names the offending value and the marker;
+            //   the plan-stage exception is the library's own validation and
+            //   must not be routed under the credential-withholding path.
+            // Why is it important to test this test case? A typo in a class
+            //   name is the most likely mapping error; "IllegalArgumentException,
+            //   enable debug" tells the operator nothing about which of a
+            //   dozen mappings is wrong.
+
+            // Given
+            val appender = newAppender()
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDTI"
+                },
+            )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Unknown <topicClass> 'AUDTI'") && it.contains("SECURITY") }
+        }
+
+        @Test
+        fun `should name a marker mapped twice with debug off`() {
+            // What is to be tested? Whether two <mapping> entries for the same
+            //   marker refuse start() with the TopicMappingConfig message
+            //   naming the marker, on the default debug=false path.
+            // How will the test case be deemed successful and why? Successful
+            //   if a status error contains "mapped more than once" and the
+            //   marker name; the appender must stay unstarted.
+            // Why is it important to test this test case? Duplicate markers
+            //   are silent in XML (Joran adds both entries); the start-up
+            //   message is the only place the operator learns which one.
+
+            // Given
+            val appender = newAppender()
+            repeat(2) {
+                appender.topicMapping.addMapping(
+                    TopicMappingEntry().apply {
+                        marker = "PERF"
+                        topic = "perf.topic-$it"
+                        topicClass = "PERFORMANCE"
+                    },
+                )
+            }
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("mapped more than once") && it.contains("'PERF'") }
+        }
+
+        @Test
+        fun `should name idempotence-incompatible tuning with debug off`() {
+            // What is to be tested? Whether the ProducerPropertiesBuilder's
+            //   idempotence-compatibility refusal - raised inside
+            //   ProducerRegistry.create, on the transport stage - reaches the
+            //   operator with its message on debug=false, because it is the
+            //   library's own validation and not a producer-construction
+            //   failure.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted, no producer was created (the
+            //   check runs before the factory) and a status error names the
+            //   incompatible in-flight value. The builder's KDoc says the
+            //   named message exists precisely so the operator does not get
+            //   the withheld generic failure - this is the appender-level pin
+            //   of that promise.
+            // Why is it important to test this test case? The withheld form
+            //   "(java.lang.IllegalArgumentException)" reads like a Kafka
+            //   construction failure and sends the operator to the broker
+            //   configuration instead of to their own acks/in-flight tuning.
+
+            // Given: idempotence requested with too many in-flight requests
+            val factory = RecordingProducerFactory()
+            val appender =
+                newAppender(
+                    producerFactory = factory,
+                    kafkaProducerProperties =
+                        "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092\n" +
+                            "${ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG}=true\n" +
+                            "${ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION}=6",
+                )
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.isStarted).isFalse()
+            assertThat(factory.createdProducers).isEmpty()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("max.in.flight.requests.per.connection=6 is incompatible with enable.idempotence=true") }
         }
     }
 
@@ -686,10 +805,15 @@ class KafkaAppenderTest {
             // When
             appender.start()
 
-            // Then: refused to start, type reported, cause withheld
+            // Then: refused to start, class and cause type reported, cause withheld
             assertThat(appender.isStarted).isFalse()
             assertThat(appender.statusMessages())
-                .anyMatch { it.contains("Failed to build KafkaAppender pipeline") && it.contains("IllegalStateException") }
+                .anyMatch {
+                    it.contains("Failed to build KafkaAppender pipeline") &&
+                        it.contains("Kafka producer for TECHNICAL could not be constructed") &&
+                        it.contains("java.lang.IllegalStateException") &&
+                        it.contains("<debug>true</debug>")
+                }
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("secret-bearing-detail") }
         }
@@ -1194,32 +1318,84 @@ class KafkaAppenderTest {
 
         @Test
         fun `should not run any append logic when the appender is not started`() {
-            // What is to be tested? Whether the AppenderBase isStarted gate
-            //   keeps the hot path from running before start() or after a
-            //   failed start. This is the safety net for the lateinit
-            //   pipeline fields.
+            // What is to be tested? Whether an event handed to a not-started
+            //   appender touches nothing observable: Logback's
+            //   UnsynchronizedAppenderBase.doAppend gate short-circuits when
+            //   isStarted is false, and behind it append() returns at the
+            //   null plan/transport before any hook runs.
             // How will the test case be deemed successful and why? Successful
-            //   if appending without prior start() leaves the producer
-            //   untouched. Logback's UnsynchronizedAppenderBase.doAppend
-            //   short-circuits when isStarted is false; if a regression
-            //   removed that gate, the lateinit fields would throw
-            //   UninitializedPropertyAccessException.
-            // Why is it important to test this test case? A regression in
-            //   the lifecycle gate would manifest as confusing test
-            //   failures in production, where Logback's autoconfiguration
-            //   path occasionally invokes appenders before fully starting
-            //   them.
+            //   if the encoder saw no event, the attached (started) fallback
+            //   received nothing, and no hot-path error was reported - three
+            //   observables of the gate itself. The former assertion (no
+            //   producer created) held regardless of what doAppend did,
+            //   because producers are created in start(), which the test
+            //   never calls (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 12).
+            // Why is it important to test this test case? Logback's
+            //   autoconfiguration path can hand events to appenders before
+            //   they are fully started; an event that slipped through would
+            //   be encoded or diverted by a half-built pipeline.
 
-            // Given
-            val factory = RecordingProducerFactory()
-            val appender = newAppender(producerFactory = factory)
+            // Given: a not-started appender with a live fallback attached
+            val encoder = RecordingEncoder()
+            val fallback = RecordingAppender()
+            val appender = newAppender(encoder = encoder, fallback = fallback)
             // Note: start() not called
 
             // When
             appender.doAppend(newTestLoggingEvent())
 
-            // Then: no producer was ever created (start never ran)
-            assertThat(factory.createdProducers).isEmpty()
+            // Then: nothing was encoded, diverted or reported
+            assertThat(encoder.encodedEvents).isEmpty()
+            assertThat(fallback.events).isEmpty()
+            assertThat(appender.statusMessages()).noneMatch { it.contains("Hot path error") }
+        }
+    }
+
+    @Nested
+    inner class `Caller data` {
+        @Test
+        fun `should capture caller data on the caller thread before the hand-off when includeCallerData is set`() {
+            // What is to be tested? The behavior behind the includeCallerData
+            //   flag (its Joran binding is pinned elsewhere): with the flag
+            //   set, append() materializes the event's caller data on the
+            //   logging thread before the event crosses to a worker, so a
+            //   fallback layout using %caller names the application's call
+            //   site and not a dispatcher thread's stack.
+            // How will the test case be deemed successful and why? Successful
+            //   if the event that reached the fallback carries caller data
+            //   whose first frame is this test class. Logback extracts caller
+            //   data from the stack of the thread that first asks for it,
+            //   relative to the logger's FQCN frame - on a worker thread (or
+            //   the asserting test thread, lazily) that frame does not
+            //   exist and the array is empty. Mutation checked: deleting the
+            //   `if (includeCallerData) event.callerData` lines turns the
+            //   assertion red (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 15).
+            // Why is it important to test this test case? The deferred-
+            //   processing contract README documents for fallback layouts
+            //   with %caller rested on a binding test alone; a refactor that
+            //   moved the read behind the hand-off would silently name the
+            //   dispatcher thread as the caller of every diverted event.
+
+            // Given: a real logger feeding a diverting appender with the flag set
+            val loggerContext = LoggerContext().apply { mdcAdapter = LogbackMDCAdapter() }
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(encoder = ThrowingEncoder(), fallback = fallback).apply {
+                    includeCallerData = true
+                }
+            appender.start()
+            loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).addAppender(appender)
+
+            // When: logged through the real logger on this thread, then drained
+            loggerContext.getLogger("caller-data-test").info("diverted with caller data")
+            appender.stop()
+
+            // Then: the diverted event names this class as its caller
+            val diverted = fallback.events.single()
+            assertThat(diverted.callerData).isNotEmpty
+            assertThat(diverted.callerData[0].className).isEqualTo(javaClass.name)
         }
     }
 
@@ -1256,6 +1432,52 @@ class KafkaAppenderTest {
             appender.stop()
             assertThat(fallback.events).hasSize(1)
             assertThat(fallback.events[0].message).isEqualTo("encoder will throw")
+        }
+
+        @Test
+        fun `should warn at start and count diversions as dropped when the fallback appender is not started`() {
+            // What is to be tested? Whether a fallback appender that is
+            //   attached but not started - its own start() failed, or a
+            //   foreign owner stopped it - is detected at start() with a
+            //   status warning, and whether each diversion to it is counted
+            //   as a fallback-dispatcher drop instead of as delivered.
+            // How will the test case be deemed successful and why? Successful
+            //   if the start-up warning names the appender, the fallback
+            //   recorded nothing (Logback's doAppend on a not-started
+            //   appender returns without appending) and the
+            //   kafka.appender.fallback.dropped counter reads 1 after the
+            //   draining stop(). Before the fix doAppend's silent return
+            //   passed as a delivery: no counter moved
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 10).
+            // Why is it important to test this test case? A FileAppender
+            //   whose path is unwritable stays attached in exactly this
+            //   state; the fallback exists to make loss visible, and here
+            //   the loss was invisible on the path built for visibility.
+
+            // Given: an attached but never-started fallback, a diverting hot path
+            val notStartedFallback =
+                ThreadSafeListAppender().apply {
+                    name = "DEAD_FALLBACK"
+                    context = LoggerContext()
+                }
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = notStartedFallback)
+
+            // When: started, bound, and one event diverted
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            appender.doAppend(newTestLoggingEvent(message = "diverted to a dead fallback"))
+
+            // Then: warned at start, the loss counted on the fallback worker
+            //   (read before stop(), which unbinds and removes the meters),
+            //   nothing appended
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Fallback appender 'DEAD_FALLBACK'") && it.contains("is not started") }
+            val dropped = { registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED).counter()?.count() }
+            pollUntil { dropped() == 1.0 }
+            appender.stop()
+            assertThat(notStartedFallback.events).isEmpty()
         }
 
         @Test
@@ -1469,6 +1691,41 @@ class KafkaAppenderTest {
             assertThat(factory.createdProducers).isNotEmpty
             assertThat(factory.createdProducers).allMatch { it.closed() }
         }
+
+        @Test
+        fun `should close already-created producers when the self-logging guard factory fails`() {
+            // What is to be tested? Whether the transport's rollback also
+            //   covers the SelfLoggingGuardFactory call - the one step
+            //   between the producer registry and the dispatchers that used
+            //   to run outside the rollback try.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender refuses to start with the factory's message
+            //   and every created producer is closed. Before the fix the
+            //   producers - network threads, buffers, MBeans - leaked with
+            //   nothing left to close them, because the appender never
+            //   received the transport
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 6).
+            // Why is it important to test this test case? The "open as a
+            //   transaction" invariant is stated for every failure after the
+            //   first real resource exists; a gap of one call is still a
+            //   gap, and a substituted factory is exactly what tests inject.
+
+            // Given: a guard factory that throws after the producers exist
+            val factory = RecordingProducerFactory()
+            val throwingGuardFactory =
+                SelfLoggingGuardFactory { _ -> throw IllegalStateException("simulated guard factory failure") }
+            val appender = newAppender(producerFactory = factory, selfLoggingGuardFactory = throwingGuardFactory)
+
+            // When
+            appender.start()
+
+            // Then: refused with the cause named, producers rolled back
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages()).anyMatch { it.contains("simulated guard factory failure") }
+            assertThat(factory.createdProducers).isNotEmpty
+            assertThat(factory.createdProducers).allMatch { it.closed() }
+        }
     }
 
     @Nested
@@ -1525,16 +1782,16 @@ class KafkaAppenderTest {
         @Test
         fun `should not throw when stopping an appender that never started`() {
             // What is to be tested? Whether stop() is safe to call on an
-            //   appender whose start() either was not called or failed.
-            //   The lateinit fields are uninitialized in that case.
+            //   appender whose start() either was not called or failed - the
+            //   plan and transport fields are null in that case.
             // How will the test case be deemed successful and why? Successful
-            //   if stop() returns normally. The this::producerRegistry.isInitialized
-            //   guard is the contract under test.
+            //   if stop() returns normally: the null-transport branch of
+            //   stop() (Logback state, fallback and encoder only; nothing to
+            //   close) is the contract under test.
             // Why is it important to test this test case? Logback's context
             //   shutdown invokes stop() on all registered appenders. If our
-            //   stop() threw UninitializedPropertyAccessException on a
-            //   never-started appender, it would break the orderly shutdown
-            //   of other appenders too.
+            //   stop() threw on a never-started appender, it would break the
+            //   orderly shutdown of other appenders too.
 
             // Given: an appender that was never started (e.g. config invalid)
             val appender = newAppender(encoder = null)
@@ -1581,29 +1838,26 @@ class KafkaAppenderTest {
     @Nested
     inner class `Reentry guard` {
         @Test
-        fun `should drop a reentrant event logged synchronously from inside the send path`() {
-            // What is to be tested? Whether a log event created on the
-            //   CALLER's thread from inside producer.send is dropped
-            //   instead of recursing into the appender. The Kafka 4.x
-            //   client logs ApiExceptions at DEBUG on the calling thread
-            //   in its synchronous doSend failure path - such an event
-            //   carries the application thread's name, so the
-            //   network-thread-name guard cannot catch it, and Logback's
-            //   UnsynchronizedAppenderBase ships only a no-op reentry
-            //   guard.
+        fun `should drop a reentrant event logged synchronously from inside producer send on the worker`() {
+            // What is to be tested? Whether a log event created from inside
+            //   producer.send is dropped instead of being fed back into the
+            //   pipeline. The Kafka 4.x client logs ApiExceptions at DEBUG
+            //   on the send-calling thread in its synchronous doSend failure
+            //   path; since the asynchronous dispatch that thread is the
+            //   send-dispatcher worker, so the event carries the worker's
+            //   fixed thread name and the guard's NAME SET is what drops it.
+            //   (The caller-thread half of the guard, the ThreadLocal
+            //   bracket, is pinned by the next test.)
             // How will the test case be deemed successful and why? Successful
-            //   if the producer receives exactly the application's own
-            //   event and the reentrant "Kafka internal" event reaches
-            //   neither the producer nor the fallback. Without the
-            //   ThreadLocal guard this test does not merely fail - it
-            //   dies in unbounded recursion (send -> log -> append ->
-            //   send -> ...) ending in a StackOverflowError.
+            //   if the producer receives exactly the application's own event
+            //   and the reentrant "Kafka internal" event reaches neither the
+            //   producer nor the fallback. Without the worker name in the
+            //   guard's set, the echo would be dispatched as a second record.
             // Why is it important to test this test case? With
             //   org.apache.kafka at DEBUG - the very configuration an
             //   operator turns on to diagnose broker trouble - every
-            //   synchronous send failure would otherwise feed itself,
-            //   holding the application thread through stacked
-            //   max.block.ms waits until the stack overflows.
+            //   synchronous send failure would otherwise feed itself, one
+            //   extra record per failure, exactly during broker trouble.
 
             // Given: a producer whose send() first emits a log event on
             //   the calling thread (modelling Kafka's synchronous DEBUG
@@ -1642,12 +1896,85 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "app event", threadName = "http-nio-8080-exec-1"))
 
             // Then: only the application's event was sent; the reentrant
-            //   Kafka-internal event was dropped entirely - no recursion,
-            //   no second send, nothing in the fallback. (The reentrant
-            //   doAppend now happens on the send worker, whose fixed
-            //   thread name the guard recognizes.)
+            //   Kafka-internal event was dropped entirely - no second send,
+            //   nothing in the fallback. (The reentrant doAppend happens on
+            //   the send worker, whose fixed thread name the guard
+            //   recognizes.)
             appender.stop()
             assertThat(mock.history()).hasSize(1)
+            assertThat(fallback.events).isEmpty()
+        }
+
+        @Test
+        fun `should drop a reentrant event logged synchronously on the caller thread from inside append`() {
+            // What is to be tested? Whether the appender brackets its hot
+            //   path with the guard's enter()/exit() mark, so an event logged
+            //   on the CALLER's own thread from inside append - by an encoder
+            //   or a metrics hook that logs through SLF4J - is dropped. Such
+            //   an event carries the application thread's name, so the name
+            //   set cannot catch it; only the ThreadLocal mark can.
+            // How will the test case be deemed successful and why? Successful
+            //   if the producer receives exactly the application's event and
+            //   the encoder's echo reaches neither the producer nor the
+            //   fallback. The echoing encoder echoes only the application
+            //   event, so a missing bracket does not overflow the stack but
+            //   ships the echo as a second record - a deterministic red.
+            //   Mutation checked: with enter()/exit() as no-ops in
+            //   KafkaAppender.append the history holds two records.
+            // Why is it important to test this test case? Before this test,
+            //   no test called doAppend synchronously on the caller thread
+            //   from inside append: the previous test's echo moved to the
+            //   worker with the asynchronous dispatch, so a refactor dropping
+            //   the bracket passed the suite and would ship a
+            //   StackOverflowError on the application thread for any logging
+            //   encoder (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 1).
+
+            // Given: an encoder that logs an event on the caller thread while
+            //   encoding the application's event
+            var appenderRef: KafkaAppender? = null
+            val echoingEncoder =
+                object : MessageBytesEncoder() {
+                    override fun encode(event: ILoggingEvent): ByteArray {
+                        if (event.formattedMessage == "app event") {
+                            checkNotNull(appenderRef).doAppend(
+                                newTestLoggingEvent(
+                                    message = "encoder echo on caller thread",
+                                    threadName = Thread.currentThread().name,
+                                ),
+                            )
+                        }
+                        return super.encode(event)
+                    }
+                }
+            val factory = RecordingProducerFactory()
+            val fallback = RecordingAppender()
+            val appender =
+                newAppender(
+                    encoder = echoingEncoder,
+                    producerFactory = factory,
+                    fallback = fallback,
+                )
+            appenderRef = appender
+            appender.start()
+
+            // When: the application logs one event on this thread
+            appender.doAppend(newTestLoggingEvent(message = "app event", threadName = Thread.currentThread().name))
+
+            // Then: exactly the application's record was sent; the echo was
+            //   dropped by the bracket - not sent, not diverted
+            appender.stop()
+            assertThat(factory.createdProducers.single().history()).hasSize(1)
+            assertThat(
+                String(
+                    factory.createdProducers
+                        .single()
+                        .history()
+                        .single()
+                        .value(),
+                    Charsets.UTF_8,
+                ),
+            ).isEqualTo("app event")
             assertThat(fallback.events).isEmpty()
         }
 
@@ -1718,6 +2045,39 @@ class KafkaAppenderTest {
             assertThat(appender.statusMessages())
                 .anyMatch { it.contains("cannot be started again") && it.contains("ADR-0004") }
             assertThat(fallback.events).isEmpty()
+        }
+
+        @Test
+        fun `should stay startable after a stop that preceded any successful start`() {
+            // What is to be tested? The boundary of ADR-0004: a stop() on an
+            //   instance that never started successfully (a defensive
+            //   shutdown hook, a test harness, a stop after a refused start)
+            //   ends no first life and must not arm the no-restart latch.
+            // How will the test case be deemed successful and why? Successful
+            //   if start() after such a stop() succeeds, and no status error
+            //   claims the appender "cannot be started again". Before the
+            //   fix stop() latched unconditionally, so the instance was dead
+            //   with a message describing a teardown that never happened
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 8).
+            // Why is it important to test this test case? ADR-0004's
+            //   rationale is the released resources of a first life; without
+            //   one, refusing is a misleading error and an unusable instance
+            //   in a corner the ADR does not cover.
+
+            // Given: stopped before ever being started
+            val factory = RecordingProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.stop()
+            assertThat(appender.isStarted).isFalse()
+
+            // When: started for the first time
+            appender.start()
+
+            // Then: a normal first life
+            assertThat(appender.isStarted).isTrue()
+            assertThat(factory.createdProducers).isNotEmpty
+            assertThat(appender.statusMessages()).noneMatch { it.contains("cannot be started again") }
         }
     }
 
@@ -1818,10 +2178,16 @@ class KafkaAppenderTest {
             //   situation a broker outage creates for up to max.block.ms
             //   per send.
             // How will the test case be deemed successful and why? Successful
-            //   if a doAppend issued while the dispatcher worker is
-            //   provably inside the blocked send completes in far less
-            //   than the block duration. The latch anchors the worker, so
-            //   the assertion is deterministic, not timing-lucky.
+            //   if a doAppend issued on a helper thread while the dispatcher
+            //   worker is provably inside the blocked send returns - observed
+            //   through a latch with a generous timeout - while the send is
+            //   still parked. The latch anchors the worker, so the assertion
+            //   is deterministic, not timing-lucky; and a regression to a
+            //   synchronous send parks the helper, not the test thread, so it
+            //   fails as a bounded red instead of a Surefire hang (the former
+            //   elapsed-time bound could only ever fail spuriously;
+            //   docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 13).
             // Why is it important to test this test case? This is the
             //   missing latency assertion from finding H-3 (same report):
             //   every prior
@@ -1836,20 +2202,27 @@ class KafkaAppenderTest {
                     producerFactory = factory,
                 )
             appender.start()
+            val secondAppendReturned = CountDownLatch(1)
+            val helper =
+                Thread {
+                    appender.doAppend(newTestLoggingEvent(message = "second"))
+                    secondAppendReturned.countDown()
+                }
             try {
                 // When: the first event parks the worker in the send
                 appender.doAppend(newTestLoggingEvent(message = "first"))
                 assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
 
-                // And: a second append while the send is parked
-                val startNanos = System.nanoTime()
-                appender.doAppend(newTestLoggingEvent(message = "second"))
-                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+                // And: a second append on a helper thread while the send is
+                //   still parked (release has not been counted down)
+                helper.start()
 
-                // Then: the caller was not made to wait
-                assertThat(elapsedMs).isLessThan(200)
+                // Then: the caller returned although the send is parked
+                assertThat(secondAppendReturned.await(2, TimeUnit.SECONDS)).isTrue()
+                assertThat(factory.release.count).isEqualTo(1)
             } finally {
                 factory.release.countDown()
+                helper.join(2000)
                 appender.stop()
             }
         }
@@ -2289,32 +2662,86 @@ class KafkaAppenderTest {
         }
 
         @Test
-        fun `should not duplicate meters when bound twice`() {
+        fun `should move every meter when rebound to a different registry`() {
             // What is to be tested? Whether a repeated bindMeterRegistry call
-            //   (context refresh, manual re-wiring) replaces the previous
-            //   registration rather than adding a second set of meters.
+            //   (context refresh, manual re-wiring) tears the previous
+            //   registration down before registering anew - observed on a
+            //   SECOND registry, where a missing unbind leaves the first
+            //   registry's meters behind.
             // How will the test case be deemed successful and why? Successful
-            //   if the number of kafka.appender.* meters is identical after the
-            //   first and the second bind. MetricsBindings.bind() unbinds the
-            //   previous registration first; this pins that replace semantics.
-            // Why is it important to test this test case? Duplicate meters
-            //   either fail registration or double-count in the registry; both
-            //   corrupt the dashboards operators rely on for outage detection,
-            //   and the leak grows with every application context refresh.
+            //   if after the rebind the first registry holds no kafka.appender.*
+            //   and no resilience4j.* meter while the second holds the full
+            //   set, and the fallback gauges of the second read the live
+            //   dispatcher. The former same-registry count comparison could
+            //   not detect a missing unbind: Micrometer's register is
+            //   idempotent on the meter id, so the count stayed equal either
+            //   way (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 16).
+            // Why is it important to test this test case? Meters left behind
+            //   on a replaced registry keep reporting a pipeline that no
+            //   longer publishes there - stale gauges and frozen counters on
+            //   the old scrape endpoint, and a leak per context refresh.
 
-            // Given
-            val registry = SimpleMeterRegistry()
+            // Given: bound to a first registry
+            val first = SimpleMeterRegistry()
+            val second = SimpleMeterRegistry()
+            val appender = newAppender(fallback = RecordingAppender())
+            appender.start()
+            appender.bindMeterRegistry(first)
+            val ownMeter: (Meter) -> Boolean = { it.id.name.startsWith("kafka.appender.") || it.id.name.startsWith("resilience4j.") }
+            val boundToFirst = first.meters.filter(ownMeter).map { it.id }
+            assertThat(boundToFirst).isNotEmpty
+
+            // When: rebound to a second registry
+            appender.bindMeterRegistry(second)
+
+            // Then: the first registry is empty of the appender's meters, the
+            //   second holds the same set
+            assertThat(first.meters).noneMatch(ownMeter)
+            assertThat(second.meters.filter(ownMeter).map { it.id })
+                .containsExactlyInAnyOrderElementsOf(boundToFirst)
+            appender.stop()
+        }
+
+        @Test
+        fun `should report a failing breaker metrics binding as a warning`() {
+            // What is to be tested? Whether a failure inside the
+            //   circuit-breaker metrics binding (a registry that rejects
+            //   gauges) is reported through the status manager at WARN, like
+            //   every teardown failure in MetricsBindings, and does not fail
+            //   bindMeterRegistry.
+            // How will the test case be deemed successful and why? Successful
+            //   if a status entry with level WARN names the failed
+            //   Resilience4j binding and the appender is still started and
+            //   bound. Before the fix the report was INFO, invisible to an
+            //   operator filtering the status output for warnings
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 11).
+            // Why is it important to test this test case? Missing breaker
+            //   meters are a silent observability gap: dashboards show no
+            //   state series and no alert fires, and the only trace of why is
+            //   this one status entry.
+
+            // Given: a registry whose gauge registration throws
+            val gaugeRejectingRegistry =
+                object : SimpleMeterRegistry() {
+                    override fun <T : Any> newGauge(
+                        id: Meter.Id,
+                        obj: T?,
+                        valueFunction: ToDoubleFunction<T>,
+                    ): Gauge = throw IllegalStateException("simulated gauge registration failure")
+                }
             val appender = newAppender()
             appender.start()
 
-            // When: bound twice against the same registry
-            appender.bindMeterRegistry(registry)
-            val countAfterFirst = registry.meters.count { it.id.name.startsWith("kafka.appender.") }
-            appender.bindMeterRegistry(registry)
-            val countAfterSecond = registry.meters.count { it.id.name.startsWith("kafka.appender.") }
+            // When
+            appender.bindMeterRegistry(gaugeRejectingRegistry)
 
-            // Then: the second bind replaced, not duplicated
-            assertThat(countAfterSecond).isEqualTo(countAfterFirst)
+            // Then: bound, started, and the failure is a WARN
+            assertThat(appender.isStarted).isTrue()
+            assertThat(appender.isMeterRegistryBound).isTrue()
+            assertThat(appender.statusEntries())
+                .anyMatch { it.level == Status.WARN && it.message.contains("Failed to bind Resilience4j metrics") }
             appender.stop()
         }
 
@@ -2613,6 +3040,52 @@ class KafkaAppenderTest {
             val replacement = RecordingAppender().apply { name = "REPLACEMENT" }
             appender.addAppender(replacement)
             assertThat(appender.fallbackAppender).isSameAs(replacement)
+        }
+
+        @Test
+        fun `should refuse to detach the fallback while started and keep delivering to it`() {
+            // What is to be tested? Whether the three detach paths
+            //   (detachAppender by instance, by name, and
+            //   detachAndStopAllAppenders) are refused on a started appender:
+            //   the running transport read the slot once at start(), so a
+            //   detach would only change the public slot - the accessors
+            //   would report "no fallback" for a pipeline still delivering
+            //   to one, and detachAndStopAllAppenders would stop an appender
+            //   the dispatcher still targets.
+            // How will the test case be deemed successful and why? Successful
+            //   if every detach returns false or leaves the slot untouched,
+            //   a status warning names the refusal, the fallback is still
+            //   started, and an event diverted afterwards still reaches it.
+            //   Before the fix the slot was nulled and the stopped fallback
+            //   swallowed the diversions as delivered
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 7).
+            // Why is it important to test this test case? Silent loss on the
+            //   path whose purpose is visible loss, plus a lying accessor -
+            //   bounded to programmatic re-wiring, which is exactly the code
+            //   that reads the accessors.
+
+            // Given: a started appender whose hot path diverts everything
+            val fallback = RecordingAppender().apply { name = "FALLBACK" }
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = fallback)
+            appender.start()
+
+            // When: every detach path is tried while started
+            val byInstance = appender.detachAppender(fallback)
+            val byName = appender.detachAppender("FALLBACK")
+            appender.detachAndStopAllAppenders()
+
+            // Then: refused, warned, slot intact, fallback alive and still fed
+            assertThat(byInstance).isFalse()
+            assertThat(byName).isFalse()
+            assertThat(appender.fallbackAppender).isSameAs(fallback)
+            assertThat(appender.isAttached(fallback)).isTrue()
+            assertThat(fallback.isStarted).isTrue()
+            assertThat(appender.statusMessages().filter { it.contains("ignores detaching its fallback appender while started") })
+                .hasSize(3)
+            appender.doAppend(newTestLoggingEvent(message = "diverted after refused detach"))
+            appender.stop()
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("diverted after refused detach")
         }
     }
 }

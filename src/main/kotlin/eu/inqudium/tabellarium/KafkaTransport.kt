@@ -50,11 +50,12 @@ internal data class TransportSettings(
  * ## Open as a transaction
  *
  * Invariant: a construction failure in [open] after the first real
- * resource exists closes everything created so far, in the order
- * [close] uses, so a failed or reloaded configuration never leaks
- * producers or daemon workers that only an external `stop()` could
- * reach. The encoder is not owned here: the appender starts it before
- * [open] and releases it if [open] throws.
+ * resource exists - whatever its type, an [Error] included - closes
+ * everything created so far, in the order [close] uses, so a failed
+ * or reloaded configuration never leaks producers or daemon workers
+ * that only an external `stop()` could reach. The encoder is not owned
+ * here: the appender starts it before [open] and releases it if [open]
+ * throws.
  *
  * ## Close order
  *
@@ -166,14 +167,16 @@ internal class KafkaTransport private constructor(
                     activeTopicClasses = activeTopicClasses,
                     producerFactory = producerFactory,
                 )
-            // The guard needs the producers' client ids, so it comes right
-            // after the registry.
-            val selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
             // From here on real resources exist; the catch below implements
             // the rollback contract from the class KDoc.
             var fallbackDispatcher: FallbackDispatcher? = null
             val sendDispatchers = LinkedHashMap<TopicClass, SendDispatcher>()
             try {
+                // The guard needs the producers' client ids, so it comes
+                // right after the registry - inside the rollback, because a
+                // throwing factory (a substituted one, in tests) would
+                // otherwise leak the producers.
+                val selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
                 // Wrap the fallback appender in a dispatcher so the Kafka I/O
                 // thread is never blocked on the fallback's downstream I/O.
                 // See FallbackDispatcher KDoc for the rationale.
@@ -240,10 +243,13 @@ internal class KafkaTransport private constructor(
                     sendDispatchers = sendDispatchers,
                     fallbackDispatcher = fallbackDispatcher,
                 )
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 // Rationale: the rollback is silent - the caller reports the
                 // construction failure itself, and the fresh, empty workers
-                // have nothing to drop or to warn about.
+                // have nothing to drop or to warn about. Throwable, not
+                // Exception: the dispatcher constructors start threads, and
+                // the OutOfMemoryError of thread exhaustion at start-up must
+                // not leave the producers behind either.
                 closeAll(sendDispatchers, registry, fallbackDispatcher) { _, _ -> }
                 throw e
             }
