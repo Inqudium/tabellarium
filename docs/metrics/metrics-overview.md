@@ -26,6 +26,11 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 | `kafka.appender.send.queue.size`         | `appender`, `topic.class` | Current depth of the class's SendDispatcher queue (live per scrape) |
 | `kafka.appender.send.queue.capacity`     | `appender`, `topic.class` | Maximum depth of the SendDispatcher queue (constant)         |
 
+The two `fallback.queue.*` gauges exist only when a fallback appender is
+configured (`<appender-ref>`): without one there is no queue, and both
+series are absent rather than reading a constant zero. An absent
+`fallback.queue.size` therefore means "drop policy", never "empty queue".
+
 ## Tag values
 
 ### `appender` — one value per appender instance
@@ -88,11 +93,11 @@ These then appear in addition to the per-metric tags on all counters, timers, an
 | `events.fallback`         | 24 (4 × 6 = `topic.class` × `reason`) |
 | `send.duration`           | 8 (4 × 2 = `topic.class` × `outcome`) |
 | `fallback.dropped`        | 1                                     |
-| `fallback.queue.size`     | 1                                     |
-| `fallback.queue.capacity` | 1                                     |
+| `fallback.queue.size`     | 1 (only with a fallback appender)     |
+| `fallback.queue.capacity` | 1 (only with a fallback appender)     |
 | `send.queue.size`         | 4 (one per active `topic.class`)      |
 | `send.queue.capacity`     | 4                                     |
-| **Total**                 | **51**                                |
+| **Total**                 | **51** (49 without a fallback appender) |
 
 Multiplied by the `appender` tag (1 value in the default case) and the common-tags cardinality (typically 1, since constant per service).
 
@@ -187,7 +192,8 @@ rate(kafka_appender_events_fallback_total[1m])
 histogram_quantile(0.99, sum by (topic_class, le) (
     rate(kafka_appender_send_duration_seconds_bucket[5m])))
 
-# Fallback queue saturation as a ratio
+# Fallback queue saturation as a ratio (both series exist only with a
+# fallback appender configured; see "Gauges")
 kafka_appender_fallback_queue_size
   / kafka_appender_fallback_queue_capacity
 

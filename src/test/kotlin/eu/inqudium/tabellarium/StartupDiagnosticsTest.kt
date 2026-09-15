@@ -197,30 +197,34 @@ class StartupDiagnosticsTest {
         }
 
         @Test
-        fun `should describe the fallback as absent or by its class`() {
-            // What is to be tested? The fallback line for both configurations.
+        fun `should describe the fallback as absent, by its class, or as not started`() {
+            // What is to be tested? The fallback line for the three states:
+            //   no fallback, a started fallback, and an attached fallback
+            //   that is not started (its own start() failed).
             // How will the test case be deemed successful and why? Successful
-            //   if the line says "none" without a fallback and names the
-            //   appender class with one.
+            //   if the line says "none" without a fallback, names the
+            //   appender class with a started one, and adds NOT STARTED for
+            //   a not-started one - the state in which every diversion is
+            //   counted as dropped.
             // Why is it important to test this test case? "No fallback" means
-            //   silent drop on delivery failure; the diagnostics are the place
-            //   where an operator confirms that this is what they configured.
+            //   silent drop on delivery failure, and a dead fallback means the
+            //   same; the diagnostics are the place where an operator confirms
+            //   what they configured and whether it is alive.
 
             // Given
             val registry = newRegistry(setOf(TopicClass.TECHNICAL))
+            val started = ListAppender<ILoggingEvent>().apply { start() }
+            val notStarted = ListAppender<ILoggingEvent>()
 
             // When
             val without = StartupDiagnostics.debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = "")
-            val with =
-                StartupDiagnostics.debugMessages(
-                    registry,
-                    fallbackAppender = ListAppender<ILoggingEvent>(),
-                    kafkaProducerProperties = "",
-                )
+            val with = StartupDiagnostics.debugMessages(registry, fallbackAppender = started, kafkaProducerProperties = "")
+            val dead = StartupDiagnostics.debugMessages(registry, fallbackAppender = notStarted, kafkaProducerProperties = "")
 
             // Then
             assertThat(without).anyMatch { it.startsWith("Fallback appender: none") }
-            assertThat(with).anyMatch { it.startsWith("Fallback appender: configured (ListAppender)") }
+            assertThat(with).anyMatch { it == "Fallback appender: configured (ListAppender)" }
+            assertThat(dead).anyMatch { it == "Fallback appender: configured (ListAppender, NOT STARTED)" }
         }
 
         @Test

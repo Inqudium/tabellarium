@@ -45,8 +45,13 @@ import java.util.concurrent.atomic.AtomicReference
  * - **Two-phase close**: the worker keeps DELIVERING for the whole
  *   drain budget; only then is it interrupted, with a bounded grace for
  *   a delivery parked in interruptible I/O. Invariant: the interrupt
- *   ends the drain (an interrupted worker delivers at most one more
- *   item), so it must never come before the budget has been used. An
+ *   ends the drain - the worker exits after the delivery in progress
+ *   returns, as long as the delivery leaves the interrupt flag set (a
+ *   delivery that swallows it, such as an `AppenderBase`-derived
+ *   fallback appender clearing the flag inside `doAppend`, keeps the
+ *   worker draining; harmless, because [close] empties the queue
+ *   itself after the grace and every item is still accounted exactly
+ *   once) - so it must never come before the budget has been used. An
  *   interrupt of the *closing* thread ends its waits early, never the
  *   accounting, and is restored before returning.
  * - **Self-logging**: the worker carries no guard state. Its fixed

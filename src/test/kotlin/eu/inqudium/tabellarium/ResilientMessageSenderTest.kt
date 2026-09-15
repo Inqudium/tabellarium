@@ -21,6 +21,8 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import java.time.Duration
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
@@ -111,6 +113,14 @@ class ResilientMessageSenderTest {
         ) = Unit
 
         fun kinds(): List<String> = synchronized(events) { events.map { it.kind } }
+    }
+
+    /** The four diversion gates of send(); each asks for the claim before it diverts. */
+    enum class DiversionGate {
+        THROTTLE,
+        BREAKER_OPEN,
+        SYNCHRONOUS_THROW,
+        CALLBACK_ERROR,
     }
 
     /** Every context a test built; closed after the test so no dispatcher worker or producer outlives it. */
@@ -1020,6 +1030,108 @@ class ResilientMessageSenderTest {
     }
 
     @Nested
+    inner class `Diversion claim stand-down` {
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(DiversionGate::class)
+        fun `should neither deliver to the fallback nor count a fallback when the diversion claim is already taken`(
+            gate: DiversionGate,
+        ) {
+            // What is to be tested? The stand-down half of the exactly-once
+            //   contract, on every one of the sender's four diversion gates:
+            //   throttle, open breaker, synchronous throw and callback error.
+            //   When claimDiversion returns false - a forced close claimed the
+            //   in-flight item between the dispatcher's inFlight.set and the
+            //   sender's gate - the sender must neither enqueue the event to
+            //   the fallback nor report a fallback metric.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after the fallback dispatcher drained, the recorder is
+            //   empty and no "fallback" metric was recorded, while the gate's
+            //   other accounting (send.completed(error) for the two failure
+            //   gates, dispatched for the callback gate) still happened. A
+            //   gate that diverts without asking the claim fails on both the
+            //   recorder and the metric.
+            // Why is it important to test this test case? No unit test drove
+            //   the sender with a taken claim - the stand-down was pinned only
+            //   end to end, for one timeline - so dropping the claim check on
+            //   the throttle or breaker branch stayed green and would produce
+            //   a duplicate fallback delivery in exactly the forced-close
+            //   window (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md,
+            //   finding 24).
+
+            // Given: a sender set up for the gate, and a claim that is taken
+            val frozenClock = AtomicLong(0)
+            val ctx =
+                newSender(
+                    autoComplete = gate != DiversionGate.CALLBACK_ERROR,
+                    halfOpenProbeGap = Duration.ofMillis(5),
+                    nanoTimeSource = frozenClock::get,
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+            val breaker =
+                ctx.circuitBreakerRegistry
+                    .circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
+            val producer = ctx.factory.createdProducers[0]
+            when (gate) {
+                DiversionGate.THROTTLE -> {
+                    breaker.transitionToOpenState()
+                    breaker.transitionToHalfOpenState()
+                    // The probe slot goes to a first send; the second is gated.
+                    ctx.sender.send(TopicClass.AUDIT, "audit-events", "probe".toByteArray(), basicEnrichment, newTestLoggingEvent())
+                    metrics.events.clear()
+                }
+
+                DiversionGate.BREAKER_OPEN -> {
+                    breaker.transitionToOpenState()
+                }
+
+                DiversionGate.SYNCHRONOUS_THROW -> {
+                    producer.close()
+                }
+
+                DiversionGate.CALLBACK_ERROR -> {
+                    // Nothing to arm: the error arrives through errorNext below.
+                }
+            }
+
+            // When: the send hits the gate with the claim already taken
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "already claimed"),
+                claimDiversion = { false },
+            )
+            if (gate == DiversionGate.CALLBACK_ERROR) {
+                assertThat(metrics.kinds()).containsExactly("dispatched")
+                producer.errorNext(RuntimeException("leader gone"))
+            }
+
+            // Then: the gate stood down - nothing in the fallback, no fallback
+            //   metric - while its own accounting still ran
+            checkNotNull(ctx.dispatcher).close()
+            assertThat(ctx.recorder.events).isEmpty()
+            assertThat(metrics.kinds()).doesNotContain("fallback")
+            when (gate) {
+                DiversionGate.THROTTLE, DiversionGate.BREAKER_OPEN -> {
+                    assertThat(metrics.kinds()).isEmpty()
+                }
+
+                DiversionGate.SYNCHRONOUS_THROW -> {
+                    assertThat(metrics.kinds()).containsExactly("send.completed")
+                    assertThat(metrics.events.single().detail).isEqualTo("error")
+                }
+
+                DiversionGate.CALLBACK_ERROR -> {
+                    assertThat(metrics.kinds()).containsExactly("dispatched", "send.completed")
+                    assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
+                }
+            }
+        }
+    }
+
+    @Nested
     inner class `Metrics instrumentation` {
         @Test
         fun `should report a dispatched event with success outcome on a clean send`() {
@@ -1052,13 +1164,13 @@ class ResilientMessageSenderTest {
                 originalEvent = newTestLoggingEvent(),
             )
 
-            // Then: the sequence must include dispatched + send.completed(success)
-            assertThat(metrics.kinds())
-                .contains("dispatched", "send.completed")
+            // Then: exactly one send.completed(success) and exactly one
+            //   dispatched, in that order - the auto-completing MockProducer
+            //   runs the callback inside send, before eventDispatched - and
+            //   nothing else (no fallback, no duplicate of either)
+            assertThat(metrics.kinds()).containsExactly("send.completed", "dispatched")
             val success = metrics.events.single { it.kind == "send.completed" }
             assertThat(success.detail).isEqualTo("success")
-            // And: no fallback was reported
-            assertThat(metrics.kinds()).doesNotContain("fallback")
         }
 
         @Test

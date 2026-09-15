@@ -732,8 +732,8 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | `kafka.appender.events.fallback`           | Counter | `topic.class`, `reason`   | Events diverted from Kafka delivery (to the fallback if configured, otherwise dropped). |
 | `kafka.appender.send.duration`             | Timer   | `topic.class`, `outcome`  | Wall-clock from `send()` invocation to callback. |
 | `kafka.appender.fallback.dropped`          | Counter | —                         | Events lost by the fallback dispatcher: queue full, `doAppend` threw, worker died, or shutdown remainder. |
-| `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape). |
-| `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity. |
+| `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape); only with a fallback appender. |
+| `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity; only with a fallback appender. |
 | `kafka.appender.send.queue.size`           | Gauge   | `topic.class`             | Current send-dispatcher queue depth for the class. |
 | `kafka.appender.send.queue.capacity`       | Gauge   | `topic.class`             | Fixed send queue capacity. |
 

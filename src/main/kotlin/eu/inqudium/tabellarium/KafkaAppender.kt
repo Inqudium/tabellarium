@@ -276,7 +276,10 @@ class KafkaAppender :
      * it more than once during context teardown) does not re-run the
      * close sequence - re-closing the dispatcher would double-count its
      * remaining queue as dropped and re-emit the drop warning. Never
-     * reset: once stopped, [start] refuses (ADR-0004).
+     * reset: once stopped, [start] refuses (ADR-0004). Set only when a
+     * transport existed - a stop before any successful start ends no
+     * first life, so ADR-0004's rationale (released resources of that
+     * life) does not apply and the instance stays startable.
      */
     private val stopExecuted = AtomicBoolean(false)
 
@@ -364,6 +367,16 @@ class KafkaAppender :
             addWarn(StartupDiagnostics.mandatoryOverrideWarning(violation))
         }
         StartupDiagnostics.cleartextTransportWarning(transport.producerRegistry)?.let(::addWarn)
+        fallbackAppender?.takeUnless { it.isStarted }?.let {
+            // Its doAppend would return without appending; the fallback
+            // dispatcher refuses such deliveries and counts them as drops
+            // - say so once, next to the configuration that caused it.
+            addWarn(
+                "Fallback appender '${it.name}' (${it.javaClass.simpleName}) is not started - " +
+                    "its own start() failed or something stopped it; every event diverted to it " +
+                    "will be counted as dropped until it is started.",
+            )
+        }
         if (debug) {
             StartupDiagnostics
                 .debugMessages(transport.producerRegistry, fallbackAppender, kafkaProducerProperties)
@@ -376,27 +389,35 @@ class KafkaAppender :
     /**
      * Reports a failed [start] after the encoder was started: releases
      * the encoder (the plan holds nothing, the transport rolled itself
-     * back) and records the failure at the level of detail `<debug>`
-     * allows.
+     * back) and records the failure.
+     *
+     * Two failure classes arrive here. The library's own validation
+     * errors - blank or Kafka-invalid topic names, an unknown class, a
+     * marker mapped twice, a blank identity field, idempotence-
+     * incompatible tuning - name topic, marker, class names and tuning
+     * values only and are reported with their message on every path:
+     * they are the "named error" README and guide promise, and the
+     * operator needs the text to fix the configuration. Only a
+     * [ProducerConstructionException] is withheld by default: its text
+     * originates in the Kafka client and is built from
+     * credential-bearing configuration (Kafka masks Password-typed
+     * values in its own output, but that text is not under this
+     * appender's control), so the default path reports the cause's type
+     * only and the message plus the stack trace stay behind `<debug>`.
+     * See SECURITY.md on credential leakage through status output.
      */
     private fun failStartup(e: Exception) {
         runCatching { encoder?.stop() }
-        // The exception text originates in the Kafka client and is
-        // built from credential-bearing configuration. Kafka masks
-        // Password-typed values in its own output, but that text is
-        // not under this appender's control - so the default path
-        // reports only the exception type, and the message plus the
-        // stack trace stay behind <debug>. See SECURITY.md on
-        // credential leakage through status output.
-        if (debug) {
-            addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
-        } else {
+        if (e is ProducerConstructionException && !debug) {
             addError(
-                "Failed to build KafkaAppender pipeline (${e.javaClass.name}). " +
+                "Failed to build KafkaAppender pipeline: Kafka producer for ${e.topicClass} " +
+                    "could not be constructed (${e.cause.javaClass.name}). " +
                     "Set <debug>true</debug> to include the cause and stack trace; " +
                     "the details are withheld here because they may echo producer " +
                     "configuration values.",
             )
+        } else {
+            addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
         }
     }
 
@@ -531,6 +552,17 @@ class KafkaAppender :
     // -- Shutdown -------------------------------------------------------
 
     override fun stop() {
+        if (transport == null) {
+            // Nothing was built (start() never ran, or refused): there is
+            // no first life to end, so the ADR-0004 no-restart latch stays
+            // open and a corrected configuration may still start this
+            // instance. Logback's state machine, the attached fallback
+            // appender and the encoder are still released - Joran started
+            // them, and on a context reset nothing else reaches them.
+            super.stop()
+            stopFallbackAppenderAndEncoder()
+            return
+        }
         if (!stopExecuted.compareAndSet(false, true)) {
             // Teardown already ran; just keep Logback's state machine happy.
             super.stop()
@@ -558,13 +590,19 @@ class KafkaAppender :
             metricsBindings.unbind()
             metrics = KafkaAppenderMetrics.NO_OP
         }
-        // Stop the attached fallback appender. Logback may or may not
-        // hold its own reference to it; calling stop here guarantees its
-        // file handles and worker threads are released even if no other
-        // path closes it. Not detached: the stopped appender stays
-        // inspectable through the AppenderAttachable accessors, and
-        // detachAndStopAllAppenders remains available to callers who
-        // want the slot cleared.
+        stopFallbackAppenderAndEncoder()
+    }
+
+    /**
+     * Stops the attached fallback appender and the encoder. Logback may
+     * or may not hold its own reference to the fallback; stopping it
+     * here guarantees its file handles and worker threads are released
+     * even if no other path closes it. Not detached: the stopped
+     * appender stays inspectable through the AppenderAttachable
+     * accessors, and detachAndStopAllAppenders remains available to
+     * callers who want the slot cleared.
+     */
+    private fun stopFallbackAppenderAndEncoder() {
         try {
             fallbackAppender?.stop()
         } catch (e: Exception) {
@@ -671,6 +709,16 @@ class KafkaAppender :
      * stop of this appender would silence the shared appender for
      * everyone.
      *
+     * **One life, one slot:** the slot is read once, in [start], when
+     * the transport wires its fallback dispatcher to the attached
+     * appender. Detaching while started is therefore refused with a
+     * status warning (the accessors would otherwise report "no
+     * fallback" for a pipeline still delivering to one, and
+     * [detachAndStopAllAppenders] would stop an appender the dispatcher
+     * still targets - loss that no counter shows). Consistent with
+     * ADR-0004: the fallback wiring, like every other resource, has
+     * exactly one life. Detach before [start] or after [stop] as before.
+     *
      * **Self-logging:** the fallback appender must not log through
      * SLF4J per delivered event. Its `doAppend` runs on the fallback
      * dispatcher's worker, whose fixed thread name the self-logging
@@ -697,6 +745,7 @@ class KafkaAppender :
     override fun isAttached(appender: Appender<ILoggingEvent>?): Boolean = appender != null && fallbackAppender === appender
 
     override fun detachAndStopAllAppenders() {
+        if (refuseDetachWhileStarted()) return
         fallbackAppender?.let {
             it.stop()
             fallbackAppender = null
@@ -705,6 +754,7 @@ class KafkaAppender :
 
     override fun detachAppender(appender: Appender<ILoggingEvent>?): Boolean {
         if (appender != null && fallbackAppender === appender) {
+            if (refuseDetachWhileStarted()) return false
             fallbackAppender = null
             return true
         }
@@ -713,9 +763,21 @@ class KafkaAppender :
 
     override fun detachAppender(name: String?): Boolean {
         if (name != null && fallbackAppender?.name == name) {
+            if (refuseDetachWhileStarted()) return false
             fallbackAppender = null
             return true
         }
         return false
+    }
+
+    /** See the ownership note on [addAppender]: the running transport holds the slot's appender. */
+    private fun refuseDetachWhileStarted(): Boolean {
+        if (!isStarted) return false
+        addWarn(
+            "KafkaAppender ignores detaching its fallback appender while started: the running " +
+                "pipeline keeps delivering to '${fallbackAppender?.name}' (ADR-0004: one life, one slot). " +
+                "Stop the KafkaAppender first, or configure a new instance.",
+        )
+        return true
     }
 }

@@ -43,8 +43,11 @@ import java.util.concurrent.atomic.AtomicLong
  * The same counting applies to every other way an event can miss the
  * appender: `doAppend` throwing (surfacing the exception itself would
  * be log-storm-prone, and this class has no status manager - so the
- * loss is counted, then swallowed), a worker death, and the remainder
- * of a [close] whose budget expired.
+ * loss is counted, then swallowed), a fallback appender that is not
+ * started (its `doAppend` would return without appending - Logback
+ * warns three times, then stays silent - so [deliver] refuses it and
+ * the loss is counted instead of passing as delivered), a worker
+ * death, and the remainder of a [close] whose budget expired.
  *
  * ## Threading and self-logging
  *
@@ -125,6 +128,12 @@ internal class FallbackDispatcher(
     fun enqueue(event: ILoggingEvent): Boolean = offer(event)
 
     override fun deliver(item: ILoggingEvent) {
+        // A stopped or never-started appender (its own start() failed, a
+        // foreign owner stopped it) returns from doAppend without
+        // appending; refuse so the skeleton counts the drop.
+        if (!fallbackAppender.isStarted) {
+            throw FallbackAppenderNotStartedException
+        }
         fallbackAppender.doAppend(item)
     }
 
@@ -135,6 +144,14 @@ internal class FallbackDispatcher(
         droppedCount.incrementAndGet()
         metrics.fallbackDispatcherDropped()
     }
+
+    /**
+     * The [deliver] refusal for a not-started appender. Stackless and
+     * shared: it is thrown once per diverted event for as long as the
+     * appender stays down, and the skeleton only counts it.
+     */
+    private object FallbackAppenderNotStartedException :
+        RuntimeException("fallback appender is not started", null, false, false)
 
     companion object {
         /** Default queue capacity. Tuned for typical microservice log volumes. */

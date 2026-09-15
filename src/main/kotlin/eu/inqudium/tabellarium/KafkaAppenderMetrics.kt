@@ -101,11 +101,13 @@ internal interface KafkaAppenderMetrics {
      * Called when the [FallbackDispatcher] is wired to this metrics
      * instance - at [KafkaAppender.bindMeterRegistry] time, and again
      * on every re-bind - to register gauges that report the
-     * dispatcher's current queue depth and capacity. Implementations
-     * must therefore tolerate repeated calls (replace, do not
-     * duplicate). The [queueSize] supplier is read on each metric
-     * scrape; it must be cheap and non-blocking. The [capacity] is
-     * the fixed maximum. The [NO_OP] silently ignores.
+     * dispatcher's current queue depth and capacity. Not called at all
+     * when no fallback appender is configured: the gauges then do not
+     * exist (there is no queue to show). Implementations must tolerate
+     * repeated calls (replace, do not duplicate). The [queueSize]
+     * supplier is read on each metric scrape; it must be cheap and
+     * non-blocking. The [capacity] is the fixed maximum. The [NO_OP]
+     * silently ignores.
      */
     fun registerFallbackQueueGauges(
         queueSize: () -> Int,

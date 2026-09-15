@@ -1,20 +1,40 @@
 package eu.inqudium.tabellarium
 
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
+import io.micrometer.core.instrument.distribution.DistributionStatisticConfig
+import io.micrometer.core.instrument.distribution.pause.PauseDetector
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatCode
 import org.assertj.core.data.Offset
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.ToDoubleFunction
 
 class MicrometerKafkaAppenderMetricsTest {
     private fun newRegistry(): SimpleMeterRegistry = SimpleMeterRegistry()
+
+    /** Every meter of this appender's inventory, by name. */
+    private fun appenderMeters(registry: SimpleMeterRegistry): List<Meter> = registry.meters.filter { it.id.name.startsWith("kafka.appender.") }
+
+    /** Calls every hook of the interface exactly once, so every meter the implementation can register exists. */
+    private fun exerciseEveryHook(metrics: MicrometerKafkaAppenderMetrics) {
+        metrics.eventAccepted(TopicClass.AUDIT)
+        metrics.eventDispatched(TopicClass.AUDIT)
+        metrics.eventFallback(TopicClass.AUDIT, KafkaAppenderMetrics.FallbackReason.QUEUE_FULL)
+        metrics.sendCompleted(TopicClass.AUDIT, KafkaAppenderMetrics.SendOutcome.SUCCESS, Duration.ofMillis(1))
+        metrics.fallbackDispatcherDropped()
+        metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1024)
+        TopicClass.entries.forEach { metrics.registerSendQueueGauges(it, queueSize = { 0 }, capacity = 1024) }
+    }
 
     private fun counter(
         registry: SimpleMeterRegistry,
@@ -265,7 +285,7 @@ class MicrometerKafkaAppenderMetricsTest {
         fun `should expose the fixed capacity as a constant gauge`() {
             // What is to be tested? Whether registerFallbackQueueGauges publishes the
             //   dispatcher's capacity as a gauge with the value handed in, alongside the
-            //   size gauge that the constructor pre-registered.
+            //   size gauge it registers in the same call.
             // How will the test case be deemed successful and why? Successful if the
             //   fallback.queue.capacity gauge reads 2048.0 after registration; the
             //   capacity is fixed for the dispatcher's lifetime, so a constant gauge is
@@ -283,6 +303,158 @@ class MicrometerKafkaAppenderMetricsTest {
 
             // Then
             assertThat(gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).value()).isEqualTo(2048.0)
+        }
+
+        @Test
+        fun `should register neither fallback queue gauge until a fallback dispatcher is wired`() {
+            // What is to be tested? Whether a fresh instance - the state of an
+            //   appender without a fallback appender, whose transport never calls
+            //   registerFallbackQueueGauges - registers neither fallback.queue.size
+            //   nor fallback.queue.capacity, while the counters, timers and the
+            //   send-queue gauges are registered as usual.
+            // How will the test case be deemed successful and why? Successful if
+            //   the registry holds no fallback.queue.* meter after construction and
+            //   after the send-queue gauges were registered, but does hold the
+            //   accepted counter and the send-queue gauges. Both fallback gauges are
+            //   registered together in registerFallbackQueueGauges; previously the
+            //   size gauge was pre-registered in the constructor and read a
+            //   constant 0 without any fallback
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md, finding 9).
+            // Why is it important to test this test case? A constant-zero queue
+            //   size next to a missing capacity series reads as a healthy fallback
+            //   queue in a deployment that drops by policy, and the documented
+            //   saturation ratio divides by a series that does not exist; absent
+            //   series say "no fallback" unambiguously.
+
+            // Given: an instance that is never wired to a fallback dispatcher
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "no-fallback")
+
+            // When: the hooks a fallback-less transport does call
+            metrics.eventAccepted(TopicClass.TECHNICAL)
+            metrics.registerSendQueueGauges(TopicClass.TECHNICAL, queueSize = { 3 }, capacity = 1024)
+
+            // Then: no fallback queue gauge at all, everything else as usual
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauge()).isNull()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(
+                counter(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                ),
+            ).isEqualTo(1.0)
+            assertThat(
+                gauge(
+                    registry,
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                ).value(),
+            ).isEqualTo(3.0)
+        }
+
+        @Test
+        fun `should follow the latest supplier and keep one gauge pair when the fallback gauges are registered twice`() {
+            // What is to be tested? Whether a repeated registerFallbackQueueGauges on
+            //   the same instance (the FallbackDispatcher calls it on every
+            //   setMetrics) replaces the supplier the size gauge reads and does not
+            //   register a second gauge pair.
+            // How will the test case be deemed successful and why? Successful if the
+            //   size gauge reads the second supplier's value after the second call
+            //   and the registry holds exactly one size and one capacity gauge for
+            //   the appender tag. Micrometer keeps the first registration per
+            //   meter id, so a second registration with a new lambda would be
+            //   silently ignored; the implementation therefore swaps a supplier
+            //   holder instead - the contract "replace, do not duplicate" of the
+            //   interface KDoc.
+            // Why is it important to test this test case? A gauge frozen on the
+            //   first supplier would keep reporting a stale dispatcher's queue
+            //   after a re-bind; a duplicated pair would double the series and
+            //   confuse every dashboard sum.
+
+            // Given: an instance wired once
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "audit-appender")
+            metrics.registerFallbackQueueGauges(queueSize = { 5 }, capacity = 100)
+
+            // When: wired again with a different supplier
+            metrics.registerFallbackQueueGauges(queueSize = { 9 }, capacity = 100)
+
+            // Then: the gauge follows the latest supplier and no duplicate pair exists
+            assertThat(gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).value()).isEqualTo(9.0)
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauges()).hasSize(1)
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).gauges()).hasSize(1)
+        }
+    }
+
+    @Nested
+    inner class `Exception safety` {
+        /**
+         * Registry that constructs normally (the counters and timers
+         * resolve) but whose meters throw on use and whose gauge
+         * registration and removal throw - every registry-facing call
+         * a hook makes fails.
+         */
+        private inner class HostileRegistry : SimpleMeterRegistry() {
+            override fun newCounter(id: Meter.Id): Counter =
+                object : Counter by super.newCounter(id) {
+                    override fun increment(amount: Double): Unit = throw IllegalStateException("hostile counter")
+                }
+
+            override fun newTimer(
+                id: Meter.Id,
+                distributionStatisticConfig: DistributionStatisticConfig,
+                pauseDetector: PauseDetector,
+            ): Timer =
+                object : Timer by super.newTimer(id, distributionStatisticConfig, pauseDetector) {
+                    override fun record(
+                        amount: Long,
+                        unit: TimeUnit,
+                    ): Unit = throw IllegalStateException("hostile timer")
+                }
+
+            override fun <T : Any> newGauge(
+                id: Meter.Id,
+                obj: T?,
+                valueFunction: ToDoubleFunction<T>,
+            ): Gauge = throw IllegalStateException("hostile gauge")
+
+            override fun remove(meter: Meter): Meter = throw IllegalStateException("hostile remove")
+        }
+
+        @Test
+        fun `should return normally from every hook when the registry throws`() {
+            // What is to be tested? Whether the `safe` wrapper holds for every
+            //   hook of the interface - the counter increments, the timer
+            //   record, the two gauge registrations and the deregistration -
+            //   when the registry or its meters throw.
+            // How will the test case be deemed successful and why? Successful
+            //   if every hook returns without an exception against a registry
+            //   whose meters throw on use and whose gauge registration and
+            //   removal throw. The contract at KafkaAppenderMetrics ("a metrics
+            //   failure must never corrupt the logging pipeline") is what the
+            //   hot path relies on when it calls the hooks unguarded.
+            // Why is it important to test this test case? A hook that let a
+            //   registry exception escape would surface as the first (and then
+            //   suppressed) hot-path error and divert every event to the
+            //   fallback - a metrics bug turning into a logging outage - and
+            //   nothing but this test would notice the wrapper going missing.
+
+            // Given: an instance over a registry that fails every hook-time call
+            val registry = HostileRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "hostile")
+
+            // When / Then: every hook returns normally
+            assertThatCode {
+                metrics.eventAccepted(TopicClass.AUDIT)
+                metrics.eventDispatched(TopicClass.AUDIT)
+                metrics.eventFallback(TopicClass.AUDIT, KafkaAppenderMetrics.FallbackReason.QUEUE_FULL)
+                metrics.sendCompleted(TopicClass.AUDIT, KafkaAppenderMetrics.SendOutcome.SUCCESS, Duration.ofMillis(1))
+                metrics.fallbackDispatcherDropped()
+                metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1)
+                metrics.registerSendQueueGauges(TopicClass.AUDIT, queueSize = { 0 }, capacity = 1)
+                metrics.deregisterFrom(registry)
+            }.doesNotThrowAnyException()
         }
     }
 
@@ -400,6 +572,67 @@ class MicrometerKafkaAppenderMetricsTest {
         }
 
         @Test
+        fun `should attach the appender tag and exactly the documented dimensions to every registered meter`() {
+            // What is to be tested? Whether EVERY meter the implementation can
+            //   register - the four counters, the timer, the two fallback queue
+            //   gauges and the two send queue gauges - carries the appender tag
+            //   plus exactly its documented dimensions, checked over the
+            //   registry's meters rather than over a hand-picked subset.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after every hook was called once, the set of registered
+            //   kafka.appender.* names equals the inventory and each meter's
+            //   tag keys equal the expected keys for its name, with the
+            //   appender tag's value the configured name. The subset test
+            //   above covers 4 of 9 meters; registerSendQueueGauges was
+            //   asserted against a real registry nowhere
+            //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md, finding 5).
+            // Why is it important to test this test case? With the tag dropped
+            //   from the send-queue gauges, Micrometer returns the first
+            //   appender's gauge to a second appender bound to the same
+            //   registry (registration is idempotent on the meter id), so one
+            //   appender's queue depth is silently reported for both - at the
+            //   gauge that shows an outage building up.
+
+            // Given: the documented tag keys per metric
+            val appender = MicrometerKafkaAppenderMetrics.TAG_APPENDER
+            val topicClass = MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS
+            val expectedTagKeys =
+                mapOf(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED to setOf(appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED to setOf(appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK to
+                        setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_REASON),
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION to
+                        setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_OUTCOME),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to setOf(appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to setOf(appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to setOf(appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE to setOf(appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY to setOf(appender, topicClass),
+                )
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "audit-appender")
+
+            // When: every hook once
+            exerciseEveryHook(metrics)
+
+            // Then: the inventory is complete and every meter is tagged exactly as documented
+            val meters = appenderMeters(registry)
+            assertThat(meters.map { it.id.name }.toSet()).isEqualTo(expectedTagKeys.keys)
+            assertThat(meters).allSatisfy { meter ->
+                assertThat(
+                    meter.id.tags
+                        .map { it.key }
+                        .toSet(),
+                ).`as`("tag keys of %s", meter.id)
+                    .isEqualTo(expectedTagKeys.getValue(meter.id.name))
+                assertThat(meter.id.getTag(appender))
+                    .`as`("appender tag of %s", meter.id)
+                    .isEqualTo("audit-appender")
+            }
+        }
+
+        @Test
         fun `should produce distinct gauge series for two appender instances sharing a registry`() {
             // What is to be tested? Whether two metrics instances with
             //   different appender names register distinct gauge series
@@ -476,10 +709,10 @@ class MicrometerKafkaAppenderMetricsTest {
             // What is to be tested? Whether a whitespace-only appender name is
             //   normalized to "unnamed" like a null one, rather than producing an
             //   appender tag whose value is "   ".
-            // How will the test case be deemed successful and why? Successful if a
-            //   counter tagged appender=unnamed exists after eventAccepted on an
-            //   instance built with the name "   "; the takeIf(isNotBlank) guard is the
-            //   single point that makes this true.
+            // How will the test case be deemed successful and why? Successful if the
+            //   counter tagged appender=unnamed holds exactly the one increment after
+            //   eventAccepted on an instance built with the name "   "; the
+            //   takeIf(isNotBlank) guard is the single point that makes this true.
             // Why is it important to test this test case? Logback lets an XML
             //   name=" " through, and an all-whitespace label value is invisible in
             //   every dashboard and query UI; normalizing here keeps that
@@ -497,8 +730,9 @@ class MicrometerKafkaAppenderMetricsTest {
                 registry
                     .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                     .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "unnamed")
+                    .tag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit")
                     .counter()
-            assertThat(accepted).isNotNull
+            assertThat(accepted?.count()).isEqualTo(1.0)
         }
     }
 }

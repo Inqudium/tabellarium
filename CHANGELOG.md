@@ -40,6 +40,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question with a single set lookup, instead of a prefix check, a
   substring and a second lookup per event from a producer thread. Same
   exact-scheme semantics, same tests.
+- The two `kafka.appender.fallback.queue.*` gauges are registered
+  together and only when a fallback appender is configured. Previously
+  `fallback.queue.size` existed unconditionally and read a constant 0
+  without a fallback while `fallback.queue.capacity` did not exist -
+  a healthy-looking queue where events are dropped by policy, and a
+  saturation ratio dividing by an absent series. Without a fallback
+  appender both series are now absent; the metrics overview says so.
+- Detaching the fallback appender while the appender is started is
+  refused with a status warning (`detachAppender`,
+  `detachAndStopAllAppenders`): the running pipeline reads the slot
+  once at `start()` and kept delivering to the detached - and in the
+  second case stopped - appender, loss no counter showed, while the
+  `AppenderAttachable` accessors reported "no fallback". One life, one
+  slot (ADR-0004); detach before `start()` or after `stop()` as before.
+- `stop()` on an instance that never started successfully no longer
+  arms the ADR-0004 no-restart latch: nothing was built, so there is no
+  first life to end, and a corrected configuration may still start the
+  instance instead of being refused with "cannot be started again".
+  Logback's state, the attached fallback appender and the encoder are
+  still stopped.
+
+### Fixed
+
+- Start-up validation errors raised by this library itself - blank or
+  Kafka-invalid topic names, an unknown `<topicClass>` or
+  `<defaultTopicClass>`, a marker mapped twice, one topic under two
+  classes, a blank identity field as seen by the enricher, and the
+  idempotence-compatibility checks - are reported **with their message**
+  again, as README, configuration guide and this changelog promised
+  ("aborts `start()` with a named error"). Since 1.1.0 (fix commit
+  `1c8b048`) they were routed under the credential-withholding path
+  meant for the Kafka client's construction failure, so the operator saw
+  `Failed to build KafkaAppender pipeline (java.lang.IllegalArgumentException)`
+  and nothing else unless `<debug>` was on. Only a `ProducerFactory`
+  failure (the Kafka client composing its error from credential-bearing
+  configuration) is still withheld by default; it now names the topic
+  class and the cause's type.
+- A fallback appender that is attached but not started - its own
+  `start()` failed (an unwritable `FileAppender` path), or a foreign
+  owner stopped it - is reported with a status warning at `start()`, and
+  every event diverted to it is counted as a fallback-dispatcher drop
+  (`kafka.appender.fallback.dropped`) instead of as delivered: Logback's
+  `doAppend` on a not-started appender returns without appending after
+  three warnings, so the loss showed in no counter. The `<debug>`
+  diagnostics mark such an appender as `NOT STARTED`.
+- `KafkaTransport.open` rolls the producers back for every failure
+  after they exist: the self-logging guard factory now runs inside the
+  rollback, and the rollback catches `Throwable` (thread exhaustion at
+  start-up throws an `OutOfMemoryError` from the dispatcher
+  constructors, which the previous `Exception` catch let through with
+  the producers left behind).
+- A failing Resilience4j or Kafka producer metrics binding is reported
+  at WARN with its cause, like every teardown failure in the same
+  class, instead of at INFO - an operator filtering the status output
+  for warnings never learned that the breaker meters were missing.
 
 ## [1.1.1] - 2026-09-09
 

@@ -73,6 +73,7 @@ class JoranXmlConfigurationTest {
                 <environment>test</environment>
                 <component>joran-test-service</component>
                 <cmdbId>CMDB-JORAN</cmdbId>
+                <debug>true</debug>
                 <sendQueueCapacity>2048</sendQueueCapacity>
                 <includeCallerData>true</includeCallerData>
                 <appender-ref ref="FALLBACK"/>
@@ -90,9 +91,11 @@ class JoranXmlConfigurationTest {
             // What is to be tested? Whether the complete documented XML
             //   surface - encoder, kafkaProducerProperties text,
             //   topicMapping with defaultTopic and a <mapping> entry,
-            //   the three identity fields, sendQueueCapacity,
+            //   the three identity fields, debug, sendQueueCapacity,
             //   includeCallerData, and <appender-ref> - reaches
-            //   the appender through Joran's reflective binding.
+            //   the appender through Joran's reflective binding (the
+            //   class KDoc of KafkaAppender claims this test binds every
+            //   element of its example; <debug> was the missing one).
             // How will the test case be deemed successful and why? Successful
             //   if the appender started and every bound value matches
             //   the XML (defaultTopic trimmed, mapping fields populated,
@@ -119,6 +122,7 @@ class JoranXmlConfigurationTest {
             assertThat(appender.component).isEqualTo("joran-test-service")
             assertThat(appender.cmdbId).isEqualTo("CMDB-JORAN")
             assertThat(appender.environment).isEqualTo("test")
+            assertThat(appender.debug).isTrue()
             assertThat(appender.sendQueueCapacity).isEqualTo(2048)
             assertThat(appender.includeCallerData).isTrue()
             assertThat(appender.kafkaProducerProperties).contains("bootstrap.servers=localhost:1")

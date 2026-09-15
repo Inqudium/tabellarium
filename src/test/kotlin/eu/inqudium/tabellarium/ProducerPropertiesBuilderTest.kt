@@ -5,6 +5,8 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 
 class ProducerPropertiesBuilderTest {
     @Nested
@@ -677,6 +679,63 @@ class ProducerPropertiesBuilderTest {
                     assertThat(violation.propertyKey).isEqualTo(ProducerConfig.MAX_BLOCK_MS_CONFIG)
                     assertThat(violation.enforcedValue).isEqualTo("200")
                 }
+        }
+
+        @ParameterizedTest(name = "{0}: max.block.ms={1} -> {2}, violation={3}")
+        @CsvSource(
+            "TECHNICAL, -1, 500, true",
+            "TECHNICAL, '', 500, true",
+            "TECHNICAL, 0, 0, false",
+            "TECHNICAL, 500, 500, false",
+            "TECHNICAL, 501, 500, true",
+            "PERFORMANCE, 200, 200, false",
+            "PERFORMANCE, 201, 200, true",
+        )
+        fun `should accept exactly the values from zero to the cap and clamp everything else`(
+            topicClass: TopicClass,
+            userValue: String,
+            enforcedValue: String,
+            violationExpected: Boolean,
+        ) {
+            // What is to be tested? The boundaries of the cap range: a negative
+            //   value, an empty value (a Helm template rendered empty), zero, the
+            //   cap itself and cap + 1 - for the 500 ms TECHNICAL cap and the
+            //   200 ms PERFORMANCE cap. The accepted range is 0..cap inclusive.
+            // How will the test case be deemed successful and why? Successful
+            //   if in-range values survive unchanged without a violation while
+            //   -1, "" and cap + 1 are clamped to the cap with a violation that
+            //   names the discarded value. The parameterization makes the
+            //   inclusive upper bound and the lower bound each a separate,
+            //   named row.
+            // Why is it important to test this test case? A `currentMs <= cap`
+            //   mutation (no lower bound) passes every existing cap test but
+            //   lets max.block.ms=-1 through to the Kafka client, which rejects
+            //   it at construction - the appender then fails to start over a
+            //   value the cap exists to sanitize; and "" is what a templated
+            //   configuration produces when the variable is unset.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(ProducerConfig.MAX_BLOCK_MS_CONFIG to userValue),
+                )
+
+            // When
+            val result = builder.buildFor(topicClass)
+
+            // Then: clamped or kept as the row says
+            assertThat(result.properties).containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, enforcedValue)
+            val capViolations =
+                result.mandatoryOverrideViolations.filter { it.propertyKey == ProducerConfig.MAX_BLOCK_MS_CONFIG }
+            if (violationExpected) {
+                assertThat(capViolations).singleElement().satisfies({ violation ->
+                    assertThat(violation.topicClass).isEqualTo(topicClass)
+                    assertThat(violation.userValue).isEqualTo(userValue)
+                    assertThat(violation.enforcedValue).isEqualTo(enforcedValue)
+                })
+            } else {
+                assertThat(capViolations).isEmpty()
+            }
         }
 
         @Test

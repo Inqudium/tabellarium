@@ -5,6 +5,7 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.OutputStreamAppender
 import ch.qos.logback.core.status.Status
+import ch.qos.logback.core.status.StatusListener
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import net.logstash.logback.encoder.LogstashEncoder
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpMethod
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicInteger
 import ch.qos.logback.classic.Logger as LogbackLogger
 
 /**
@@ -203,6 +205,10 @@ class LogstashHttpMethodKeyValueIngestTest {
     /**
      * Emits one production-shaped diary event through a real [LogstashEncoder] into an in-memory buffer and
      * returns the single JSON line plus the number of encode errors logback swallowed into its StatusManager.
+     * The errors are counted by a [StatusListener] attached for the duration of the emit, not by diffing the
+     * status list: `BasicStatusManager` caps that list (150 header plus 150 tail entries), and the global
+     * `LoggerContext` accumulates statuses across every test class in the JVM, so once it is saturated the
+     * list's size stops moving and a diff would count zero errors regardless.
      * [methodValue] is the value under test for `lap.http.request.method` (a raw [HttpMethod] vs. its String
      * name). The logger is isolated (`additive = false`) so it is independent of any ambient logging config.
      */
@@ -233,27 +239,31 @@ class LogstashHttpMethodKeyValueIngestTest {
             logger.level = Level.INFO
             logger.isAdditive = false
             logger.addAppender(appender)
-            val statusesBefore = context.statusManager.copyOfStatusList.size
+            val encodeErrorCount = AtomicInteger(0)
+            val errorCounter =
+                StatusListener { status ->
+                    if (status.level == Status.ERROR) encodeErrorCount.incrementAndGet()
+                }
+            context.statusManager.add(errorCounter)
+            try {
+                logger
+                    .atError()
+                    .setCause(RuntimeException("403 Forbidden"))
+                    .setMessage("Adapter http exchange access-profiles GET /v5/access-profiles/by-involved-party/uuid -> 403")
+                    .addKeyValue("lap.event.kind", "http-request")
+                    .addKeyValue("lap.event.outcome", "failure")
+                    .addKeyValue("lap.event.duration", 120_143_294L)
+                    .addKeyValue("lap.service.target.name", "access-profiles")
+                    .addKeyValue("lap.http.request.method", methodValue) // the value under test: HttpMethod vs String
+                    .addKeyValue("lap.url.path", "/v5/access-profiles/by-involved-party/uuid")
+                    .addKeyValue("lap.http.response.status_code", 403)
+                    .log()
 
-            logger
-                .atError()
-                .setCause(RuntimeException("403 Forbidden"))
-                .setMessage("Adapter http exchange access-profiles GET /v5/access-profiles/by-involved-party/uuid -> 403")
-                .addKeyValue("lap.event.kind", "http-request")
-                .addKeyValue("lap.event.outcome", "failure")
-                .addKeyValue("lap.event.duration", 120_143_294L)
-                .addKeyValue("lap.service.target.name", "access-profiles")
-                .addKeyValue("lap.http.request.method", methodValue) // the value under test: HttpMethod vs String
-                .addKeyValue("lap.url.path", "/v5/access-profiles/by-involved-party/uuid")
-                .addKeyValue("lap.http.response.status_code", 403)
-                .log()
-
-            appender.stop() // flush the stream
-            val encodeErrors =
-                context.statusManager.copyOfStatusList
-                    .drop(statusesBefore)
-                    .count { it.level == Status.ERROR }
-            return Emitted(out.toString(StandardCharsets.UTF_8).trim(), encodeErrors)
+                appender.stop() // flush the stream
+            } finally {
+                context.statusManager.remove(errorCounter)
+            }
+            return Emitted(out.toString(StandardCharsets.UTF_8).trim(), encodeErrorCount.get())
         } finally {
             logger.detachAppender(appender)
             logger.level = previousLevel

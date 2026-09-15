@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
 import java.time.Duration
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -28,7 +29,8 @@ import java.util.concurrent.atomic.AtomicReference
  * combination (`topic.class` × `reason` for fallbacks, `topic.class` ×
  * `outcome` for send timers, `topic.class` for the rest, none for the
  * fallback-dispatcher meters), so the series count per appender is a
- * function of the enum sizes alone.
+ * function of the enum sizes alone - minus the two fallback queue
+ * gauges, which exist only when a fallback appender is configured.
  *
  * ## Pre-resolution
  *
@@ -169,28 +171,26 @@ internal class MicrometerKafkaAppenderMetrics(
         )
 
     /**
-     * Holder for the queue-size supplier. Replaced atomically by
-     * [registerFallbackQueueGauges]; the gauge always reads the
-     * current supplier. A null supplier (initial state) reports 0.
+     * Holder for the fallback queue-size supplier. Replaced atomically
+     * by every [registerFallbackQueueGauges] call; the gauge, registered
+     * once on the first call, always reads the current supplier.
+     * Micrometer keeps the FIRST registration for a given name+tags
+     * combination, so a repeated call cannot swap the gauge's lambda -
+     * it swaps the holder instead. (Also why [deregisterFrom] must run
+     * on stop/rebind: a fresh instance's gauge must not be silently
+     * shadowed by a stale one.)
      */
     private val queueSizeSupplier: AtomicReference<(() -> Int)?> = AtomicReference(null)
 
-    init {
-        // Register the size gauge once at construction. The actual
-        // supplier is plugged in later via registerFallbackQueueGauges.
-        // Micrometer keeps the FIRST registration for a given name+tags
-        // combination - which is exactly why deregisterFrom() must run
-        // on stop/rebind, so a fresh instance's gauge is not silently
-        // shadowed by a stale one.
-        track(
-            Gauge
-                .builder(METRIC_FALLBACK_QUEUE_SIZE) {
-                    queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
-                }.tags(fullTags)
-                .description("Current number of events waiting in the FallbackDispatcher queue")
-                .register(registry),
-        )
-    }
+    /**
+     * Whether the two fallback queue gauges exist. Both are registered
+     * together, and only when a [FallbackDispatcher] is wired to this
+     * instance: without a fallback appender there is no queue, and a
+     * constant-zero size series next to a missing capacity series would
+     * read as a healthy queue where events are dropped by policy
+     * (`docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md`, finding 9).
+     */
+    private val fallbackGaugesRegistered = AtomicBoolean(false)
 
     /**
      * Removes every meter this instance registered from [registry].
@@ -246,9 +246,18 @@ internal class MicrometerKafkaAppenderMetrics(
         capacity: Int,
     ) {
         safe {
-            // Plug in the live supplier so the size gauge starts
-            // reporting real numbers instead of zero.
+            // The live supplier first, so the gauge never reads a stale
+            // dispatcher's queue between a repeated call and its return.
             queueSizeSupplier.set(queueSize)
+            if (!fallbackGaugesRegistered.compareAndSet(false, true)) return@safe
+            track(
+                Gauge
+                    .builder(METRIC_FALLBACK_QUEUE_SIZE) {
+                        queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
+                    }.tags(fullTags)
+                    .description("Current number of events waiting in the FallbackDispatcher queue")
+                    .register(registry),
+            )
             // The capacity is fixed for the dispatcher's lifetime,
             // so it can be a constant-valued gauge.
             track(
@@ -267,9 +276,9 @@ internal class MicrometerKafkaAppenderMetrics(
         capacity: Int,
     ) {
         safe {
-            // Unlike the fallback queue gauge (pre-registered with a
-            // supplier holder), the send dispatchers exist before the
-            // bind, so both gauges can be registered directly here.
+            // One dispatcher per class exists for the appender's lifetime
+            // and calls this once per bind, so both gauges are registered
+            // directly (a repeated bind deregisters first).
             track(
                 Gauge
                     .builder(METRIC_SEND_QUEUE_SIZE) { queueSize().toDouble() }
