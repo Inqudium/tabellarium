@@ -4,9 +4,10 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.spi.ContextAwareBase;
+import eu.inqudium.tabellarium.DeliveryOwnership;
 import eu.inqudium.tabellarium.EnrichedRecord;
+import eu.inqudium.tabellarium.KafkaAppenderMetrics;
 import eu.inqudium.tabellarium.MetricsBindings;
-import eu.inqudium.tabellarium.MicrometerKafkaAppenderMetrics;
 import eu.inqudium.tabellarium.ProducerPropertiesBuilder;
 import eu.inqudium.tabellarium.ProducerRegistry;
 import eu.inqudium.tabellarium.ResilientMessageSender;
@@ -88,14 +89,16 @@ public class SenderPathBenchmark {
                 properties -> new DiscardingProducer(),
                 Duration.ofSeconds(10));
         CircuitBreakerRegistry breakers = ResilientMessageSender.Companion.defaultCircuitBreakerRegistry();
+        // isolateHeaders=false: the default deployment (no interceptor),
+        // whose shared header instances this benchmark measures.
         sender = new ResilientMessageSender(
-                registry, breakers, null, Duration.ofMillis(5), System::nanoTime);
+                registry, breakers, null, Duration.ofMillis(5), System::nanoTime, false);
 
         if (Boolean.parseBoolean(metricsBound)) {
             ContextAwareBase status = new ContextAwareBase();
             status.setContext(new LoggerContext());
             MetricsBindings bindings = new MetricsBindings(status);
-            MicrometerKafkaAppenderMetrics impl = bindings.bind(
+            KafkaAppenderMetrics impl = bindings.bind(
                     new SimpleMeterRegistry(), Tags.empty(), "bench", breakers, registry);
             sender.setMetrics(impl);
         }
@@ -126,7 +129,12 @@ public class SenderPathBenchmark {
     @Benchmark
     public void sendOneEvent() {
         LoggingEvent event = events[nextIndex()];
-        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, event, () -> Boolean.TRUE);
+        // A fresh DeliveryOwnership per event, as the dispatcher's
+        // PendingSend allocates in production (there on the caller path):
+        // the sender hands it off after producer.send, and a reused one
+        // would fail that hand-off from the second op on and skip the
+        // dispatched metric - a different path than production's.
+        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, event, new DeliveryOwnership());
     }
 
     private int nextIndex() {

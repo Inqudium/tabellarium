@@ -35,7 +35,20 @@ import java.util.concurrent.atomic.AtomicReference
  *   for it exactly once - the worker on delivery success or failure, a
  *   forced [close] when the worker did not finish in time. Without
  *   this, precisely the item in flight at a forced shutdown would
- *   vanish from every accounting.
+ *   vanish from every accounting. The skeleton can only observe
+ *   [deliver] *returning*, so the slot is released right after that;
+ *   a delivery whose hand-off happens *inside* [deliver] and precedes
+ *   its return - `producer.send` accepting the record, with metrics
+ *   and the return path still ahead - must carry the hand-off on the
+ *   item itself and make [reject] stand down for a handed-off item
+ *   ([SendDispatcher] does, via [DeliveryOwnership]); otherwise the
+ *   close's claim would divert a record already on its way
+ *   (`docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md`, M-2).
+ *   For a delivery whose hand-off *is* its return (`doAppend` in the
+ *   [FallbackDispatcher]), the release follows within the same
+ *   statement; a close that claims in that gap over-counts one drop
+ *   for an event that did arrive - the conservative direction, and
+ *   entered only after the drain budget and the interrupt grace.
  * - **Worker death** (an [Error] escaping [deliver] - [Exception]s are
  *   handled in place): leave the accepting state FIRST (with the worker
  *   gone, anything accepted would strand in a queue nothing drains),

@@ -646,14 +646,14 @@ class SendDispatcherTest {
     }
 
     @Nested
-    inner class `Diversion claim` {
+    inner class `Delivery ownership` {
         @Test
         fun `should let the send action stand down when the shutdown divert already claimed the item`() {
             // What is to be tested? The exactly-once contract between a
             //   forced close() and the send action's own error routing:
-            //   the PendingSend's claim is handed to the sender
+            //   the PendingSend's ownership is handed to the sender
             //   (ResilientMessageSender uses it before every fallback
-            //   diversion), so whoever claims first diverts alone.
+            //   diversion), so whoever diverts first diverts alone.
             // How will the test case be deemed successful and why? Successful
             //   if, after close() diverted the pinned in-flight item with
             //   reason shutdown, the send action's later claim attempt
@@ -689,7 +689,7 @@ class SendDispatcherTest {
                         }
                         // The sender would now take its send-error path
                         // and ask for the claim first:
-                        lateClaim.set(item.tryClaimDiversion())
+                        lateClaim.set(item.ownership.tryDivert())
                     },
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
@@ -710,6 +710,79 @@ class SendDispatcherTest {
             assertThat(lateClaim.get()).isFalse()
             fallbackDispatcher.close()
             assertThat(recorder.events).hasSize(1)
+        }
+
+        @Test
+        fun `should not divert an event the send action already handed off when the forced close claims it`() {
+            // What is to be tested? The other direction of the ownership:
+            //   the send action marks the hand-off the moment producer.send
+            //   accepted the record (as ResilientMessageSender does) and is
+            //   then still inside the delivery when the close budget and the
+            //   interrupt grace expire. The close's claim of the in-flight
+            //   item must stand down - the record is on its way to Kafka.
+            // How will the test case be deemed successful and why? Successful
+            //   if, with the worker pinned uninterruptibly AFTER the hand-off,
+            //   close() diverts only the queued events (reason shutdown) and
+            //   never the handed-off one, in the recorder and in the metrics.
+            //   Deterministic: the hand-off happens before the pin, so the
+            //   ordering the race depends on is fixed by the test. Before the
+            //   fix the two-state claim let close() divert it
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, M-2).
+            // Why is it important to test this test case? One event reaching
+            //   Kafka AND the fallback, with events.dispatched and
+            //   events.fallback{reason=shutdown} both counting it, on exactly
+            //   the timeline a pod shutdown under a slow broker produces.
+
+            // Given: a send action that hands off, then pins uninterruptibly
+            val release = CountDownLatch(1)
+            val handedOff = CountDownLatch(1)
+            val recorder = RecordingAppender(testContext)
+            val metrics = RecordingMetrics()
+            val fallbackDispatcher = newFallback(recorder)
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = { item ->
+                        // producer.send returned without a synchronous failure:
+                        assertThat(item.ownership.tryHandOff()).isTrue()
+                        handedOff.countDown()
+                        var wasInterrupted = false
+                        while (release.count > 0) {
+                            try {
+                                release.await()
+                            } catch (_: InterruptedException) {
+                                wasInterrupted = true
+                            }
+                        }
+                        if (wasInterrupted) {
+                            Thread.currentThread().interrupt()
+                        }
+                    },
+                    fallbackDispatcher = fallbackDispatcher,
+                    drainTimeoutMs = 100,
+                )
+            dispatcher.setMetrics(metrics)
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("handed-off"))
+            assertThat(handedOff.await(2, TimeUnit.SECONDS)).isTrue()
+            (1..2).forEach { i ->
+                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-$i"))
+            }
+
+            // When: the forced close claims the in-flight item and the queue
+            dispatcher.close()
+
+            // Then: only the queued events were diverted
+            pollUntil { recorder.events.size == 2 }
+            assertThat(recorder.events.map { it.formattedMessage }).containsExactlyInAnyOrder("queued-1", "queued-2")
+            assertThat(metrics.fallbackReasons)
+                .containsOnly(KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
+                .hasSize(2)
+
+            // Cleanup: release the worker; closing the fallback dispatcher
+            // drains it, so a late diversion would be visible by the assertion
+            release.countDown()
+            fallbackDispatcher.close()
+            assertThat(recorder.events).hasSize(2)
         }
     }
 

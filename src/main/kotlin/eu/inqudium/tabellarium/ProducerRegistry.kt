@@ -60,6 +60,19 @@ internal class ProducerRegistry private constructor(
     val effectiveProperties: Map<TopicClass, Map<String, String>>,
 ) : AutoCloseable {
     /**
+     * Whether any producer was created with `interceptor.classes`: the
+     * one Kafka extension point that receives the appender's
+     * `ProducerRecord` before serialization (the serializers are forced
+     * to `ByteArraySerializer`, the partitioner never sees headers). The
+     * sender isolates the shared record headers per record exactly when
+     * this is true - see [ResilientMessageSender].
+     */
+    val hasProducerInterceptors: Boolean =
+        effectiveProperties.values.any { properties ->
+            !properties[ProducerConfig.INTERCEPTOR_CLASSES_CONFIG].isNullOrBlank()
+        }
+
+    /**
      * Topic classes for which a producer was successfully created.
      */
     val activeTopicClasses: Set<TopicClass>

@@ -14,6 +14,7 @@ import org.apache.kafka.common.errors.InvalidTopicException
 import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.errors.SerializationException
 import org.apache.kafka.common.errors.TopicAuthorizationException
+import org.apache.kafka.common.header.internals.RecordHeader
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -70,10 +71,10 @@ import java.util.concurrent.TimeUnit
  * (MDC map, arguments, throwable proxy) on the heap - the retained set
  * is bounded by those two producer settings, not by the appender's
  * queue capacities. The callback deliberately captures nothing else
- * that scales with the event: the diversion claim it receives is a
- * detached [SendDispatcher.DiversionClaim], so the already-serialized
- * payload copy and the [SendDispatcher.PendingSend] are released the
- * moment `send` returns. Deployments that log exception-heavy events
+ * that scales with the event: the [DeliveryOwnership] it receives is
+ * detached from the [SendDispatcher.PendingSend], so the
+ * already-serialized payload copy and the pending send are released
+ * the moment `send` returns. Deployments that log exception-heavy events
  * at high volume should size `buffer.memory` and `delivery.timeout.ms`
  * with the event size, not the payload size, in mind.
  *
@@ -123,6 +124,25 @@ import java.util.concurrent.TimeUnit
  *                       [HalfOpenThrottle] instances. Defaults to
  *                       [System.nanoTime]; tests inject a deterministic
  *                       source.
+ * @param isolateHeaders Whether every record gets its own copies of
+ *                       the enrichment headers instead of the shared
+ *                       pre-built ones. The shared headers are the
+ *                       measured allocation saving of
+ *                       `PERF_ANALYSIS-2026-08-29T11-01-08`, finding 2,
+ *                       and safe as long as nothing mutates their value
+ *                       arrays - which nothing inside the library or
+ *                       the Kafka client does. A configured
+ *                       `ProducerInterceptor` is the one third party
+ *                       that receives the record before serialization,
+ *                       and Kafka allows it to modify the record; an
+ *                       interceptor writing into a header's value array
+ *                       would corrupt every later record and every
+ *                       record still waiting for serialization
+ *                       (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-1).
+ *                       The transport therefore passes
+ *                       [ProducerRegistry.hasProducerInterceptors]:
+ *                       the copies are paid exactly where the boundary
+ *                       is crossed.
  */
 internal class ResilientMessageSender(
     private val producerRegistry: ProducerRegistry,
@@ -130,6 +150,7 @@ internal class ResilientMessageSender(
     private val fallbackDispatcher: FallbackDispatcher?,
     halfOpenProbeGap: Duration = DEFAULT_HALF_OPEN_PROBE_GAP,
     nanoTimeSource: () -> Long = System::nanoTime,
+    private val isolateHeaders: Boolean = false,
 ) {
     private val circuitBreakersByClass: Map<TopicClass, CircuitBreaker> =
         producerRegistry.activeTopicClasses.associateWith { topicClass ->
@@ -167,17 +188,19 @@ internal class ResilientMessageSender(
      * [topicClass]. If the circuit is open or the send fails, [originalEvent]
      * is enqueued for asynchronous delivery to the fallback appender.
      *
-     * @param claimDiversion Exactly-once guard for the fallback
-     *        diversion of this event. Every diversion path (throttle,
-     *        open breaker, synchronous send failure, callback error)
-     *        first asks this function for the claim and diverts only
-     *        when it returns true. The [SendDispatcher] passes its
-     *        per-item compare-and-set here so that an event already
-     *        diverted by a forced dispatcher shutdown (reason
-     *        `shutdown`) is not routed to the fallback a second time
-     *        when the parked send later unblocks with an exception.
-     *        The default claims unconditionally - correct for direct
-     *        callers, where no other party diverts.
+     * @param ownership Who owns this event's outcome, shared with the
+     *        [SendDispatcher] - see [DeliveryOwnership]. Every diversion
+     *        path (throttle, open breaker, synchronous send failure,
+     *        callback error) first wins the transition to diverted and
+     *        diverts only then, so an event a forced dispatcher shutdown
+     *        already diverted (reason `shutdown`) is not routed to the
+     *        fallback a second time when the parked send later unblocks
+     *        with an exception. Conversely, the moment `producer.send`
+     *        returns without a synchronous failure the sender marks the
+     *        hand-off, after which a forced shutdown can no longer
+     *        divert the event. The default is a fresh, unshared
+     *        ownership - correct for direct callers, where no other
+     *        party diverts.
      * @throws IllegalStateException if [topicClass] is not active in the
      *                               registry. This is a programming error
      *                               (configuration drift), not a runtime
@@ -189,7 +212,7 @@ internal class ResilientMessageSender(
         payload: ByteArray,
         enrichment: EnrichedRecord,
         originalEvent: ILoggingEvent,
-        claimDiversion: () -> Boolean = { true },
+        ownership: DeliveryOwnership = DeliveryOwnership(),
     ) {
         val circuitBreaker =
             circuitBreakersByClass[topicClass]
@@ -204,7 +227,7 @@ internal class ResilientMessageSender(
         // route to the fallback without consuming a Resilience4j
         // permission. See HalfOpenThrottle KDoc for the rationale.
         if (!throttle.mayAttemptProbe()) {
-            if (claimDiversion()) {
+            if (ownership.tryDivert()) {
                 m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.THROTTLE)
                 sendToFallback(originalEvent)
             }
@@ -213,7 +236,7 @@ internal class ResilientMessageSender(
 
         if (!circuitBreaker.tryAcquirePermission()) {
             // Breaker is OPEN, or HALF_OPEN with no further permitted calls.
-            if (claimDiversion()) {
+            if (ownership.tryDivert()) {
                 m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.BREAKER_OPEN)
                 sendToFallback(originalEvent)
             }
@@ -222,7 +245,7 @@ internal class ResilientMessageSender(
 
         val producer = producerRegistry.producerFor(topicClass)
         val record = buildRecord(topicName, payload, enrichment)
-        val callback = SendCallback(topicClass, circuitBreaker, m, originalEvent, claimDiversion)
+        val callback = SendCallback(topicClass, circuitBreaker, m, originalEvent, ownership)
 
         try {
             // Rationale: the Future returned here is intentionally
@@ -239,8 +262,15 @@ internal class ResilientMessageSender(
             // when the callback has not already reported the failure
             // synchronously - an event that ended in the fallback before
             // send returned was never dispatched, and a synchronous throw
-            // below means the dispatch did not happen either.
-            if (!callback.errorReported) {
+            // below means the dispatch did not happen either. The
+            // hand-off is recorded FIRST, before any further work on this
+            // thread: from here on the callback owns the outcome and a
+            // forced dispatcher close can no longer divert the event as a
+            // shutdown remainder. A lost hand-off means such a close won
+            // while the client was accepting the record - the event is
+            // then counted by that diversion and not as dispatched (see
+            // DeliveryOwnership on the residual race).
+            if (!callback.errorReported && ownership.tryHandOff()) {
                 m.eventDispatched(topicClass)
             }
         } catch (e: Exception) {
@@ -252,7 +282,7 @@ internal class ResilientMessageSender(
             val elapsed = System.nanoTime() - callback.startNanos
             circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, e)
             m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, Duration.ofNanos(elapsed))
-            if (claimDiversion()) {
+            if (ownership.tryDivert()) {
                 m.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                 sendToFallback(originalEvent)
             }
@@ -265,16 +295,16 @@ internal class ResilientMessageSender(
      * read on the calling thread after `send` returns (the Kafka client
      * invokes the callback synchronously for its `ApiException` path)
      * and so that the captured state is explicit: the event for the
-     * fallback, the breaker, the metrics snapshot and the diversion
-     * claim - nothing that scales with the payload (see the class KDoc
-     * on memory while a send is pending).
+     * fallback, the breaker, the metrics snapshot and the delivery
+     * ownership - nothing that scales with the payload (see the class
+     * KDoc on memory while a send is pending).
      */
     private inner class SendCallback(
         private val topicClass: TopicClass,
         private val circuitBreaker: CircuitBreaker,
         private val metrics: KafkaAppenderMetrics,
         private val originalEvent: ILoggingEvent,
-        private val claimDiversion: () -> Boolean,
+        private val ownership: DeliveryOwnership,
     ) : Callback {
         val startNanos: Long = System.nanoTime()
 
@@ -308,7 +338,11 @@ internal class ResilientMessageSender(
                 errorReported = true
                 circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, exception)
                 metrics.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
-                if (claimDiversion()) {
+                // From PENDING (the client reported synchronously inside
+                // send) or from HANDED_OFF (asynchronously): the callback
+                // is the owner after the hand-off. Stands down when a
+                // forced close diverted the event before the hand-off.
+                if (ownership.tryDivertAfterSend()) {
                     metrics.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                     sendToFallback(originalEvent)
                 }
@@ -332,8 +366,17 @@ internal class ResilientMessageSender(
     ): ProducerRecord<ByteArray, ByteArray> {
         val key = enrichment.partitioningKey?.toByteArray(Charsets.UTF_8)
         // The pre-built shared headers are passed by reference and are
-        // read-only by convention - see [EnrichedRecord.headers].
-        return ProducerRecord(topicName, null, null, key, payload, enrichment.headers)
+        // read-only by convention - see [EnrichedRecord.headers] - unless
+        // an interceptor stands at this boundary (isolateHeaders): then
+        // each record gets wrappers and value arrays of its own, so
+        // whatever the interceptor writes stays with that record.
+        val headers =
+            if (isolateHeaders) {
+                enrichment.headers.map { header -> RecordHeader(header.key(), header.value()?.copyOf()) }
+            } else {
+                enrichment.headers
+            }
+        return ProducerRecord(topicName, null, null, key, payload, headers)
     }
 
     companion object {

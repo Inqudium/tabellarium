@@ -140,11 +140,12 @@ class ResilientMessageSenderTest {
         nanoTimeSource: () -> Long = System::nanoTime,
         cbRegistry: CircuitBreakerRegistry = CircuitBreakerRegistry.ofDefaults(),
         wrapProducer: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
+        producerProperties: Map<String, String> = baseProperties,
     ): SenderContext {
         val factory = RecordingProducerFactory(autoComplete, wrapProducer)
         val registry =
             ProducerRegistry.create(
-                propertiesBuilder = ProducerPropertiesBuilder(baseProperties),
+                propertiesBuilder = ProducerPropertiesBuilder(producerProperties),
                 activeTopicClasses = activeClasses,
                 producerFactory = factory,
             )
@@ -160,6 +161,8 @@ class ResilientMessageSenderTest {
                 fallbackDispatcher = dispatcher,
                 halfOpenProbeGap = halfOpenProbeGap,
                 nanoTimeSource = nanoTimeSource,
+                // The same derivation the transport uses.
+                isolateHeaders = registry.hasProducerInterceptors,
             )
         return SenderContext(sender, factory, cbRegistry, fallback, registry, dispatcher).also { openContexts += it }
     }
@@ -334,6 +337,112 @@ class ResilientMessageSenderTest {
                     header.key() to String(header.value(), Charsets.UTF_8)
                 }
             assertThat(actualHeaders).containsExactlyInAnyOrderEntriesOf(expectedHeaders)
+        }
+
+        @Test
+        fun `should share the pre-built header instances across records when no interceptor is configured`() {
+            // What is to be tested? The allocation contract of the default
+            //   configuration: without interceptor.classes the record
+            //   carries the enrichment's shared Header instances by
+            //   reference - no per-record wrappers or value copies.
+            // How will the test case be deemed successful and why? Successful
+            //   if every header object on two sent records is identical to
+            //   the enrichment's. This pins the measured saving of
+            //   docs/assessment/PERF_ANALYSIS-2026-08-29T11-01-08.md,
+            //   finding 2, which the isolation for interceptors must not
+            //   silently undo for everyone.
+            // Why is it important to test this test case? The copies are
+            //   meant to be paid exactly where a third party can reach
+            //   the shared arrays; a regression that copied always would
+            //   pass every functional test and only show up in an
+            //   allocation profile.
+
+            // Given
+            val ctx = newSender()
+
+            // When: two records
+            repeat(2) {
+                ctx.sender.send(
+                    topicClass = TopicClass.AUDIT,
+                    topicName = "audit-events",
+                    payload = "payload".toByteArray(),
+                    enrichment = basicEnrichment,
+                    originalEvent = newTestLoggingEvent(),
+                )
+            }
+
+            // Then: both carry the enrichment's own instances
+            ctx.factory.createdProducers[0].history().forEach { record ->
+                assertThat(record.headers().toArray().toList()).containsExactlyElementsOf(basicEnrichment.headers)
+                record.headers().forEachIndexed { index, header ->
+                    assertThat(header).isSameAs(basicEnrichment.headers[index])
+                }
+            }
+        }
+
+        @Test
+        fun `should give each record its own header copies when an interceptor is configured`() {
+            // What is to be tested? Whether the sender isolates the shared
+            //   enrichment headers per record once interceptor.classes is
+            //   set: Kafka allows a ProducerInterceptor to modify the
+            //   record it receives, and RecordHeader.value() exposes the
+            //   value array itself.
+            // How will the test case be deemed successful and why? Successful
+            //   if writing into a sent record's header value (what a
+            //   mutating interceptor would do) leaves the enrichment's
+            //   shared array and the next record's header untouched, and
+            //   the record's header objects are not the enrichment's.
+            //   Before the fix the shared array changed for every later
+            //   record and every record still waiting for serialization
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md,
+            //   M-1).
+            // Why is it important to test this test case? meta.component,
+            //   meta.cmdbId and meta.environment are what downstream
+            //   systems attribute audit records by; a corrupted shared
+            //   value would misattribute every subsequent event of the
+            //   process without any error.
+
+            // Given: a producer configuration that names an interceptor
+            val ctx =
+                newSender(
+                    producerProperties =
+                        baseProperties + (ProducerConfig.INTERCEPTOR_CLASSES_CONFIG to "com.example.AuditInterceptor"),
+                )
+            val componentHeader = basicEnrichment.headers[0]
+            val originalValue = componentHeader.value().copyOf()
+
+            // When: the first record is sent and an "interceptor" writes into its header value
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "first".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+            val firstRecord = ctx.factory.createdProducers[0].history()[0]
+            firstRecord
+                .headers()
+                .lastHeader(componentHeader.key())
+                .value()
+                .fill('X'.code.toByte())
+            // And: a second record follows from the same enrichment
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "second".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+
+            // Then: the shared instance and the second record are unaffected
+            assertThat(componentHeader.value()).containsExactly(*originalValue)
+            val secondRecord = ctx.factory.createdProducers[0].history()[1]
+            assertThat(secondRecord.headers().lastHeader(componentHeader.key()).value()).containsExactly(*originalValue)
+            // And: neither record carries the enrichment's own instances
+            listOf(firstRecord, secondRecord).forEach { record ->
+                record.headers().forEach { header -> assertThat(header).isNotSameAs(componentHeader) }
+                assertThat(record.headers().toArray().map { it.key() }).containsExactlyElementsOf(basicEnrichment.headers.map { it.key() })
+            }
         }
     }
 
@@ -1039,16 +1148,19 @@ class ResilientMessageSenderTest {
             // What is to be tested? The stand-down half of the exactly-once
             //   contract, on every one of the sender's four diversion gates:
             //   throttle, open breaker, synchronous throw and callback error.
-            //   When claimDiversion returns false - a forced close claimed the
-            //   in-flight item between the dispatcher's inFlight.set and the
-            //   sender's gate - the sender must neither enqueue the event to
-            //   the fallback nor report a fallback metric.
+            //   When the ownership is already diverted - a forced close
+            //   claimed the in-flight item between the dispatcher's
+            //   inFlight.set and the sender's gate - the sender must neither
+            //   enqueue the event to the fallback nor report a fallback
+            //   metric.
             // How will the test case be deemed successful and why? Successful
             //   if, after the fallback dispatcher drained, the recorder is
             //   empty and no "fallback" metric was recorded, while the gate's
-            //   other accounting (send.completed(error) for the two failure
-            //   gates, dispatched for the callback gate) still happened. A
-            //   gate that diverts without asking the claim fails on both the
+            //   other accounting (send.completed(error) for the three failure
+            //   gates) still happened - and the callback gate does not count
+            //   the event as dispatched either: the close's diversion already
+            //   accounted for it, so the hand-off is refused. A gate that
+            //   diverts without asking the ownership fails on both the
             //   recorder and the metric.
             // Why is it important to test this test case? No unit test drove
             //   the sender with a taken claim - the stand-down was pinned only
@@ -1101,10 +1213,10 @@ class ResilientMessageSenderTest {
                 payload = "p".toByteArray(),
                 enrichment = basicEnrichment,
                 originalEvent = newTestLoggingEvent(message = "already claimed"),
-                claimDiversion = { false },
+                ownership = DeliveryOwnership().apply { check(tryDivert()) },
             )
             if (gate == DiversionGate.CALLBACK_ERROR) {
-                assertThat(metrics.kinds()).containsExactly("dispatched")
+                assertThat(metrics.kinds()).isEmpty()
                 producer.errorNext(RuntimeException("leader gone"))
             }
 
@@ -1124,10 +1236,130 @@ class ResilientMessageSenderTest {
                 }
 
                 DiversionGate.CALLBACK_ERROR -> {
-                    assertThat(metrics.kinds()).containsExactly("dispatched", "send.completed")
-                    assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
+                    assertThat(metrics.kinds()).containsExactly("send.completed")
+                    assertThat(metrics.events.single().detail).isEqualTo("error")
                 }
             }
+        }
+    }
+
+    @Nested
+    inner class `Hand-off ownership` {
+        @Test
+        fun `should hand the event off once the producer accepted it so a forced close can no longer divert it`() {
+            // What is to be tested? The transition the M-2 fix adds to the
+            //   send path: right after producer.send returns without a
+            //   synchronous failure the sender marks the ownership handed
+            //   off, so the dispatcher's shutdown claim (a plain tryDivert)
+            //   stands down - while the callback keeps its right to divert
+            //   on an asynchronous error, exactly once.
+            // How will the test case be deemed successful and why? Successful
+            //   if after send() the ownership refuses tryDivert, the event was
+            //   counted as dispatched, and a later asynchronous error still
+            //   delivers it to the fallback exactly once with reason
+            //   send.error. Before the fix the ownership stayed claimable
+            //   after the hand-off
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, M-2).
+            // Why is it important to test this test case? The dispatcher test
+            //   pins the close's stand-down given a hand-off; this pins that
+            //   the sender actually performs the hand-off at the right moment
+            //   - without it the dispatcher's stand-down would never trigger.
+
+            // Given: a sender whose producer completes asynchronously
+            val ctx = newSender(autoComplete = false)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+            val ownership = DeliveryOwnership()
+
+            // When: the producer accepts the record
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "handed off"),
+                ownership = ownership,
+            )
+
+            // Then: handed off - the shutdown claim stands down, dispatched counted
+            assertThat(ownership.tryDivert()).isFalse()
+            assertThat(metrics.kinds()).containsExactly("dispatched")
+
+            // When: the client later reports an error
+            ctx.factory.createdProducers[0].errorNext(RuntimeException("leader gone"))
+
+            // Then: the callback diverted it exactly once
+            checkNotNull(ctx.dispatcher).close()
+            assertThat(ctx.recorder.events.map { it.formattedMessage }).containsExactly("handed off")
+            assertThat(metrics.events.filter { it.kind == "fallback" }.map { it.detail }).containsExactly("send.error")
+            assertThat(ownership.tryDivertAfterSend()).isFalse()
+        }
+
+        @Test
+        fun `should not count an event as dispatched when a forced close diverted it while the producer was accepting it`() {
+            // What is to be tested? The residual race the ownership cannot
+            //   close but must keep consistent: the close's claim lands while
+            //   the worker is inside producer.send, after the client accepted
+            //   the record. The record is in the producer AND in the fallback;
+            //   the metrics must still describe the event exactly once - as
+            //   the fallback the close counted, not additionally as dispatched
+            //   - and a later asynchronous error must not divert it again.
+            // How will the test case be deemed successful and why? Successful
+            //   if, with a producer double that diverts the ownership inside
+            //   send (modelling the racing close), no "dispatched" metric is
+            //   reported although the record is in the producer's history,
+            //   and an asynchronous error afterwards reports send.completed
+            //   (error) without a fallback delivery or metric.
+            // Why is it important to test this test case? accepted =
+            //   dispatched + fallback is the documented invariant operators
+            //   alert on; the duplicate record is the documented residual of
+            //   a forced shutdown, the double count would not be.
+
+            // Given: a producer double that models the close winning inside send
+            val ownership = DeliveryOwnership()
+            val ctx =
+                newSender(
+                    autoComplete = false,
+                    wrapProducer = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun send(
+                                record: ProducerRecord<ByteArray, ByteArray>,
+                                callback: Callback?,
+                            ): Future<RecordMetadata> {
+                                val future = mock.send(record, callback)
+                                // The forced close claims the in-flight item
+                                // after the client accepted the record:
+                                check(ownership.tryDivert())
+                                return future
+                            }
+                        }
+                    },
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "raced"),
+                ownership = ownership,
+            )
+
+            // Then: in the producer, but accounted by the close's diversion only
+            assertThat(ctx.factory.createdProducers[0].history()).hasSize(1)
+            assertThat(metrics.kinds()).isEmpty()
+
+            // When: the client later reports an error for the record
+            ctx.factory.createdProducers[0].errorNext(RuntimeException("leader gone"))
+
+            // Then: outcome recorded, no second diversion
+            checkNotNull(ctx.dispatcher).close()
+            assertThat(ctx.recorder.events).isEmpty()
+            assertThat(metrics.kinds()).containsExactly("send.completed")
+            assertThat(metrics.events.single().detail).isEqualTo("error")
         }
     }
 

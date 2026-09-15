@@ -123,7 +123,7 @@ internal class KafkaTransport private constructor(
      * not prevent the rest of the sequence.
      */
     fun close(warn: (message: String, cause: Throwable?) -> Unit) {
-        closeAll(sendDispatchers, producerRegistry, fallbackDispatcher, warn)
+        closeAll(sendDispatchers, producerRegistry, fallbackDispatcher, selfLoggingGuard, warn)
     }
 
     companion object {
@@ -170,13 +170,16 @@ internal class KafkaTransport private constructor(
             // From here on real resources exist; the catch below implements
             // the rollback contract from the class KDoc.
             var fallbackDispatcher: FallbackDispatcher? = null
+            var selfLoggingGuard: SelfLoggingGuard? = null
             val sendDispatchers = LinkedHashMap<TopicClass, SendDispatcher>()
             try {
                 // The guard needs the producers' client ids, so it comes
                 // right after the registry - inside the rollback, because a
                 // throwing factory (a substituted one, in tests) would
-                // otherwise leak the producers.
-                val selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
+                // otherwise leak the producers, and a created guard must
+                // leave the process-wide registry again if a later step
+                // throws.
+                selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
                 // Wrap the fallback appender in a dispatcher so the Kafka I/O
                 // thread is never blocked on the fallback's downstream I/O.
                 // See FallbackDispatcher KDoc for the rationale.
@@ -198,6 +201,9 @@ internal class KafkaTransport private constructor(
                         producerRegistry = registry,
                         circuitBreakerRegistry = circuitBreakerRegistry,
                         fallbackDispatcher = fallbackDispatcher,
+                        // Per-record header copies only where a configured
+                        // interceptor can reach the shared ones.
+                        isolateHeaders = registry.hasProducerInterceptors,
                     )
                 // One send dispatcher per active class: producer.send runs on
                 // the dispatcher's worker, never on the logging caller. The
@@ -208,20 +214,22 @@ internal class KafkaTransport private constructor(
                         SendDispatcher(
                             topicClass = topicClass,
                             sendAction = { pending ->
-                                // Invariant: claimDiversion shares the per-item
-                                // exactly-once guard with the dispatcher, so a
-                                // forced-shutdown divert and the sender's own
-                                // error routing never both deliver the same
-                                // event. Rationale: the detached claim object
-                                // (not the PendingSend) is what the Kafka
-                                // callback retains - see DiversionClaim.
+                                // Invariant: the per-item ownership is shared
+                                // with the dispatcher, so a forced-shutdown
+                                // divert and the sender's own error routing
+                                // never both deliver the same event, and a
+                                // forced shutdown never diverts an event the
+                                // producer already accepted. Rationale: the
+                                // detached ownership object (not the
+                                // PendingSend) is what the Kafka callback
+                                // retains - see DeliveryOwnership.
                                 sender.send(
                                     topicClass,
                                     pending.topicName,
                                     pending.payload,
                                     pending.enrichment,
                                     pending.originalEvent,
-                                    claimDiversion = pending.claim::tryClaim,
+                                    ownership = pending.ownership,
                                 )
                             },
                             fallbackDispatcher = fallbackDispatcher,
@@ -250,7 +258,7 @@ internal class KafkaTransport private constructor(
                 // Exception: the dispatcher constructors start threads, and
                 // the OutOfMemoryError of thread exhaustion at start-up must
                 // not leave the producers behind either.
-                closeAll(sendDispatchers, registry, fallbackDispatcher) { _, _ -> }
+                closeAll(sendDispatchers, registry, fallbackDispatcher, selfLoggingGuard) { _, _ -> }
                 throw e
             }
         }
@@ -261,12 +269,14 @@ internal class KafkaTransport private constructor(
          * [SendDispatcher.close] is itself bounded, so the closer
          * threads always finish and the join budget only adds
          * scheduling margin), then the producer registry, then the
-         * fallback dispatcher.
+         * fallback dispatcher, and last the self-logging guard - after
+         * the producers and workers whose echo it recognizes are gone.
          */
         private fun closeAll(
             sendDispatchers: Map<TopicClass, SendDispatcher>,
             producerRegistry: ProducerRegistry,
             fallbackDispatcher: FallbackDispatcher?,
+            selfLoggingGuard: SelfLoggingGuard?,
             warn: (message: String, cause: Throwable?) -> Unit,
         ) {
             // Close the send dispatchers BEFORE the producer registry: their
@@ -312,6 +322,15 @@ internal class KafkaTransport private constructor(
                 }
             } catch (e: Exception) {
                 warn("Error closing fallback dispatcher: ${e.message}", e)
+            }
+            // The guard leaves the process-wide registry LAST: until here
+            // the producers and workers could still log, and their echo
+            // must be recognized to the end. Null only in the rollback of
+            // a guard factory that threw.
+            try {
+                selfLoggingGuard?.close()
+            } catch (e: Exception) {
+                warn("Error closing self-logging guard: ${e.message}", e)
             }
         }
 

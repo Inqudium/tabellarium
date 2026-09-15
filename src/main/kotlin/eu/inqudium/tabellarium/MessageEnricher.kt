@@ -251,6 +251,13 @@ internal class MessageEnricher(
  * the same [MessageEnricher] instance and would also corrupt records
  * already accepted by Kafka but not yet serialized to the wire.
  *
+ * The convention binds this module and holds for the Kafka client,
+ * which never writes into a header value. It cannot bind a configured
+ * `ProducerInterceptor`, the one extension that receives the record
+ * before serialization and that Kafka allows to modify it; for that
+ * case the sender hands each record copies of its own instead of the
+ * shared instances ([ResilientMessageSender]'s `isolateHeaders`).
+ *
  * The list itself is guaranteed immutable (built via
  * [java.util.List.copyOf] in the enricher); attempts to add or remove
  * entries throw [UnsupportedOperationException].
@@ -275,8 +282,9 @@ internal class MessageEnricher(
  * API shrinks that read-only contract from "every consumer of the
  * library" to "code in this module" - the only code that ever touches
  * the arrays is the enricher (writes once) and the sender (hands them
- * to Kafka, which does not mutate header values). See ADR-0002 for
- * the public-surface boundary.
+ * to Kafka, which does not mutate header values, or hands out copies
+ * where an interceptor could). See ADR-0002 for the public-surface
+ * boundary.
  *
  * @param partitioningKey The Kafka record key. Null means "no key": the
  *                        producer will then distribute records via its

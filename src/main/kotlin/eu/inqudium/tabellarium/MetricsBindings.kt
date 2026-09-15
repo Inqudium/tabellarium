@@ -47,6 +47,25 @@ import java.util.IdentityHashMap
  * `CircuitBreakerMetricsMirrorTest` does the name/type/tag part on
  * every build against the official binder on the test classpath.
  *
+ * ## One binding per meter identity
+ *
+ * Every meter of an appender carries the `appender` tag (its Logback
+ * name, or `unnamed`) plus the operator's common tags. Two instances
+ * with the same name bound to one registry would therefore ask
+ * Micrometer for identical IDs, and Micrometer hands both the same
+ * meter objects: their counters would mix, and the first [unbind]
+ * would remove series the other instance still publishes through -
+ * dashboards would show an outage as "no data"
+ * (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, L-2). [bind] therefore
+ * checks the registry for a live binding with the same identity first
+ * and refuses the second one entirely - no appender, breaker or
+ * producer meters, a status warning that names the tag, [isBound]
+ * stays false - so the first instance's series remain whole and
+ * trustworthy. A per-instance discriminator tag was considered and
+ * rejected: it would change the documented inventory and cardinality
+ * for every deployment to serve a misconfiguration whose fix is a
+ * distinct appender name.
+ *
  * ## Lazy class-loading pattern for the optional Kafka binder
  *
  * The Kafka producer-metrics integration starts with a [Class.forName]
@@ -135,7 +154,9 @@ internal class MetricsBindings(
      * Binds everything to [registry] and returns the appender-metrics
      * implementation the caller should install on its hot path. A
      * previous bind is torn down first so a repeated bind replaces
-     * instead of duplicating.
+     * instead of duplicating. Returns [KafkaAppenderMetrics.NO_OP] and
+     * binds nothing when [registry] already holds a live binding with
+     * the same meter identity (see the class KDoc).
      */
     fun bind(
         registry: MeterRegistry,
@@ -143,15 +164,24 @@ internal class MetricsBindings(
         appenderName: String?,
         circuitBreakerRegistry: CircuitBreakerRegistry,
         producerRegistry: ProducerRegistry,
-    ): MicrometerKafkaAppenderMetrics {
+    ): KafkaAppenderMetrics {
         unbind()
-        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName)
-        boundMetrics = impl
-        boundRegistry = registry
         // Same derivation as MicrometerKafkaAppenderMetrics: every meter
         // of this appender carries the identical appender tag value.
         val appenderTag = appenderName?.takeIf { it.isNotBlank() } ?: "unnamed"
-        warnOnBreakerMeterCollision(registry, producerRegistry, appenderTag)
+        if (isIdentityBound(registry, commonTags, appenderTag)) {
+            status.addWarn(
+                "MeterRegistry already contains the meters of a KafkaAppender tagged appender='$appenderTag' " +
+                    "with the same common tags - another KafkaAppender instance with the same (or no) name is " +
+                    "bound to this registry. Metrics binding refused: Micrometer would hand both instances the " +
+                    "same meters, mixing their counts and removing the shared series when either stops. " +
+                    "Give each KafkaAppender a distinct name and bind again.",
+            )
+            return KafkaAppenderMetrics.NO_OP
+        }
+        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName)
+        boundMetrics = impl
+        boundRegistry = registry
         bindResilience4jMetrics(registry, commonTags, appenderTag, circuitBreakerRegistry)
         bindKafkaProducerMetrics(registry, commonTags, appenderTag, producerRegistry)
         return impl
@@ -190,40 +220,24 @@ internal class MetricsBindings(
     }
 
     /**
-     * The `appender` tag makes the circuit-breaker meter IDs unique per
-     * appender instance - unless two appenders share the same (or no)
-     * name and bind to the same MeterRegistry, in which case the IDs
-     * collide after all: state gauges then keep reporting whichever
-     * instance registered first, and counters mix both. The binding
-     * itself stays best-effort - but the operator gets told that the
-     * breaker metrics are not trustworthy in this setup.
+     * Whether [registry] already holds a live binding with this
+     * appender's meter identity: the `appender` tag plus the common
+     * tags. Probed on the accepted-events counter, which every binding
+     * registers first and removes on unbind, so a hit is a binding that
+     * is still in place - not a leftover. [MeterRegistry.find] matches
+     * meters that carry at least the given tags, so the counter's own
+     * `topic.class` tag does not hide it.
      */
-    private fun warnOnBreakerMeterCollision(
+    private fun isIdentityBound(
         registry: MeterRegistry,
-        producerRegistry: ProducerRegistry,
+        commonTags: Iterable<Tag>,
         appenderTag: String,
-    ) {
-        val breakerNames =
-            producerRegistry.activeTopicClasses
-                .map { ResilientMessageSender.circuitBreakerName(it) }
-                .toSet()
-        val colliding =
-            registry.meters
-                .filter { meter ->
-                    meter.id.name.startsWith("resilience4j.circuitbreaker") &&
-                        meter.id.getTag("name") in breakerNames &&
-                        meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER) == appenderTag
-                }.mapNotNull { it.id.getTag("name") }
-                .toSortedSet()
-        if (colliding.isEmpty()) return
-        status.addWarn(
-            "MeterRegistry already contains circuit-breaker meters for ${colliding.joinToString()} " +
-                "with the same appender tag '$appenderTag' - most likely from another " +
-                "KafkaAppender instance with the same (or no) name bound to the same registry. " +
-                "The colliding breaker gauges/counters will not reflect this appender's state; " +
-                "give each KafkaAppender a distinct name for trustworthy per-appender breaker metrics.",
-        )
-    }
+    ): Boolean =
+        registry
+            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+            .tags(Tags.of(commonTags).and(MicrometerKafkaAppenderMetrics.TAG_APPENDER, appenderTag))
+            .meters()
+            .isNotEmpty()
 
     /**
      * Best-effort binding of the circuit-breaker metrics. Mirrors the

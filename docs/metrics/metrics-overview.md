@@ -7,7 +7,7 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 | Metric                             | Tags                                | When it is incremented                                       |
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
 | `kafka.appender.events.accepted`   | `appender`, `topic.class`           | Every event that enters `KafkaAppender.append()` (after routing to its topic class; a hot-path failure before routing counts under `technical`). Events dropped by the reentry and self-logging guards never enter the pipeline and are not counted |
-| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was handed to `producer.send()` without a synchronous failure (callback outcome still unknown); an event the client rejected before `send()` returned - metadata timeout, buffer exhausted, record too large - counts as `events.fallback{reason="send.error"}` instead, never as both |
+| `kafka.appender.events.dispatched` | `appender`, `topic.class`           | Event was handed to `producer.send()` without a synchronous failure (callback outcome still unknown); an event the client rejected before `send()` returned - metadata timeout, buffer exhausted, record too large - counts as `events.fallback{reason="send.error"}` instead, never as both. Likewise never together with `reason="shutdown"`: an event the producer accepted is no longer divertible by a forced shutdown, and in the one residual race (the shutdown claim landing while the client was accepting the record) the event counts as the shutdown fallback only |
 | `kafka.appender.events.fallback`   | `appender`, `topic.class`, `reason` | Event was routed past Kafka (to the fallback appender if configured, otherwise dropped) |
 | `kafka.appender.fallback.dropped`  | `appender`                          | FallbackDispatcher had to drop: queue full, the fallback appender's `doAppend` threw, its worker died, or events remained at shutdown |
 
@@ -40,6 +40,8 @@ series are absent rather than reading a constant zero. An absent
 | Logback appender name | From the `<appender name="...">` attribute in the XML        |
 | `unnamed`             | Fallback when no name is set (should not occur in production) |
 
+The value is the meter identity of the instance, so it must be unique per registry. A second appender with the same name (or both unnamed) bound to the same registry would receive the very same meter objects; its binding is therefore refused with a Logback status warning, and it publishes nothing until it is given a distinct name.
+
 ### `topic.class` — 4 possible values
 
 | Value         | When set                                                     |
@@ -58,7 +60,7 @@ series are absent rather than reading a constant zero. An absent
 | `send.error`    | `producer.send()` threw synchronously, the callback reported an exception, or the class's SendDispatcher worker died |
 | `encoder.error` | Hot-path exception before `send()` (encoder, routing, OOM)   |
 | `queue.full`    | The class's SendDispatcher queue was full — Kafka delivery cannot keep up |
-| `shutdown`      | Event was still in the SendDispatcher queue or in flight when the appender stopped, or was logged after it stopped |
+| `shutdown`      | Event was still in the SendDispatcher queue, or in flight but not yet accepted by the producer, when the appender stopped, or was logged after it stopped |
 
 ### `outcome` — 2 possible values (only on `send.duration`)
 
