@@ -225,7 +225,7 @@ Kafka extensions.
   next record are untouched, and pins the shared-instance contract for the no-interceptor
   case. `EnrichedRecord.headers` and README ("Traceability") describe the boundary.
 
-- [ ] **M-2 — Forced close can divert a record after it was handed to Kafka**  
+- [x] **M-2 — Forced close can divert a record after it was handed to Kafka**  
   **Confidence:** High · **Category:** concurrency / delivery correctness  
   **Location:** `./src/main/kotlin/eu/inqudium/tabellarium/BoundedWorkerDispatcher.kt:250`, `./src/main/kotlin/eu/inqudium/tabellarium/SendDispatcher.kt:205`  
   **Symptom and cause:** `deliverGuarded` leaves an item in `inFlight` between a normal
@@ -245,8 +245,26 @@ Kafka extensions.
   returning from delivery and let close divert only a state that has not been handed
   off. Add a deterministic test hook/barrier immediately after successful delivery and
   before ownership release.
-  **Status:** Deferred (2026-09-15). Excluded from this remediation cycle on request; the finding stays
-  open and unassessed here.
+  **Status:** Fixed in `4e34b07` (2026-09-15), per the fix strategy. The two-state `DiversionClaim` is
+  replaced by `DeliveryOwnership` with the explicit states pending → handed off → diverted.
+  `ResilientMessageSender` marks the hand-off (`tryHandOff`) immediately after
+  `producer.send` returns without a synchronous failure, before the metric call and the
+  return path; every dispatcher rejection - the forced close's in-flight claim included -
+  diverts only a pending event (`tryDivert`), and only the Kafka callback may divert after
+  the hand-off (`tryDivertAfterSend`, on an asynchronous error). The residual race the
+  ownership cannot close - the close's claim landing while the worker is inside
+  `producer.send` after the client accepted the record - keeps the accounting exclusive:
+  the hand-off fails and the event is not counted as dispatched, only as the shutdown
+  fallback; the physical duplicate is documented on `DeliveryOwnership` and in
+  `docs/metrics/metrics-overview.md`. Tests: `DeliveryOwnershipTest` pins the transition
+  table; `SendDispatcherTest` hands off inside the send action, then pins the worker
+  uninterruptibly across a forced close and proves only the queued events divert (the
+  requested deterministic barrier, without timing); `ResilientMessageSenderTest` proves the
+  sender hands off at the right moment and keeps the residual race single-counted. The
+  `FallbackDispatcher` half ("count an already delivered fallback event as dropped") is a
+  gap of one statement between `doAppend` returning and the slot release, entered only
+  after the drain budget and the interrupt grace, and over-counts in the conservative
+  direction; it is documented on `BoundedWorkerDispatcher` and not changed.
 
 - [x] **M-3 — Two appenders on one logger can form a cross-instance Kafka logging loop**  
   **Confidence:** High · **Category:** resilience / feedback loop  
@@ -339,7 +357,9 @@ Kafka extensions.
    `BoundedWorkerDispatcher` uses `inFlight` both as delivery state and shutdown claim;
    that leaves a post-delivery ownership gap (M-2). Model explicit states such as queued,
    delivering, handed-off and rejected, and test each legal transition.
-   **Status:** Open together with M-2 (deferred on request, 2026-09-15).
+   **Status:** Addressed with M-2 (`4e34b07`): `DeliveryOwnership` models pending, handed off
+   and diverted with a tested transition table; the skeleton's `inFlight` slot remains the
+   closer's handle, and its KDoc states which hand-offs the item state must carry.
 
 2. **Performance-oriented sharing relies on a convention at a mutable extension
    boundary.** `EnrichedRecord` documents that its header arrays must be read-only, but
@@ -367,7 +387,9 @@ Kafka extensions.
    tolerable because most critical paths use latches, but new race tests should use an
    explicit test hook/barrier rather than timing. The missing post-success ownership
    barrier is the direct reason M-2 escaped.
-   **Status:** Open together with M-2 (deferred on request, 2026-09-15).
+   **Status:** Addressed with M-2 (`4e34b07`): the new dispatcher test fixes the race's order
+   by hand (hand-off, then pin, then close) instead of timing; the wall-clock waits of the
+   existing shutdown tests stay tolerated as before.
 
 6. **Known limitations are documented but remain deployable configurations.** The
    cross-instance guard caveat is accurately described in `README.md`; it is still a
