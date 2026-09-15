@@ -464,6 +464,10 @@ Three resilience mechanisms run independently per topic class:
    the callback), a full send queue, a hot-path error, or the remainder
    at shutdown — the original `ILoggingEvent` is routed to the
    configured fallback appender, tagged with the reason in the metrics.
+   Each event takes exactly one of these paths: a per-event ownership
+   shared between the send worker and the shutdown lets whoever acts
+   first account for it, and once the producer has accepted a record
+   the shutdown remainder no longer includes it.
    Standard Logback `<appender-ref>` syntax is supported:
 
    ```xml
@@ -905,7 +909,7 @@ metric are the ones that vary within an appender instance.
 | Metric                              | Type    | Tags                              | Meaning                                                       |
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
 | `kafka.appender.events.accepted`    | Counter | `topic.class`                     | Events entering `KafkaAppender.append`                        |
-| `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` without a synchronous failure (callback outcome unknown) |
+| `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` without a synchronous failure (callback outcome unknown); never also counted as a fallback of the same moment |
 | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost by the fallback dispatcher (queue full, `doAppend` threw, worker died, shutdown remainder) |

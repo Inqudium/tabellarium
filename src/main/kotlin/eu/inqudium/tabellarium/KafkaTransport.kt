@@ -214,20 +214,22 @@ internal class KafkaTransport private constructor(
                         SendDispatcher(
                             topicClass = topicClass,
                             sendAction = { pending ->
-                                // Invariant: claimDiversion shares the per-item
-                                // exactly-once guard with the dispatcher, so a
-                                // forced-shutdown divert and the sender's own
-                                // error routing never both deliver the same
-                                // event. Rationale: the detached claim object
-                                // (not the PendingSend) is what the Kafka
-                                // callback retains - see DiversionClaim.
+                                // Invariant: the per-item ownership is shared
+                                // with the dispatcher, so a forced-shutdown
+                                // divert and the sender's own error routing
+                                // never both deliver the same event, and a
+                                // forced shutdown never diverts an event the
+                                // producer already accepted. Rationale: the
+                                // detached ownership object (not the
+                                // PendingSend) is what the Kafka callback
+                                // retains - see DeliveryOwnership.
                                 sender.send(
                                     topicClass,
                                     pending.topicName,
                                     pending.payload,
                                     pending.enrichment,
                                     pending.originalEvent,
-                                    claimDiversion = pending.claim::tryClaim,
+                                    ownership = pending.ownership,
                                 )
                             },
                             fallbackDispatcher = fallbackDispatcher,

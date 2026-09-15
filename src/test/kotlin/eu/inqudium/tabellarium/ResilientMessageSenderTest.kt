@@ -1148,16 +1148,19 @@ class ResilientMessageSenderTest {
             // What is to be tested? The stand-down half of the exactly-once
             //   contract, on every one of the sender's four diversion gates:
             //   throttle, open breaker, synchronous throw and callback error.
-            //   When claimDiversion returns false - a forced close claimed the
-            //   in-flight item between the dispatcher's inFlight.set and the
-            //   sender's gate - the sender must neither enqueue the event to
-            //   the fallback nor report a fallback metric.
+            //   When the ownership is already diverted - a forced close
+            //   claimed the in-flight item between the dispatcher's
+            //   inFlight.set and the sender's gate - the sender must neither
+            //   enqueue the event to the fallback nor report a fallback
+            //   metric.
             // How will the test case be deemed successful and why? Successful
             //   if, after the fallback dispatcher drained, the recorder is
             //   empty and no "fallback" metric was recorded, while the gate's
-            //   other accounting (send.completed(error) for the two failure
-            //   gates, dispatched for the callback gate) still happened. A
-            //   gate that diverts without asking the claim fails on both the
+            //   other accounting (send.completed(error) for the three failure
+            //   gates) still happened - and the callback gate does not count
+            //   the event as dispatched either: the close's diversion already
+            //   accounted for it, so the hand-off is refused. A gate that
+            //   diverts without asking the ownership fails on both the
             //   recorder and the metric.
             // Why is it important to test this test case? No unit test drove
             //   the sender with a taken claim - the stand-down was pinned only
@@ -1210,10 +1213,10 @@ class ResilientMessageSenderTest {
                 payload = "p".toByteArray(),
                 enrichment = basicEnrichment,
                 originalEvent = newTestLoggingEvent(message = "already claimed"),
-                claimDiversion = { false },
+                ownership = DeliveryOwnership().apply { check(tryDivert()) },
             )
             if (gate == DiversionGate.CALLBACK_ERROR) {
-                assertThat(metrics.kinds()).containsExactly("dispatched")
+                assertThat(metrics.kinds()).isEmpty()
                 producer.errorNext(RuntimeException("leader gone"))
             }
 
@@ -1233,10 +1236,130 @@ class ResilientMessageSenderTest {
                 }
 
                 DiversionGate.CALLBACK_ERROR -> {
-                    assertThat(metrics.kinds()).containsExactly("dispatched", "send.completed")
-                    assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
+                    assertThat(metrics.kinds()).containsExactly("send.completed")
+                    assertThat(metrics.events.single().detail).isEqualTo("error")
                 }
             }
+        }
+    }
+
+    @Nested
+    inner class `Hand-off ownership` {
+        @Test
+        fun `should hand the event off once the producer accepted it so a forced close can no longer divert it`() {
+            // What is to be tested? The transition the M-2 fix adds to the
+            //   send path: right after producer.send returns without a
+            //   synchronous failure the sender marks the ownership handed
+            //   off, so the dispatcher's shutdown claim (a plain tryDivert)
+            //   stands down - while the callback keeps its right to divert
+            //   on an asynchronous error, exactly once.
+            // How will the test case be deemed successful and why? Successful
+            //   if after send() the ownership refuses tryDivert, the event was
+            //   counted as dispatched, and a later asynchronous error still
+            //   delivers it to the fallback exactly once with reason
+            //   send.error. Before the fix the ownership stayed claimable
+            //   after the hand-off
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, M-2).
+            // Why is it important to test this test case? The dispatcher test
+            //   pins the close's stand-down given a hand-off; this pins that
+            //   the sender actually performs the hand-off at the right moment
+            //   - without it the dispatcher's stand-down would never trigger.
+
+            // Given: a sender whose producer completes asynchronously
+            val ctx = newSender(autoComplete = false)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+            val ownership = DeliveryOwnership()
+
+            // When: the producer accepts the record
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "handed off"),
+                ownership = ownership,
+            )
+
+            // Then: handed off - the shutdown claim stands down, dispatched counted
+            assertThat(ownership.tryDivert()).isFalse()
+            assertThat(metrics.kinds()).containsExactly("dispatched")
+
+            // When: the client later reports an error
+            ctx.factory.createdProducers[0].errorNext(RuntimeException("leader gone"))
+
+            // Then: the callback diverted it exactly once
+            checkNotNull(ctx.dispatcher).close()
+            assertThat(ctx.recorder.events.map { it.formattedMessage }).containsExactly("handed off")
+            assertThat(metrics.events.filter { it.kind == "fallback" }.map { it.detail }).containsExactly("send.error")
+            assertThat(ownership.tryDivertAfterSend()).isFalse()
+        }
+
+        @Test
+        fun `should not count an event as dispatched when a forced close diverted it while the producer was accepting it`() {
+            // What is to be tested? The residual race the ownership cannot
+            //   close but must keep consistent: the close's claim lands while
+            //   the worker is inside producer.send, after the client accepted
+            //   the record. The record is in the producer AND in the fallback;
+            //   the metrics must still describe the event exactly once - as
+            //   the fallback the close counted, not additionally as dispatched
+            //   - and a later asynchronous error must not divert it again.
+            // How will the test case be deemed successful and why? Successful
+            //   if, with a producer double that diverts the ownership inside
+            //   send (modelling the racing close), no "dispatched" metric is
+            //   reported although the record is in the producer's history,
+            //   and an asynchronous error afterwards reports send.completed
+            //   (error) without a fallback delivery or metric.
+            // Why is it important to test this test case? accepted =
+            //   dispatched + fallback is the documented invariant operators
+            //   alert on; the duplicate record is the documented residual of
+            //   a forced shutdown, the double count would not be.
+
+            // Given: a producer double that models the close winning inside send
+            val ownership = DeliveryOwnership()
+            val ctx =
+                newSender(
+                    autoComplete = false,
+                    wrapProducer = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun send(
+                                record: ProducerRecord<ByteArray, ByteArray>,
+                                callback: Callback?,
+                            ): Future<RecordMetadata> {
+                                val future = mock.send(record, callback)
+                                // The forced close claims the in-flight item
+                                // after the client accepted the record:
+                                check(ownership.tryDivert())
+                                return future
+                            }
+                        }
+                    },
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "p".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(message = "raced"),
+                ownership = ownership,
+            )
+
+            // Then: in the producer, but accounted by the close's diversion only
+            assertThat(ctx.factory.createdProducers[0].history()).hasSize(1)
+            assertThat(metrics.kinds()).isEmpty()
+
+            // When: the client later reports an error for the record
+            ctx.factory.createdProducers[0].errorNext(RuntimeException("leader gone"))
+
+            // Then: outcome recorded, no second diversion
+            checkNotNull(ctx.dispatcher).close()
+            assertThat(ctx.recorder.events).isEmpty()
+            assertThat(metrics.kinds()).containsExactly("send.completed")
+            assertThat(metrics.events.single().detail).isEqualTo("error")
         }
     }
 

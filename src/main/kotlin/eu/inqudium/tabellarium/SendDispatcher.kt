@@ -1,7 +1,6 @@
 package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.spi.ILoggingEvent
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Decouples `producer.send` from the logging caller's thread - the
@@ -45,8 +44,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the interrupt with an `InterruptException`, which the sender's error
  * path routes itself); a worker death, a failed delivery, and a
  * dispatch after a death are `send.error`. Every diversion is
- * accounted exactly once via [PendingSend.claim], shared with the
- * sender's own diversion paths.
+ * accounted exactly once via [PendingSend.ownership], shared with the
+ * sender's own diversion paths - and a rejection stands down for an
+ * event the sender already handed to the producer, so the remainder of
+ * a forced close never includes a record that is on its way to Kafka.
  *
  * ## Threading and self-logging
  *
@@ -107,38 +108,23 @@ internal class SendDispatcher(
         val originalEvent: ILoggingEvent,
     ) {
         /**
-         * Exactly-once guard for the fallback diversion of this item,
-         * shared between the dispatcher (overflow, shutdown, worker
-         * death) and [ResilientMessageSender]'s own diversion paths
-         * (throttle, open breaker, send failure): whoever wins the
-         * compare-and-set diverts; everyone else stands down. Without
-         * this, a forced shutdown could route the in-flight event to
-         * the fallback twice - once as `shutdown` by close(), once as
-         * `send.error` by the sender when the parked send later
-         * unblocks with an exception.
+         * Who owns this event's outcome - see [DeliveryOwnership] for
+         * the states. Shared between the dispatcher (overflow, shutdown,
+         * worker death) and [ResilientMessageSender]'s own paths
+         * (throttle, open breaker, send failure, callback): whoever
+         * wins a transition accounts for the event; everyone else
+         * stands down. Without it, a forced shutdown could route the
+         * in-flight event to the fallback twice - once as `shutdown` by
+         * close(), once as `send.error` by the sender when the parked
+         * send later unblocks with an exception - or divert an event
+         * `producer.send` had already accepted.
          *
          * Held as a detached object so the sender can hand exactly this
-         * claim to the Kafka callback without keeping the whole
-         * [PendingSend] - and with it the payload copy - reachable for
-         * as long as the client buffers the record.
+         * to the Kafka callback without keeping the whole [PendingSend]
+         * - and with it the payload copy - reachable for as long as the
+         * client buffers the record.
          */
-        val claim: DiversionClaim = DiversionClaim()
-
-        fun tryClaimDiversion(): Boolean = claim.tryClaim()
-    }
-
-    /**
-     * The compare-and-set behind [PendingSend.tryClaimDiversion], on its
-     * own so that a reference to it retains nothing but one boolean.
-     * Safety: this is what the send callback captures; the callback
-     * lives until the Kafka client completes the record, which under a
-     * slow broker can be `delivery.timeout.ms` - retaining the
-     * [PendingSend] there would double the per-record heap footprint.
-     */
-    internal class DiversionClaim {
-        private val diverted = AtomicBoolean(false)
-
-        fun tryClaim(): Boolean = diverted.compareAndSet(false, true)
+        val ownership: DeliveryOwnership = DeliveryOwnership()
     }
 
     @Volatile
@@ -203,8 +189,9 @@ internal class SendDispatcher(
                 }
             }
         // Exactly-once across ALL diversion paths, the sender's
-        // included - see PendingSend.claim.
-        if (!item.tryClaimDiversion()) {
+        // included, and a stand-down for an event already handed to
+        // the producer - see PendingSend.ownership.
+        if (!item.ownership.tryDivert()) {
             return
         }
         metrics.eventFallback(topicClass, reason)
