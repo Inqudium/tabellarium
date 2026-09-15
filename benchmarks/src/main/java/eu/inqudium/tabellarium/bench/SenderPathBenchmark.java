@@ -79,6 +79,7 @@ public class SenderPathBenchmark {
     private EnrichedRecord enrichment;
     private byte[] payload;
     private LoggingEvent[] events;
+    private DeliveryOwnership[] ownerships;
     private int next;
 
     @Setup
@@ -124,17 +125,24 @@ public class SenderPathBenchmark {
                     "bench.fqcn", context.getLogger("bench"), Level.INFO, "sender event " + i, null, null);
             events[i].setMDCPropertyMap(Map.of());
         }
+        // One pre-built ownership per event slot, reset per op: production
+        // allocates the ownership on the caller path (PendingSend), so it
+        // must not appear as allocation on the measured worker path here.
+        // A reset is needed because the sender hands the ownership off
+        // after producer.send and a handed-off one would fail that
+        // hand-off from the second op on, skipping the dispatched metric.
+        ownerships = new DeliveryOwnership[events.length];
+        for (int i = 0; i < ownerships.length; i++) {
+            ownerships[i] = new DeliveryOwnership();
+        }
     }
 
     @Benchmark
     public void sendOneEvent() {
-        LoggingEvent event = events[nextIndex()];
-        // A fresh DeliveryOwnership per event, as the dispatcher's
-        // PendingSend allocates in production (there on the caller path):
-        // the sender hands it off after producer.send, and a reused one
-        // would fail that hand-off from the second op on and skip the
-        // dispatched metric - a different path than production's.
-        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, event, new DeliveryOwnership());
+        int i = nextIndex();
+        DeliveryOwnership ownership = ownerships[i];
+        ownership.reset();
+        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, events[i], ownership);
     }
 
     private int nextIndex() {
