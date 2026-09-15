@@ -22,14 +22,13 @@ import ch.qos.logback.classic.spi.ILoggingEvent
  * names, and an implementation recognizes their echoes the same way it
  * recognizes the producers' - by the event's thread name.
  *
- * Rationale: the interface exists for one named second implementation,
- * not for mockability - the process-wide client-id registry that the
- * README's "Cross-instance guards" describes, which would answer
- * [shouldDrop] for every appender instance's producers instead of only
- * this one's. Until it exists, [ClientIdSelfLoggingGuard] is the only
- * implementation and the default of [SelfLoggingGuardFactory] - the one
- * place an implementation is chosen, so swapping it touches nothing on
- * the hot path or in the transport.
+ * Rationale: the interface is the seam between the hot path and the
+ * one place an implementation is chosen ([SelfLoggingGuardFactory]).
+ * [ClientIdSelfLoggingGuard] is the only production implementation;
+ * it keeps a process-wide registry of every live instance's producer
+ * threads, so a guard has a lifecycle of its own ([close]) that the
+ * owning [KafkaTransport] ends after the producers are gone. Tests
+ * substitute a guard with recorded decisions through the factory.
  */
 internal interface SelfLoggingGuard {
     /**
@@ -43,6 +42,15 @@ internal interface SelfLoggingGuard {
 
     /** Clears the mark set by [enter]. */
     fun exit()
+
+    /**
+     * Ends the guard's life: an implementation that entered shared state
+     * (the process-wide registry) leaves it here. Called once by the
+     * owning transport after every producer is closed; must be safe to
+     * call more than once. The default does nothing, for guards without
+     * shared state.
+     */
+    fun close() = Unit
 }
 
 /**
@@ -51,9 +59,8 @@ internal interface SelfLoggingGuard {
  * after the producer registry exists, with the effective client ids of
  * that appender's producers; the hot path then uses the returned guard.
  * The appender holds the factory as an internal seam (like
- * [ProducerFactory]): tests substitute a guard with recorded decisions,
- * and a future process-wide implementation is plugged in here without
- * touching any caller.
+ * [ProducerFactory]): tests substitute a guard with recorded decisions
+ * without touching any caller.
  */
 internal fun interface SelfLoggingGuardFactory {
     /**

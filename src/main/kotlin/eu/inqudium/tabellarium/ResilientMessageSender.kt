@@ -14,6 +14,7 @@ import org.apache.kafka.common.errors.InvalidTopicException
 import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.errors.SerializationException
 import org.apache.kafka.common.errors.TopicAuthorizationException
+import org.apache.kafka.common.header.internals.RecordHeader
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -123,6 +124,25 @@ import java.util.concurrent.TimeUnit
  *                       [HalfOpenThrottle] instances. Defaults to
  *                       [System.nanoTime]; tests inject a deterministic
  *                       source.
+ * @param isolateHeaders Whether every record gets its own copies of
+ *                       the enrichment headers instead of the shared
+ *                       pre-built ones. The shared headers are the
+ *                       measured allocation saving of
+ *                       `PERF_ANALYSIS-2026-08-29T11-01-08`, finding 2,
+ *                       and safe as long as nothing mutates their value
+ *                       arrays - which nothing inside the library or
+ *                       the Kafka client does. A configured
+ *                       `ProducerInterceptor` is the one third party
+ *                       that receives the record before serialization,
+ *                       and Kafka allows it to modify the record; an
+ *                       interceptor writing into a header's value array
+ *                       would corrupt every later record and every
+ *                       record still waiting for serialization
+ *                       (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-1).
+ *                       The transport therefore passes
+ *                       [ProducerRegistry.hasProducerInterceptors]:
+ *                       the copies are paid exactly where the boundary
+ *                       is crossed.
  */
 internal class ResilientMessageSender(
     private val producerRegistry: ProducerRegistry,
@@ -130,6 +150,7 @@ internal class ResilientMessageSender(
     private val fallbackDispatcher: FallbackDispatcher?,
     halfOpenProbeGap: Duration = DEFAULT_HALF_OPEN_PROBE_GAP,
     nanoTimeSource: () -> Long = System::nanoTime,
+    private val isolateHeaders: Boolean = false,
 ) {
     private val circuitBreakersByClass: Map<TopicClass, CircuitBreaker> =
         producerRegistry.activeTopicClasses.associateWith { topicClass ->
@@ -332,8 +353,17 @@ internal class ResilientMessageSender(
     ): ProducerRecord<ByteArray, ByteArray> {
         val key = enrichment.partitioningKey?.toByteArray(Charsets.UTF_8)
         // The pre-built shared headers are passed by reference and are
-        // read-only by convention - see [EnrichedRecord.headers].
-        return ProducerRecord(topicName, null, null, key, payload, enrichment.headers)
+        // read-only by convention - see [EnrichedRecord.headers] - unless
+        // an interceptor stands at this boundary (isolateHeaders): then
+        // each record gets wrappers and value arrays of its own, so
+        // whatever the interceptor writes stays with that record.
+        val headers =
+            if (isolateHeaders) {
+                enrichment.headers.map { header -> RecordHeader(header.key(), header.value()?.copyOf()) }
+            } else {
+                enrichment.headers
+            }
+        return ProducerRecord(topicName, null, null, key, payload, headers)
     }
 
     companion object {

@@ -40,6 +40,8 @@ series are absent rather than reading a constant zero. An absent
 | Logback appender name | From the `<appender name="...">` attribute in the XML        |
 | `unnamed`             | Fallback when no name is set (should not occur in production) |
 
+The value is the meter identity of the instance, so it must be unique per registry. A second appender with the same name (or both unnamed) bound to the same registry would receive the very same meter objects; its binding is therefore refused with a Logback status warning, and it publishes nothing until it is given a distinct name.
+
 ### `topic.class` — 4 possible values
 
 | Value         | When set                                                     |

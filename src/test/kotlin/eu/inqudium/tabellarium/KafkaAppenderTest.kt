@@ -1015,11 +1015,11 @@ class KafkaAppenderTest {
             //   if the factory received the derived client id of the active
             //   class and an event the substitute guard rejects is neither
             //   encoded nor sent while an ordinary event is.
-            // Why is it important to test this test case? The factory exists
-            //   for a future process-wide guard (README, cross-instance
-            //   guards); if any caller bypassed it and instantiated the
-            //   default directly, that replacement would silently cover
-            //   only part of the pipeline.
+            // Why is it important to test this test case? The factory is
+            //   the one place the guard implementation is chosen; if any
+            //   caller bypassed it and instantiated the default directly,
+            //   a substituted guard would silently cover only part of the
+            //   pipeline.
 
             // Given: a factory recording its input and returning a guard
             //   that rejects "echo:" messages
@@ -1205,6 +1205,54 @@ class KafkaAppenderTest {
             // Then
             appender.stop()
             assertThat(factory.createdProducers[0].history()).hasSize(1)
+        }
+
+        @Test
+        fun `should drop the producer logging of another appender instance in the same JVM`() {
+            // What is to be tested? The cross-instance half of the guard:
+            //   an event logged by the network thread of a SECOND
+            //   appender's producer must not be shipped by the first, and
+            //   vice versa - the guard consults a process-wide registry of
+            //   every live instance's producer client ids, not only its
+            //   own.
+            // How will the test case be deemed successful and why? Successful
+            //   if neither appender's producer receives the other's producer
+            //   echo while both are started, an ordinary event still goes
+            //   through, and after the second appender stopped its former
+            //   producer thread name is no longer dropped by the first
+            //   (the registry is left at stop). Before the fix each guard
+            //   matched only its own client ids
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, M-3).
+            // Why is it important to test this test case? Two appenders on
+            //   the same logger formed a feedback loop across instances
+            //   during broker trouble - each shipping the other's
+            //   connection warnings through a producer whose own warnings
+            //   the other shipped in turn - consuming queue and fallback
+            //   capacity exactly when the degraded path must stay bounded.
+
+            // Given: two started appenders with distinct derived client ids
+            val factoryA = RecordingProducerFactory()
+            val factoryB = RecordingProducerFactory()
+            val appenderA = newAppender(producerFactory = factoryA, component = "service-a")
+            val appenderB = newAppender(producerFactory = factoryB, component = "service-b")
+            appenderA.start()
+            appenderB.start()
+            val producerThreadOfB = "kafka-producer-network-thread | tabellarium-service-b-technical"
+            val producerThreadOfA = "kafka-producer-network-thread | tabellarium-service-a-technical"
+
+            // When: each appender sees the other's producer echo, plus one ordinary event
+            appenderA.doAppend(newTestLoggingEvent(message = "echo of B", threadName = producerThreadOfB))
+            appenderB.doAppend(newTestLoggingEvent(message = "echo of A", threadName = producerThreadOfA))
+            appenderA.doAppend(newTestLoggingEvent(message = "ordinary", threadName = "main"))
+
+            // Then: only the ordinary event was shipped, by A
+            appenderB.stop()
+            // And: B's producer thread is no longer an echo once B left the registry
+            appenderA.doAppend(newTestLoggingEvent(message = "after B stopped", threadName = producerThreadOfB))
+            appenderA.stop()
+            assertThat(factoryA.createdProducers[0].history().map { String(it.value(), Charsets.UTF_8) })
+                .containsExactly("ordinary", "after B stopped")
+            assertThat(factoryB.createdProducers[0].history()).isEmpty()
         }
     }
 
@@ -2868,7 +2916,8 @@ class KafkaAppenderTest {
                 .containsExactlyInAnyOrder("KAFKA_A", "KAFKA_B")
             // And: no collision warning was emitted for distinct names
             assertThat(appenderB.statusMessages())
-                .noneMatch { it.contains("already contains circuit-breaker meters") }
+                .noneMatch { it.contains("Metrics binding refused") }
+            assertThat(appenderB.isMeterRegistryBound).isTrue()
 
             // When: the first appender stops
             appenderA.stop()
@@ -2886,18 +2935,27 @@ class KafkaAppenderTest {
         }
 
         @Test
-        fun `should warn when two appenders share the same name on one registry`() {
+        fun `should refuse the second binding when two appenders share the same name on one registry`() {
             // What is to be tested? The residual collision the appender
             //   tag cannot resolve: two appenders with the SAME name (the
-            //   tag value) on the same registry. The binding must tell the
-            //   operator that these breaker meters are not trustworthy.
+            //   tag value) on the same registry. Micrometer would hand
+            //   both the same meter objects, so the second bind must be
+            //   refused as a whole - appender, breaker and producer meters
+            //   - with a status warning, and the first appender's series
+            //   must survive the second appender's stop.
             // How will the test case be deemed successful and why? Successful
-            //   if the second bind emits the collision warning naming the
-            //   affected breakers.
-            // Why is it important to test this test case? The warning is
-            //   the only remaining guard for this misconfiguration; if it
-            //   silently regressed, mixed breaker data would again look
-            //   healthy.
+            //   if the second appender reports the refusal, is not bound,
+            //   registered nothing (the meter count is unchanged and its
+            //   events do not reach the shared counters), and after it
+            //   stops the first appender's counters and gauges are still
+            //   registered and still count. Before the fix both instances
+            //   shared the meters, mixed their counts, and the first stop
+            //   removed the series the survivor still published through
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, L-2).
+            // Why is it important to test this test case? A dashboard that
+            //   loses an appender's series when a same-named sibling stops
+            //   shows an outage as "no data"; refusing loudly keeps the
+            //   first instance trustworthy.
 
             // Given: two appenders with the same name on one registry
             val registry = SimpleMeterRegistry()
@@ -2908,15 +2966,38 @@ class KafkaAppenderTest {
             appenderA.start()
             appenderB.start()
             appenderA.bindMeterRegistry(registry)
+            val metersAfterFirstBind = registry.meters.size
 
             // When
             appenderB.bindMeterRegistry(registry)
 
-            // Then
+            // Then: refused, warned, nothing added
             assertThat(appenderB.statusMessages())
-                .anyMatch { it.contains("already contains circuit-breaker meters") && it.contains("KAFKA") }
-            appenderA.stop()
+                .anyMatch { it.contains("Metrics binding refused") && it.contains("appender='KAFKA'") }
+            assertThat(appenderB.isMeterRegistryBound).isFalse()
+            assertThat(appenderA.isMeterRegistryBound).isTrue()
+            assertThat(registry.meters).hasSize(metersAfterFirstBind)
+
+            // And: B's events do not reach A's counters
+            appenderB.doAppend(newTestLoggingEvent(message = "counted nowhere"))
+            appenderA.doAppend(newTestLoggingEvent(message = "counted by A"))
+            val accepted =
+                registry
+                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                    .tags("appender", "KAFKA", "topic.class", TopicClass.TECHNICAL.tag)
+                    .counter()
+            assertThat(accepted?.count()).isEqualTo(1.0)
+
+            // When: the refused appender stops
             appenderB.stop()
+
+            // Then: A's series are intact and still count
+            assertThat(registry.meters).hasSize(metersAfterFirstBind)
+            appenderA.doAppend(newTestLoggingEvent(message = "still counted by A"))
+            assertThat(accepted?.count()).isEqualTo(2.0)
+            assertThat(registry.find("resilience4j.circuitbreaker.state").gauges()).isNotEmpty()
+            appenderA.stop()
+            assertThat(registry.meters).isEmpty()
         }
     }
 
@@ -3086,6 +3167,79 @@ class KafkaAppenderTest {
             appender.doAppend(newTestLoggingEvent(message = "diverted after refused detach"))
             appender.stop()
             assertThat(fallback.events.map { it.formattedMessage }).containsExactly("diverted after refused detach")
+        }
+
+        @Test
+        fun `should refuse to attach a fallback while started and keep the drop policy`() {
+            // What is to be tested? The mirror image of the refused detach:
+            //   addAppender on a started appender that began without a
+            //   fallback. The transport read the empty slot once at
+            //   start(), so accepting the appender would only change the
+            //   public slot - the accessors would report a fallback the
+            //   pipeline never delivers to, and stop() would stop an
+            //   appender that never received an event.
+            // How will the test case be deemed successful and why? Successful
+            //   if the slot stays empty, a status warning names the refused
+            //   appender and the missing wiring, an event diverted
+            //   afterwards is dropped (the documented policy of a start
+            //   without fallback) rather than delivered, and stop() leaves
+            //   the never-attached appender started. Before the fix the
+            //   slot was filled while the transport kept dropping
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md, L-1).
+            // Why is it important to test this test case? A lying accessor
+            //   on the path whose purpose is visible loss - and a
+            //   programmatic re-wiring is exactly the code that reads it.
+
+            // Given: a started appender without a fallback whose hot path diverts everything
+            val appender = newAppender(encoder = ThrowingEncoder())
+            appender.start()
+            val lateFallback = RecordingAppender().apply { name = "LATE_FALLBACK" }
+            lateFallback.start()
+
+            // When: a fallback is attached while started
+            appender.addAppender(lateFallback)
+
+            // Then: refused, warned, slot empty, diversions still dropped
+            assertThat(appender.fallbackAppender).isNull()
+            assertThat(appender.isAttached(lateFallback)).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch {
+                    it.contains("ignores attaching fallback appender 'LATE_FALLBACK' while started") &&
+                        it.contains("without a fallback")
+                }
+            appender.doAppend(newTestLoggingEvent(message = "diverted after refused attach"))
+            appender.stop()
+            assertThat(lateFallback.events).isEmpty()
+            assertThat(lateFallback.isStarted).isTrue()
+            lateFallback.stop()
+        }
+
+        @Test
+        fun `should name the wired fallback when refusing to attach a second one while started`() {
+            // What is to be tested? The warning's second variant: a started
+            //   appender that already delivers to a fallback names that
+            //   fallback when a further attach is refused, so the operator
+            //   reads which appender the pipeline actually targets.
+            // How will the test case be deemed successful and why? Successful
+            //   if the slot still holds the original fallback and the
+            //   warning names both appenders.
+            // Why is it important to test this test case? The lifecycle
+            //   refusal replaces the "single fallback" warning on a started
+            //   appender; without the target's name the message would say
+            //   less than the one it replaces.
+
+            // Given
+            val wired = RecordingAppender().apply { name = "WIRED" }
+            val appender = newAppender(fallback = wired)
+            appender.start()
+
+            // When
+            appender.addAppender(RecordingAppender().apply { name = "SECOND" })
+
+            // Then
+            assertThat(appender.fallbackAppender).isSameAs(wired)
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("attaching fallback appender 'SECOND' while started") && it.contains("to 'WIRED'") }
         }
     }
 }

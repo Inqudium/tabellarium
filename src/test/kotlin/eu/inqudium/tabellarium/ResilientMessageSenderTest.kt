@@ -140,11 +140,12 @@ class ResilientMessageSenderTest {
         nanoTimeSource: () -> Long = System::nanoTime,
         cbRegistry: CircuitBreakerRegistry = CircuitBreakerRegistry.ofDefaults(),
         wrapProducer: (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> = { it },
+        producerProperties: Map<String, String> = baseProperties,
     ): SenderContext {
         val factory = RecordingProducerFactory(autoComplete, wrapProducer)
         val registry =
             ProducerRegistry.create(
-                propertiesBuilder = ProducerPropertiesBuilder(baseProperties),
+                propertiesBuilder = ProducerPropertiesBuilder(producerProperties),
                 activeTopicClasses = activeClasses,
                 producerFactory = factory,
             )
@@ -160,6 +161,8 @@ class ResilientMessageSenderTest {
                 fallbackDispatcher = dispatcher,
                 halfOpenProbeGap = halfOpenProbeGap,
                 nanoTimeSource = nanoTimeSource,
+                // The same derivation the transport uses.
+                isolateHeaders = registry.hasProducerInterceptors,
             )
         return SenderContext(sender, factory, cbRegistry, fallback, registry, dispatcher).also { openContexts += it }
     }
@@ -334,6 +337,112 @@ class ResilientMessageSenderTest {
                     header.key() to String(header.value(), Charsets.UTF_8)
                 }
             assertThat(actualHeaders).containsExactlyInAnyOrderEntriesOf(expectedHeaders)
+        }
+
+        @Test
+        fun `should share the pre-built header instances across records when no interceptor is configured`() {
+            // What is to be tested? The allocation contract of the default
+            //   configuration: without interceptor.classes the record
+            //   carries the enrichment's shared Header instances by
+            //   reference - no per-record wrappers or value copies.
+            // How will the test case be deemed successful and why? Successful
+            //   if every header object on two sent records is identical to
+            //   the enrichment's. This pins the measured saving of
+            //   docs/assessment/PERF_ANALYSIS-2026-08-29T11-01-08.md,
+            //   finding 2, which the isolation for interceptors must not
+            //   silently undo for everyone.
+            // Why is it important to test this test case? The copies are
+            //   meant to be paid exactly where a third party can reach
+            //   the shared arrays; a regression that copied always would
+            //   pass every functional test and only show up in an
+            //   allocation profile.
+
+            // Given
+            val ctx = newSender()
+
+            // When: two records
+            repeat(2) {
+                ctx.sender.send(
+                    topicClass = TopicClass.AUDIT,
+                    topicName = "audit-events",
+                    payload = "payload".toByteArray(),
+                    enrichment = basicEnrichment,
+                    originalEvent = newTestLoggingEvent(),
+                )
+            }
+
+            // Then: both carry the enrichment's own instances
+            ctx.factory.createdProducers[0].history().forEach { record ->
+                assertThat(record.headers().toArray().toList()).containsExactlyElementsOf(basicEnrichment.headers)
+                record.headers().forEachIndexed { index, header ->
+                    assertThat(header).isSameAs(basicEnrichment.headers[index])
+                }
+            }
+        }
+
+        @Test
+        fun `should give each record its own header copies when an interceptor is configured`() {
+            // What is to be tested? Whether the sender isolates the shared
+            //   enrichment headers per record once interceptor.classes is
+            //   set: Kafka allows a ProducerInterceptor to modify the
+            //   record it receives, and RecordHeader.value() exposes the
+            //   value array itself.
+            // How will the test case be deemed successful and why? Successful
+            //   if writing into a sent record's header value (what a
+            //   mutating interceptor would do) leaves the enrichment's
+            //   shared array and the next record's header untouched, and
+            //   the record's header objects are not the enrichment's.
+            //   Before the fix the shared array changed for every later
+            //   record and every record still waiting for serialization
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md,
+            //   M-1).
+            // Why is it important to test this test case? meta.component,
+            //   meta.cmdbId and meta.environment are what downstream
+            //   systems attribute audit records by; a corrupted shared
+            //   value would misattribute every subsequent event of the
+            //   process without any error.
+
+            // Given: a producer configuration that names an interceptor
+            val ctx =
+                newSender(
+                    producerProperties =
+                        baseProperties + (ProducerConfig.INTERCEPTOR_CLASSES_CONFIG to "com.example.AuditInterceptor"),
+                )
+            val componentHeader = basicEnrichment.headers[0]
+            val originalValue = componentHeader.value().copyOf()
+
+            // When: the first record is sent and an "interceptor" writes into its header value
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "first".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+            val firstRecord = ctx.factory.createdProducers[0].history()[0]
+            firstRecord
+                .headers()
+                .lastHeader(componentHeader.key())
+                .value()
+                .fill('X'.code.toByte())
+            // And: a second record follows from the same enrichment
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "second".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+
+            // Then: the shared instance and the second record are unaffected
+            assertThat(componentHeader.value()).containsExactly(*originalValue)
+            val secondRecord = ctx.factory.createdProducers[0].history()[1]
+            assertThat(secondRecord.headers().lastHeader(componentHeader.key()).value()).containsExactly(*originalValue)
+            // And: neither record carries the enrichment's own instances
+            listOf(firstRecord, secondRecord).forEach { record ->
+                record.headers().forEach { header -> assertThat(header).isNotSameAs(componentHeader) }
+                assertThat(record.headers().toArray().map { it.key() }).containsExactlyElementsOf(basicEnrichment.headers.map { it.key() })
+            }
         }
     }
 

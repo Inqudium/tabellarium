@@ -79,7 +79,9 @@ configuration guide, metrics overview, and Grafana dashboards.
   `meta.cmdbId`, `meta.environment` and `meta.agent.*` ride on every
   record as headers, encoded once at startup rather than per event — so
   a consumer can filter by service, instance or stage without parsing
-  the payload.
+  the payload. (With `interceptor.classes` configured, every record
+  gets header copies of its own, so an interceptor that modifies a
+  record cannot alter the metadata of any other.)
 - **Trace affinity, attributable producers.** The record key is the MDC
   trace id, so the records of one trace share a partition and keep their
   relative order within a topic (order across topics is
@@ -327,8 +329,8 @@ under different classes are not detected, because the instances do
 not know about each other, and every effect above applies. Closing
 that gap needs a process-wide registry consulted at start-up; see
 [Cross-instance guards](#cross-instance-guards) under future work for
-the shape of that registry and the self-logging guard, which has the
-same gap.
+the shape of that registry, which the self-logging guard already uses
+for its own cross-instance case.
 
 ### Ordering across topic classes
 
@@ -482,10 +484,13 @@ Three resilience mechanisms run independently per topic class:
    "best-effort is fine".
 
 In addition, a **self-logging guard** keeps the appender out of feedback
-loops: log events originating from the appender's own Kafka producer
-threads (recognizable because the Kafka client names them after the
-producer's `client.id`) are ignored entirely — the producer's internal
-logging is never shipped through the producer itself.
+loops: log events originating from the Kafka producer threads of any
+`KafkaAppender` instance in the JVM (recognizable because the Kafka
+client names them after the producer's `client.id`; every instance
+enters its ids into a process-wide registry at start and leaves it at
+stop) are ignored entirely — a producer's internal logging is never
+shipped through that producer, nor through a second appender whose own
+producer logging the first would ship in turn.
 
 ### Why one circuit breaker per topic class
 
@@ -888,10 +893,14 @@ value is the Logback appender name from `<appender name="...">`
 (`unnamed` if none is set). It keeps two appender instances bound to
 the same registry apart: without it their meter IDs would be
 identical, Micrometer would hand both the same meter, and stopping one
-appender would deregister the other's meters as well. One appender
-means one tag value, so the cardinality budget below already includes
-it. The tags listed per metric are the ones that vary within an
-appender instance.
+appender would deregister the other's meters as well. That makes the
+name the meter identity, so it must be distinct per registry: a bind
+that finds the meters of a same-named (or likewise unnamed) appender
+already in the registry is refused as a whole, with a status warning,
+rather than sharing meters whose counts would mix and whose series the
+first stop would remove. One appender means one tag value, so the
+cardinality budget below already includes it. The tags listed per
+metric are the ones that vary within an appender instance.
 
 | Metric                              | Type    | Tags                              | Meaning                                                       |
 |-------------------------------------|---------|-----------------------------------|---------------------------------------------------------------|
@@ -1190,36 +1199,29 @@ doing only if a concrete deployment hits the producer-count ceiling.
 
 ### Cross-instance guards
 
-Two guards are scoped to one appender instance and know nothing about
-a second `KafkaAppender` in the same JVM:
+One guard is scoped to one appender instance and knows nothing about
+a second `KafkaAppender` in the same JVM: **the topic/class
+exclusivity check** rejects one topic under two classes within one
+configuration; two instances configuring the same topic differently
+are not cross-checked (see
+[Why one topic cannot belong to two classes](#why-one-topic-cannot-belong-to-two-classes)).
 
-- **The self-logging guard** drops log events from the network threads
-  of this instance's own producers, matched by the exact `client.id`s
-  its registry assigned. Producer logs of another instance carry that
-  instance's `client.id`s, which this guard does not know. With two
-  appenders attached to the same logger, each ships the other's
-  producer logging through its own producer, whose logging the other
-  ships in turn: a cross-instance feedback loop that, like the
-  single-instance one, amplifies during broker trouble. Widening the
-  match - to the `tabellarium-` default prefix, or to every Kafka
-  producer network thread - was considered and rejected: the first
-  fails as soon as an operator sets their own `client.id`, the second
-  silences the application's own producers, whose connection warnings
-  are exactly what one wants shipped.
-- **The topic/class exclusivity check** rejects one topic under two
-  classes within one configuration; two instances configuring the same
-  topic differently are not cross-checked (see
-  [Why one topic cannot belong to two classes](#why-one-topic-cannot-belong-to-two-classes)).
-
-Both gaps have the same shape and the same fix: a process-wide registry
-that every instance enters at `start()` and leaves at `stop()` -
-its producer `client.id`s for the guard, its topic-to-class assignments
-for the check - consulted by every instance. It is not done because
-the single-instance deployment is the only one with a known user;
-running two appenders against the same logger is unusual (one appender
-with markers routes to any number of topics). If a deployment does run
-two, the immediate safeguard is to attach them to disjoint loggers, or
-to keep `org.apache.kafka` below the level that reaches them.
+The fix has a known shape, because the self-logging guard already uses
+it: a process-wide registry that every instance enters at `start()`
+and leaves at `stop()`. The guard registers its producer `client.id`s
+(as the network-thread names the Kafka client derives from them, with
+a count per name so two instances sharing an operator-supplied id keep
+the entry until the last of them stops) and consults the registry for
+every event, so the producer logging of any live instance is
+recognized by every instance — without widening the match to the
+`tabellarium-` default prefix (fails as soon as an operator sets their
+own `client.id`) or to every Kafka producer network thread (silences
+the application's own producers, whose connection warnings are exactly
+what one wants shipped). The exclusivity check would register its
+topic-to-class assignments the same way, consulted at start-up. It is
+not done because the single-instance deployment is the only one with a
+known user; running two appenders against the same logger is unusual
+(one appender with markers routes to any number of topics).
 
 ## How it is tested
 

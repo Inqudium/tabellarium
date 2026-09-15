@@ -20,7 +20,9 @@ import java.util.concurrent.atomic.AtomicReference
  * All metrics carry an `appender` tag derived from the
  * [KafkaAppender]'s Logback name (or `"unnamed"` if not set). This
  * disambiguates the rare case of multiple appender instances binding
- * to the same registry.
+ * to the same registry; two instances with the same name would get
+ * the same meter objects, so [MetricsBindings] refuses the second
+ * binding instead.
  *
  * The inventory - names, tags, cardinality - is canonical in
  * `docs/metrics/metrics-overview.md`, and `DocumentationContractTest`
@@ -197,10 +199,9 @@ internal class MicrometerKafkaAppenderMetrics(
      * Called by [KafkaAppender.stop] (and before a repeated bind) so
      * that reconfiguration cycles do not accumulate meters or leave
      * gauges reading a closed dispatcher's queue. Safe to call more
-     * than once. Note: when two instances share identical name+tags
-     * (two unnamed appenders on one registry), Micrometer hands both
-     * the same meter object - deregistering one then removes the
-     * shared meter; the `appender` tag exists to avoid that overlap.
+     * than once. Removes only meters this instance registered - and
+     * since [MetricsBindings] refuses a second binding with the same
+     * name+tags on one registry, no other live instance shares them.
      */
     internal fun deregisterFrom(registry: MeterRegistry) {
         val toRemove = synchronized(registeredMeters) { registeredMeters.toList().also { registeredMeters.clear() } }

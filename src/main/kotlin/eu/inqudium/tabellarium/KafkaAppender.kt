@@ -653,7 +653,11 @@ class KafkaAppender :
      * the registry exists), which is acceptable for almost all
      * monitoring needs.
      *
-     * Calling this method on a stopped appender is a no-op.
+     * Calling this method on a stopped appender is a no-op. A bind to
+     * a registry that already holds the meters of another appender
+     * with the same name (the `appender` tag) and common tags is
+     * refused with a status warning: the two would share meter objects
+     * (see [MetricsBindings]); give each appender a distinct name.
      *
      * @param registry The Micrometer registry to publish to.
      * @param commonTags Tags attached to every metric. Use sparingly.
@@ -711,13 +715,20 @@ class KafkaAppender :
      *
      * **One life, one slot:** the slot is read once, in [start], when
      * the transport wires its fallback dispatcher to the attached
-     * appender. Detaching while started is therefore refused with a
-     * status warning (the accessors would otherwise report "no
-     * fallback" for a pipeline still delivering to one, and
-     * [detachAndStopAllAppenders] would stop an appender the dispatcher
-     * still targets - loss that no counter shows). Consistent with
+     * appender. Changing the slot while started is therefore refused
+     * with a status warning, in both directions. Detaching: the
+     * accessors would otherwise report "no fallback" for a pipeline
+     * still delivering to one, and [detachAndStopAllAppenders] would
+     * stop an appender the dispatcher still targets - loss that no
+     * counter shows. Attaching to a started appender that began
+     * without a fallback: the accessors would report a fallback the
+     * running transport never wired, diversions would keep being
+     * dropped, the fallback queue metrics would stay absent, and
+     * [stop] would stop an appender that never received an event
+     * (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, L-1). Consistent with
      * ADR-0004: the fallback wiring, like every other resource, has
-     * exactly one life. Detach before [start] or after [stop] as before.
+     * exactly one life. Attach and detach before [start] or after
+     * [stop] as before.
      *
      * **Self-logging:** the fallback appender must not log through
      * SLF4J per delivered event. Its `doAppend` runs on the fallback
@@ -728,6 +739,15 @@ class KafkaAppender :
      * and are unaffected.
      */
     override fun addAppender(newAppender: Appender<ILoggingEvent>) {
+        if (isStarted) {
+            addWarn(
+                "KafkaAppender ignores attaching fallback appender '${newAppender.name}' while started: the " +
+                    "running pipeline was wired at start() " +
+                    (fallbackAppender?.let { "to '${it.name}'" } ?: "without a fallback") +
+                    " (ADR-0004: one life, one slot). Stop the KafkaAppender first, or configure a new instance.",
+            )
+            return
+        }
         if (fallbackAppender != null) {
             addWarn(
                 "KafkaAppender supports only a single fallback appender; " +
