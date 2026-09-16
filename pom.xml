@@ -93,6 +93,21 @@
         <java.version>21</java.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
 
+        <!--
+            Reproducible builds (https://maven.apache.org/guides/mini/guide-reproducible-builds.html):
+            with this property set, the Maven archivers write this instant as
+            every zip entry's timestamp, sort the entries, normalize entry
+            permissions and stop writing the build user, JDK and Maven versions
+            into the manifest's Created-By, so the same source and version
+            produce the same bytes on any machine. The jar the Release
+            workflow attaches to the GitHub release (and attests with SLSA
+            provenance) is then byte-identical to the one deployed to Maven
+            Central from a local checkout of the tag. Bumped in every release
+            commit to the release date - the value only has to change per
+            release, never per build.
+        -->
+        <project.build.outputTimestamp>2026-09-16T00:00:00Z</project.build.outputTimestamp>
+
         <!-- Kotlin Version -->
         <kotlin.version>2.4.20</kotlin.version>
 
@@ -488,6 +503,16 @@
                             <manifest>
                                 <!-- Implementation-Title/-Version in the manifest, as before. -->
                                 <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                                <!--
+                                    No Created-By / Build-Jdk-Spec: the latter names the
+                                    JDK that ran the build (25 in CI, whatever 24+ a
+                                    maintainer has locally) and was the one manifest line
+                                    that kept two builds of the same tag from being
+                                    byte-identical - see project.build.outputTimestamp.
+                                    The artifact's own target is Implementation-Version
+                                    plus the class-file level (21), not the build JDK.
+                                -->
+                                <addDefaultEntries>false</addDefaultEntries>
                             </manifest>
                         </archive>
                     </configuration>
@@ -501,6 +526,14 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-source-plugin</artifactId>
                     <version>${maven-source-plugin.version}</version>
+                    <configuration>
+                        <archive>
+                            <manifest>
+                                <!-- Same reason as on the jar plugin: no build-JDK line. -->
+                                <addDefaultEntries>false</addDefaultEntries>
+                            </manifest>
+                        </archive>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -847,16 +880,48 @@
                             </execution>
                         </executions>
                     </plugin>
+                    <!--
+                        The javadoc jar is rendered by Dokka but PACKAGED by the
+                        jar plugin: Dokka's own javadocJar goal writes the build
+                        time into every zip entry and the build user and JDK into
+                        the manifest, ignoring project.build.outputTimestamp, so
+                        two builds of one tag never matched. Rendering into a
+                        directory and letting the Maven archiver jar it gives the
+                        javadoc jar the same reproducibility as the main and
+                        sources jars (Dokka's rendered output itself is
+                        deterministic).
+                    -->
                     <plugin>
                         <groupId>org.jetbrains.dokka</groupId>
                         <artifactId>dokka-maven-plugin</artifactId>
                         <executions>
                             <execution>
+                                <id>render-javadoc</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>javadoc</goal>
+                                </goals>
+                                <configuration>
+                                    <!-- Separate from the HTML site output in target/dokka. -->
+                                    <outputDir>${project.build.directory}/dokka-javadoc</outputDir>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
                                 <id>attach-javadoc</id>
                                 <phase>package</phase>
                                 <goals>
-                                    <goal>javadocJar</goal>
+                                    <goal>jar</goal>
                                 </goals>
+                                <configuration>
+                                    <classifier>javadoc</classifier>
+                                    <classesDirectory>${project.build.directory}/dokka-javadoc</classesDirectory>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>

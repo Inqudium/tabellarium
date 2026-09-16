@@ -143,8 +143,8 @@ service's own boundary; Tabellarium is the courier who carries the records away.
 
 Releases are published to
 [Maven Central](https://central.sonatype.com/artifact/eu.inqudium/tabellarium)
-(GPG-signed, with sources, javadoc, and a CycloneDX SBOM) — no
-repository configuration needed:
+(GPG-signed, with sources and javadoc) — no repository configuration
+needed:
 
 ```xml
 <dependency>
@@ -158,9 +158,15 @@ repository configuration needed:
 Mirrors: the
 [GitHub Packages Maven registry](https://github.com/Inqudium/tabellarium/packages)
 (`https://maven.pkg.github.com/Inqudium/tabellarium`; needs a token
-with `read:packages` even for public packages), and the jar plus SBOM
-attached to each
-[GitHub release](https://github.com/Inqudium/tabellarium/releases).
+with `read:packages` even for public packages), and the jar attached
+to each [GitHub release](https://github.com/Inqudium/tabellarium/releases)
+together with the CycloneDX SBOM (`bom.json`) and SLSA build provenance
+(`multiple.intoto.jsonl`). The build is
+[reproducible](#reproducible-builds): the jar on Maven Central and the
+jar attached to the GitHub release are byte-identical, so the
+provenance of the release asset verifies the Central artifact as well -
+compare `sha256sum` of the two, or run `slsa-verifier` against the
+downloaded Central jar.
 
 ## Quick start
 
@@ -1275,12 +1281,31 @@ AUDIT record end-to-end against an Apache Kafka container — real
 serializers, compression, headers, and the AUDIT acks/idempotence
 handshake.
 
-The artifact targets Java 21 (Kotlin 2.4.10); building needs JDK 24+
+The artifact targets Java 21 (Kotlin 2.4.20); building needs JDK 24+
 because of the JVM flags in `.mvn/jvm.config`. The quality gates that
 run with `mvn verify` (ktlint, JaCoCo, the documentation-contract test
 that pins the guide's tables to the constants, Jazzer regression
 inputs) and the CI-only scans (OSV via CycloneDX SBOM, CodeQL, nightly
 fuzzing) are described in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Reproducible builds
+
+The same source and version produce the same bytes on any machine:
+the POM sets `project.build.outputTimestamp`, so the Maven archivers
+write that instant as every zip entry's timestamp, sort the entries
+and normalize their permissions, and the manifests carry no build
+user, build JDK or Maven version (`Build-Jdk-Spec` is omitted on
+purpose - CI builds on JDK 25, a maintainer on whatever 24+ is
+installed). This holds for all three published jars: the javadoc jar
+is rendered by Dokka but packaged by the jar plugin, because Dokka's
+own `javadocJar` goal writes the build time and JDK into the archive.
+Consequently the jar the Release workflow attaches to the GitHub
+release (built on the tag by GitHub Actions, attested with SLSA
+provenance) and the jar deployed to Maven Central from a local
+checkout of the same tag are byte-identical. The timestamp property is
+bumped in every release commit; to check a build, run
+`mvn -DskipTests package` twice, or once on the tag, and compare
+`sha256sum target/tabellarium-<version>.jar` with the release asset.
 
 ## Contributing
 
