@@ -150,7 +150,7 @@ repository configuration needed:
 <dependency>
     <groupId>eu.inqudium</groupId>
     <artifactId>tabellarium</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
     <scope>runtime</scope>
 </dependency>
 ```
