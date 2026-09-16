@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-16
+
+Public API (ADR-0002) unchanged. Behavior changes operators should read
+before upgrading: the self-logging guard now recognizes the producer
+threads of every `KafkaAppender` instance in the JVM, attaching a
+fallback appender to a started appender is refused like detaching one,
+a second appender with the same name (or both unnamed) bound to the
+same `MeterRegistry` is refused as a whole instead of sharing meters,
+the two `kafka.appender.fallback.queue.*` gauges exist only with a
+fallback appender configured, and `events.dispatched` never counts an
+event that also counts as a `shutdown` fallback. Everything else is
+defect fixes, tests, internal structure and build.
+
 ### Changed
 
 - Internal structure (no behavior change, public API per ADR-0002
@@ -61,6 +74,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Logback's state, the attached fallback appender and the encoder are
   still stopped.
 
+- The self-logging guard is process-wide: `ClientIdSelfLoggingGuard`
+  enters the network-thread names derived from its producers' `client.id`s
+  (and the fixed worker names) into a JVM-wide, reference-counted
+  registry when the appender starts, and leaves it through the new
+  `SelfLoggingGuard.close`, which `KafkaTransport` calls last in its
+  close order - after the producers whose logging it recognizes - and in
+  the rollback of a failed `open`. Every instance therefore drops the
+  producer logging of every live instance. Previously each guard knew
+  only its own client ids, so two appenders attached to the same logger
+  shipped each other's Kafka client logging through their own producers
+  - a cross-instance feedback loop that amplified exactly during broker
+  trouble (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-3). The README's
+  "Cross-instance guards" now lists only the topic/class exclusivity
+  check as future work. Two instances sharing an operator-supplied
+  `client.id` keep the entry until the last of them stops.
+- `addAppender` on a started appender is refused with a status warning
+  naming the refused appender and the wiring the pipeline actually has
+  - the mirror image of the refused detach: the transport reads the
+  fallback slot once at `start()`, so a late attach only changed the
+  public slot while diversions kept being dropped, the fallback queue
+  gauges stayed absent and `stop()` stopped an appender that never
+  received an event (finding L-1). Joran is unaffected:
+  `<appender-ref>` is processed before the enclosing `<appender>` starts.
+- `bindMeterRegistry` refuses a binding whose meter identity - the
+  `appender` tag plus the common tags - is already live in the registry:
+  no appender, breaker or producer meters are registered, one status
+  warning names the tag, and `isMeterRegistryBound` stays false. Two
+  same-named (or both unnamed) instances on one registry previously got
+  the same meter objects from Micrometer, mixed their counts, and the
+  first `stop()` removed the series the survivor still published
+  through - an outage shown as "no data" (L-2). The former
+  breaker-only collision warning is folded into this check; a
+  per-instance discriminator tag was rejected because it would change
+  the documented inventory for every deployment. README and the metrics
+  overview state the unique-name requirement.
+- Benchmarks: `SenderPathBenchmark` compiles against the changed
+  internal seams (the CI job that compiles the module caught the
+  drift) and reuses a pre-built ring of `DeliveryOwnership` objects
+  reset per op - `DeliveryOwnership.reset` is an internal,
+  benchmark-only instrument - so the per-event ownership production
+  allocates on the caller path does not land on the measured worker
+  path. Re-measured with `-prof gc` on the same machine and JDK as the
+  2026-09-07 baseline: 112 B/op unbound unchanged, +4.5 ns/op for the
+  hand-off compare-and-set; raw output under
+  `benchmarks/results/2026-09-15/`.
+
 ### Fixed
 
 - Start-up validation errors raised by this library itself - blank or
@@ -95,6 +154,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at WARN with its cause, like every teardown failure in the same
   class, instead of at INFO - an operator filtering the status output
   for warnings never learned that the breaker meters were missing.
+- A forced `SendDispatcher` close could divert the in-flight event as a
+  `shutdown` remainder after `producer.send` had already accepted the
+  record: the record reached Kafka and the fallback, and
+  `events.dispatched` and `events.fallback{reason="shutdown"}` both
+  counted it (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-2). The two-state
+  diversion claim is replaced by `DeliveryOwnership` with the explicit
+  states pending, handed off and diverted: the sender marks the hand-off
+  the moment `producer.send` returns without a synchronous failure,
+  every dispatcher rejection - the close's in-flight claim included -
+  diverts only a pending event, and only the Kafka callback may divert
+  after the hand-off. In the one residual race the state cannot close -
+  the close claiming while the client is accepting the record - the
+  hand-off fails and the event is counted as the shutdown fallback
+  only, never additionally as dispatched. A deterministic dispatcher
+  test hands off, then pins the worker across a forced close; the
+  metrics overview states the exclusivity.
+- With `interceptor.classes` configured, every record gets `RecordHeader`
+  wrappers and value arrays of its own instead of the shared pre-built
+  header instances. Kafka allows a `ProducerInterceptor` to modify the
+  record it receives, and `RecordHeader.value()` exposes the array
+  itself, so an interceptor writing into a header value would have
+  changed `meta.component`, `meta.cmdbId` and `meta.environment` of
+  every later record and of every record still waiting for
+  serialization (M-1). The interceptor is the only extension that
+  receives the record before serialization - the serializers are forced
+  to `ByteArraySerializer` and the partitioner never sees headers - so
+  the copies are paid exactly there; without interceptors the shared
+  instances (the measured saving of the 2026-08-30 header fix) remain.
 
 ## [1.1.1] - 2026-09-09
 
@@ -478,7 +565,8 @@ optional `KafkaAppenderMetricsBinding`.
   public type. Dokka's API reference now shows exactly the supported
   surface.
 
-[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/Inqudium/tabellarium/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Inqudium/tabellarium/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Inqudium/tabellarium/releases/tag/v1.0.0
