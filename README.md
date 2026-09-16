@@ -498,9 +498,16 @@ loops: log events originating from the Kafka producer threads of any
 `KafkaAppender` instance in the JVM (recognizable because the Kafka
 client names them after the producer's `client.id`; every instance
 enters its ids into a process-wide registry at start and leaves it at
-stop) are ignored entirely — a producer's internal logging is never
-shipped through that producer, nor through a second appender whose own
-producer logging the first would ship in turn.
+stop, counted per id so two instances sharing an operator-supplied
+`client.id` keep the entry until the last of them stops) are ignored
+entirely — a producer's internal logging is never shipped through that
+producer, nor through a second appender whose own producer logging the
+first would ship in turn. The match is exact — the full thread name
+for each registered `client.id`, not a prefix: matching the
+`tabellarium-` default prefix would fail as soon as an operator sets
+their own `client.id`, and matching every Kafka producer network thread
+would silence the application's own producers, whose connection
+warnings are exactly what one wants shipped.
 
 ### Why one circuit breaker per topic class
 
@@ -1209,29 +1216,21 @@ doing only if a concrete deployment hits the producer-count ceiling.
 
 ### Cross-instance guards
 
-One guard is scoped to one appender instance and knows nothing about
-a second `KafkaAppender` in the same JVM: **the topic/class
+One check is still scoped to one appender instance and knows nothing
+about a second `KafkaAppender` in the same JVM: **the topic/class
 exclusivity check** rejects one topic under two classes within one
-configuration; two instances configuring the same topic differently
-are not cross-checked (see
+configuration, but two instances configuring the same topic under
+different classes are not cross-checked (see
 [Why one topic cannot belong to two classes](#why-one-topic-cannot-belong-to-two-classes)).
-
-The fix has a known shape, because the self-logging guard already uses
-it: a process-wide registry that every instance enters at `start()`
-and leaves at `stop()`. The guard registers its producer `client.id`s
-(as the network-thread names the Kafka client derives from them, with
-a count per name so two instances sharing an operator-supplied id keep
-the entry until the last of them stops) and consults the registry for
-every event, so the producer logging of any live instance is
-recognized by every instance — without widening the match to the
-`tabellarium-` default prefix (fails as soon as an operator sets their
-own `client.id`) or to every Kafka producer network thread (silences
-the application's own producers, whose connection warnings are exactly
-what one wants shipped). The exclusivity check would register its
-topic-to-class assignments the same way, consulted at start-up. It is
-not done because the single-instance deployment is the only one with a
-known user; running two appenders against the same logger is unusual
-(one appender with markers routes to any number of topics).
+The self-logging guard had the same gap and closed it (see
+[Resilience](#resilience)); the exclusivity check would follow the same
+shape: a process-wide registry every instance enters at `start()` with
+its topic-to-class assignments and leaves at `stop()`, consulted at
+start-up so a start whose assignment contradicts a live instance's is
+refused with a named error. It is not done because the single-instance
+deployment is the only one with a known user, and two appenders in one
+configuration are unusual — one appender with markers routes to any
+number of topics.
 
 ## How it is tested
 
