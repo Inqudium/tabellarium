@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reproducible builds: the POM sets `project.build.outputTimestamp`
+  (bumped in every release commit), the jar and sources manifests no
+  longer carry `Created-By`/`Build-Jdk-Spec` (the build-JDK line was the
+  one thing that kept a JDK 25 CI build and a JDK 26 local build of the
+  same tag from matching), and the javadoc jar is rendered by Dokka but
+  packaged by the jar plugin, because Dokka's `javadocJar` goal writes
+  the build time and JDK into the archive. Verified: three builds of one
+  commit - twice on JDK 26, once on Temurin 25 - produce byte-identical
+  main, sources and javadoc jars. From the next release on, the jar
+  attached to the GitHub release (SLSA-attested) and the jar deployed to
+  Maven Central are therefore the same bytes; for 1.1.2 and earlier they
+  differ in zip timestamps and the `Build-Jdk-Spec` line only. README
+  ("Installation", "Reproducible builds") describes it; the Installation
+  text no longer claims an SBOM on Maven Central - the CycloneDX SBOM
+  and the provenance are GitHub-release assets.
+
 ## [1.1.2] - 2026-09-16
 
 Public API (ADR-0002) unchanged. Behavior changes operators should read
