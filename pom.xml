@@ -129,7 +129,7 @@
              real in the scheduled Fuzz workflow (JAZZER_FUZZ=1). -->
         <jazzer.version>0.30.0</jazzer.version>
         <!-- Security pin; see the direct lz4-java dependency for the rationale. -->
-        <lz4-java.version>1.11.2</lz4-java.version>
+        <lz4-java.version>1.11.3</lz4-java.version>
 
         <!--
             JUnit tags excluded from the default test run. The external-contract
@@ -163,8 +163,8 @@
         -->
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
-        <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
-        <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
+        <maven-deploy-plugin.version>3.2.0</maven-deploy-plugin.version>
+        <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
         <maven-resources-plugin.version>3.5.0</maven-resources-plugin.version>
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
@@ -627,7 +627,7 @@
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.6.1</version>
+                <version>3.6.2</version>
                 <executions>
                     <execution>
                         <id>add-java-fuzz-test-sources</id>
