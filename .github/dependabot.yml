@@ -27,3 +27,11 @@ updates:
     directory: /.github
     schedule:
       interval: weekly
+    ignore:
+      # 1.2.3 adds a dependency on properdocs, a separate MkDocs fork, only
+      # to print a "switch to properdocs" warning in the build log; the
+      # redirect output is the same as 1.2.2's. Moving the docs toolchain
+      # towards properdocs is a decision for the whole toolchain, not a
+      # side effect of a plugin bump (see the comment in docs.yml).
+      - dependency-name: mkdocs-redirects
+        versions: [">=1.2.3"]
