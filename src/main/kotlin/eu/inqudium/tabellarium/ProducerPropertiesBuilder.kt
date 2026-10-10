@@ -13,7 +13,8 @@ import org.apache.kafka.clients.producer.ProducerConfig
  *
  * ## Composition order
  *
- * For each [buildFor] call, three layers are merged in this order:
+ * For each [buildFor] call, three layers are merged and then capped, in
+ * this order:
  *
  * 1. **Base properties** - the caller's configuration, typically parsed
  *    from the `<kafkaProducerProperties>` XML element.
@@ -107,7 +108,7 @@ internal class ProducerPropertiesBuilder(
         defaultClientIdPrefix?.let { prefix ->
             merged.putIfAbsent(
                 ProducerConfig.CLIENT_ID_CONFIG,
-                "$prefix-${topicClass.name.lowercase()}",
+                "$prefix-${topicClass.tag}",
             )
         }
 

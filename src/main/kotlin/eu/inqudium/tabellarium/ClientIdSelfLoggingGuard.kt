@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   one's: two appenders attached to the same logger would otherwise
  *   ship each other's producer logging, each through a producer whose
  *   logging the other ships in turn - the cross-instance loop of
- *   `docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md`, M-3. See
+ *   `DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-3. See
  *   [liveEchoThreadNames] for the process-wide registry that closes it.
  * - **The workers' own logging.** `producer.send` runs on the send
  *   workers, and the Kafka 4.x client logs `ApiException`s at DEBUG
@@ -61,7 +61,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * cached `Boolean`) - per pooled platform thread once, per
  * thread-per-request virtual thread once per request; the derivation
  * and the `ScopedValue` outlook (JDK 25+) are in
- * `docs/assessment/PERF_ANALYSIS-2026-08-29T11-01-08.md`, finding 6.
+ * `PERF_ANALYSIS-2026-08-29T11-01-08`, finding 6.
  *
  * Owned by the [KafkaTransport]: the client ids exist only once the
  * producers do, and the transport's close is what [close]s the guard -

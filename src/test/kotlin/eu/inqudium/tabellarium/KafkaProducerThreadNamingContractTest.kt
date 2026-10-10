@@ -58,7 +58,7 @@ class KafkaProducerThreadNamingContractTest {
                     .filter { clientId in it }
 
             // Then
-            assertThat(matching).containsExactly(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId)
+            assertThat(matching).containsExactly("${ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX}$clientId")
         } finally {
             producer.close(Duration.ZERO)
         }

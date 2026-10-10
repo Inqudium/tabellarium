@@ -1,6 +1,7 @@
 package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.encoder.Encoder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -46,7 +47,7 @@ class RecordPlanTest {
         message: String = "hello",
         mdc: Map<String, String> = emptyMap(),
     ): ILoggingEvent =
-        (newTestLoggingEvent(message = message, mdc = mdc) as ch.qos.logback.classic.spi.LoggingEvent).apply {
+        (newTestLoggingEvent(message = message, mdc = mdc) as LoggingEvent).apply {
             marker?.let { addMarker(MarkerFactory.getMarker(it)) }
         }
 
@@ -105,6 +106,7 @@ class RecordPlanTest {
             //   fail the first dispatch to it, a surplus class would open an
             //   idle producer.
 
+            // Given / When / Then: the AUDIT mapping plus the TECHNICAL default
             assertThat(planFor().activeTopicClasses).containsExactlyInAnyOrder(TopicClass.AUDIT, TopicClass.TECHNICAL)
         }
     }
@@ -169,31 +171,34 @@ class RecordPlanTest {
         }
     }
 
-    @Test
-    fun `should reject an inconsistent mapping before anything is created`() {
-        // What is to be tested? Whether a topic mapped to two classes fails
-        //   at plan construction with the mapping's own validation error.
-        // How will the test case be deemed successful and why? Successful
-        //   if RecordPlan.from throws IllegalArgumentException naming the
-        //   conflict - the same error start() reports - so the failure
-        //   happens in the pure stage, where there is nothing to roll back.
-        // Why is it important to test this test case? The plan's contract
-        //   is "cannot leak"; a mapping error that only surfaced after
-        //   producers exist would push it back into the transaction the
-        //   type was introduced to leave.
+    @Nested
+    inner class `Plan construction` {
+        @Test
+        fun `should reject an inconsistent mapping before anything is created`() {
+            // What is to be tested? Whether a topic mapped to two classes fails
+            //   at plan construction with the mapping's own validation error.
+            // How will the test case be deemed successful and why? Successful
+            //   if RecordPlan.from throws IllegalArgumentException naming the
+            //   conflict - the same error start() reports - so the failure
+            //   happens in the pure stage, where there is nothing to roll back.
+            // Why is it important to test this test case? The plan's contract
+            //   is "cannot leak"; a mapping error that only surfaced after
+            //   producers exist would push it back into the transaction the
+            //   type was introduced to leave.
 
-        // Given: one topic, two classes
-        val mapping =
-            TopicMappingConfig().apply {
-                defaultTopic = "svc.logs"
-                addMapping(mapping("A", "shared.topic", "AUDIT"))
-                addMapping(mapping("B", "shared.topic", "TECHNICAL"))
-            }
+            // Given: one topic, two classes
+            val mapping =
+                TopicMappingConfig().apply {
+                    defaultTopic = "svc.logs"
+                    addMapping(mapping("A", "shared.topic", "AUDIT"))
+                    addMapping(mapping("B", "shared.topic", "TECHNICAL"))
+                }
 
-        // When / Then
-        assertThatThrownBy { planFor(mapping) }
-            .isInstanceOf(IllegalArgumentException::class.java)
-            .hasMessageContaining("shared.topic")
+            // When / Then
+            assertThatThrownBy { planFor(mapping) }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("shared.topic")
+        }
     }
 
     @Nested

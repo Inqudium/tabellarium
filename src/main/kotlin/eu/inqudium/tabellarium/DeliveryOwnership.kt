@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *   that reaches the in-flight item after this point stands down: the
  *   event is on its way to Kafka and must not reach the fallback as a
  *   `shutdown` remainder as well
- *   (`docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md`, M-2 -
+ *   (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-2 -
  *   the two-state claim let the close divert a record that
  *   `producer.send` had already accepted).
  * - **DIVERTED**: routed to the fallback (or dropped, when none is
@@ -81,6 +81,9 @@ internal class DeliveryOwnership {
      * client would let two events share one outcome. `SenderPathBenchmark`
      * calls this on a pre-built ring so the measured send path carries
      * no per-event allocation that production puts on the caller path.
+     * Compatibility: `@JvmName` keeps the name unmangled for that Java
+     * JMH caller - an `internal` member is otherwise emitted with a
+     * module-name suffix.
      */
     @JvmName("reset")
     internal fun reset() {

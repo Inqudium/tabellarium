@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
+import java.time.Duration
 
 class ProducerPropertiesBuilderTest {
     @Nested
@@ -649,7 +650,7 @@ class ProducerPropertiesBuilderTest {
             val audit = TopicClass.entries.map { builder.buildFor(it) }.first { it.topicClass == TopicClass.AUDIT }
 
             // Then: Kafka constructs a producer from it
-            ProducerFactory.default().create(audit.properties).close(java.time.Duration.ZERO)
+            ProducerFactory.default().create(audit.properties).close(Duration.ZERO)
         }
 
         @Test
@@ -672,7 +673,7 @@ class ProducerPropertiesBuilderTest {
                 )
 
             // When / Then
-            assertThatThrownBy { ProducerFactory.default().create(properties).close(java.time.Duration.ZERO) }
+            assertThatThrownBy { ProducerFactory.default().create(properties).close(Duration.ZERO) }
                 .hasStackTraceContaining("delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms")
         }
 

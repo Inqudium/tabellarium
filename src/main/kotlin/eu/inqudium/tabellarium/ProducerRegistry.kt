@@ -115,7 +115,7 @@ internal class ProducerRegistry private constructor(
             budgetMs = closeTimeout.toMillis() + JOIN_MARGIN.toMillis(),
             tasks =
                 producersByClass.map { (topicClass, producer) ->
-                    "tabellarium-producer-close-${topicClass.name.lowercase()}" to {
+                    "tabellarium-producer-close-${topicClass.tag}" to {
                         try {
                             producer.close(closeTimeout)
                         } catch (e: Exception) {
@@ -244,13 +244,13 @@ internal class ProducerRegistry private constructor(
                         }
                 }
             } catch (e: Throwable) {
-                // Roll back: close producers that were already created -
-                // for an Error (linkage, initializer, resource exhaustion)
-                // as well, which the factory call above deliberately does
-                // not wrap: KafkaTransport.open promises rollback for any
-                // construction failure, and the registry is built before
-                // its own catch region. Rollback failures are attached as
-                // suppressed so the original cause is preserved.
+                // Safety: roll back - close producers that were already
+                // created - for an Error (linkage, initializer, resource
+                // exhaustion) as well, which the factory call above
+                // deliberately does not wrap: KafkaTransport.open promises
+                // rollback for any construction failure, and the registry is
+                // built before its own catch region. Rollback failures are
+                // attached as suppressed so the original cause is preserved.
                 createdProducers.values.forEach { producer ->
                     try {
                         producer.close(ROLLBACK_CLOSE_TIMEOUT)
@@ -282,7 +282,7 @@ internal class ProducerRegistry private constructor(
  * exception is the library's own validation (topic, marker and class
  * names, identity fields, idempotence tuning), which names no
  * credential and is reported verbatim; this type is what tells the two
- * apart (`docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md`,
+ * apart (`CODE_ANALYSIS-2026-09-15T21-09-11`,
  * finding 2).
  */
 internal class ProducerConstructionException(
@@ -297,7 +297,7 @@ internal class ProducerConstructionException(
  * Constructs a Kafka [Producer] from a property map.
  *
  * The default implementation ([default]) instantiates a real
- * [org.apache.kafka.clients.producer.KafkaProducer] and **forcibly sets** `ByteArraySerializer` for both key
+ * [KafkaProducer] and **forcibly sets** `ByteArraySerializer` for both key
  * and value, regardless of any serializer property the caller supplied.
  * This is the wire format produced by the appender; using a different
  * serializer would cause a `ClassCastException` in the Kafka sender
@@ -321,8 +321,8 @@ internal fun interface ProducerFactory {
 
     companion object {
         /**
-         * Returns the default factory: instantiates a real [org.apache.kafka.clients.producer.KafkaProducer]
-         * with [org.apache.kafka.common.serialization.ByteArraySerializer] for both key and value, regardless of
+         * Returns the default factory: instantiates a real [KafkaProducer]
+         * with [ByteArraySerializer] for both key and value, regardless of
          * any serializer properties in the input map.
          */
         fun default(): ProducerFactory =

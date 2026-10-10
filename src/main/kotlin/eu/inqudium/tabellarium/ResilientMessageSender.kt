@@ -218,13 +218,13 @@ internal class ResilientMessageSender(
             circuitBreakersByClass[topicClass]
                 ?: error("Topic class $topicClass is not active in this registry")
         val throttle = throttlesByClass.getValue(topicClass)
-        // Snapshot the volatile reference once per call so all metric
-        // hooks for this event use the same implementation, even if
-        // setMetrics is called concurrently mid-send.
+        // Invariant: snapshot the volatile reference once per call so
+        // all metric hooks for this event use the same implementation,
+        // even if setMetrics is called concurrently mid-send.
         val m = metrics
-        // Every event the worker takes up, whatever the gates decide
-        // below: the size distribution describes what the application
-        // logs, not what Kafka accepted.
+        // Rationale: every event the worker takes up, whatever the
+        // gates decide below: the size distribution describes what the
+        // application logs, not what Kafka accepted.
         m.eventSize(topicClass, payload.size)
 
         // Throttle first: when HALF_OPEN and the gap has not elapsed,
@@ -306,7 +306,7 @@ internal class ResilientMessageSender(
     private inner class SendCallback(
         private val topicClass: TopicClass,
         private val circuitBreaker: CircuitBreaker,
-        private val metrics: KafkaAppenderMetrics,
+        private val metricsSnapshot: KafkaAppenderMetrics,
         private val originalEvent: ILoggingEvent,
         private val ownership: DeliveryOwnership,
     ) : Callback {
@@ -341,18 +341,18 @@ internal class ResilientMessageSender(
             if (exception != null) {
                 errorReported = true
                 circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, exception)
-                metrics.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
+                metricsSnapshot.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, elapsedDuration)
                 // From PENDING (the client reported synchronously inside
                 // send) or from HANDED_OFF (asynchronously): the callback
                 // is the owner after the hand-off. Stands down when a
                 // forced close diverted the event before the hand-off.
                 if (ownership.tryDivertAfterSend()) {
-                    metrics.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+                    metricsSnapshot.eventFallback(topicClass, KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
                     sendToFallback(originalEvent)
                 }
             } else {
                 circuitBreaker.onSuccess(elapsed, TimeUnit.NANOSECONDS)
-                metrics.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.SUCCESS, elapsedDuration)
+                metricsSnapshot.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.SUCCESS, elapsedDuration)
             }
         }
     }
@@ -391,7 +391,7 @@ internal class ResilientMessageSender(
          * operator override hook: the registry is an internal seam
          * (ADR-0002).
          */
-        fun circuitBreakerName(topicClass: TopicClass): String = "kafka-appender-${topicClass.name.lowercase()}"
+        fun circuitBreakerName(topicClass: TopicClass): String = "kafka-appender-${topicClass.tag}"
 
         /**
          * Default circuit-breaker configuration tuned for logging traffic.

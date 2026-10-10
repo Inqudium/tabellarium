@@ -11,7 +11,6 @@ import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
-import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
@@ -75,45 +74,23 @@ class KafkaAppenderMetricsBindingTest {
         appender.stop()
     }
 
-    private fun newStartedAppender(): KafkaAppender =
-        KafkaAppender().apply {
-            context = loggerContext
-            name = "TEST_KAFKA"
-            encoder =
-                MessageBytesEncoder().also {
-                    it.context = loggerContext
-                    it.start()
-                }
-            component = "test-service"
-            cmdbId = "CMDB-TEST"
-            environment = "test"
-            kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092"
-            topicMapping = TopicMappingConfig().apply { defaultTopic = "default.topic" }
-            // Inject the mock producer factory so start() succeeds without
-            // a real Kafka cluster. Same hook KafkaAppenderTest uses.
-            producerFactory = RecordingProducerFactory()
-            start()
-        }
+    // The shared fixture injects the mock producer factory, so start()
+    // succeeds without a real Kafka cluster.
+    private fun newStartedAppender(): KafkaAppender = newUnstartedAppender("TEST_KAFKA").apply { start() }
 
     private fun loggingEvent(message: String = "test message"): ILoggingEvent = newTestLoggingEvent(message = message)
 
     /** Same configuration as the fixture appender, not started - the deferral case. */
     private fun newUnstartedAppender(appenderName: String): KafkaAppender =
-        KafkaAppender().apply {
-            context = loggerContext
-            name = appenderName
+        newTestAppender(
+            context = loggerContext,
+            name = appenderName,
             encoder =
                 MessageBytesEncoder().also {
                     it.context = loggerContext
                     it.start()
-                }
-            component = "test-service"
-            cmdbId = "CMDB-TEST"
-            environment = "test"
-            kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092"
-            topicMapping = TopicMappingConfig().apply { defaultTopic = "default.topic" }
-            producerFactory = RecordingProducerFactory()
-        }
+                },
+        )
 
     /**
      * Registry whose [failingCounter]-th counter registration (1-based)
@@ -166,7 +143,7 @@ class KafkaAppenderMetricsBindingTest {
                 .run { ctx ->
                     val registry = ctx.getBean(MeterRegistry::class.java)
                     // Then: counters are registered for each active class
-                    val accepted = registry.find("kafka.appender.events.accepted").counters()
+                    val accepted = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED).counters()
                     assertThat(accepted).isNotEmpty
                 }
         }
@@ -192,7 +169,7 @@ class KafkaAppenderMetricsBindingTest {
                     val registry = ctx.getBean(MeterRegistry::class.java)
                     val before =
                         registry
-                            .find("kafka.appender.events.accepted")
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                             .counters()
                             .sumOf { it.count() }
 
@@ -202,7 +179,7 @@ class KafkaAppenderMetricsBindingTest {
                     // Then
                     val after =
                         registry
-                            .find("kafka.appender.events.accepted")
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                             .counters()
                             .sumOf { it.count() }
                     assertThat(after - before).isEqualTo(1.0)
@@ -239,7 +216,7 @@ class KafkaAppenderMetricsBindingTest {
 
                     fun taggedCounters() =
                         registry
-                            .find("kafka.appender.events.accepted")
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                             .tag("application", "test-service")
                             .tag("region", "eu-central-1")
                             .counters()
@@ -291,7 +268,7 @@ class KafkaAppenderMetricsBindingTest {
 
                     fun accepted() =
                         registry
-                            .find("kafka.appender.events.accepted")
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                             .counters()
                             .sumOf { it.count() }
                     repeat(5) { appender.doAppend(loggingEvent()) }
@@ -498,7 +475,7 @@ class KafkaAppenderMetricsBindingTest {
             // Then: closing it unbound the appender and removed its meters
             assertThat(appender.isMeterRegistryBound).isFalse()
             assertThat(appender.isStarted).isTrue()
-            assertThat(firstRegistry.find("kafka.appender.events.accepted").counters()).isEmpty()
+            assertThat(firstRegistry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED).counters()).isEmpty()
 
             // When: a second context refreshes
             ApplicationContextRunner()
@@ -509,7 +486,7 @@ class KafkaAppenderMetricsBindingTest {
 
                     fun accepted() =
                         registry
-                            .find("kafka.appender.events.accepted")
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
                             .counters()
                             .sumOf { it.count() }
                     val before = accepted()
@@ -579,7 +556,7 @@ class KafkaAppenderMetricsBindingTest {
 
             // Then
             assertThat(appender.isMeterRegistryBound).isTrue()
-            assertThat(external.find("kafka.appender.events.accepted").counters()).isNotEmpty
+            assertThat(external.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED).counters()).isNotEmpty
         }
     }
 

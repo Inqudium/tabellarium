@@ -31,6 +31,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.slf4j.Logger
 import org.slf4j.MarkerFactory
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -335,9 +336,11 @@ class KafkaAppenderTest {
                 newAppender(
                     producerFactory = factory,
                     kafkaProducerProperties =
-                        "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092\n" +
-                            "${ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG}=true\n" +
-                            "${ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION}=6",
+                        """
+                        ${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092
+                        ${ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG}=true
+                        ${ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION}=6
+                        """.trimIndent(),
                 )
 
             // When
@@ -1518,7 +1521,7 @@ class KafkaAppenderTest {
                     includeCallerData = true
                 }
             appender.start()
-            loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).addAppender(appender)
+            loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(appender)
 
             // When: logged through the real logger on this thread, then drained
             loggerContext.getLogger("caller-data-test").info("diverted with caller data")
@@ -1606,8 +1609,8 @@ class KafkaAppenderTest {
             //   nothing appended
             assertThat(appender.statusMessages())
                 .anyMatch { it.contains("Fallback appender 'DEAD_FALLBACK'") && it.contains("is not started") }
-            val dropped = { registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED).counter()?.count() }
-            pollUntil { dropped() == 1.0 }
+            val dropped = registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED)
+            pollUntil { dropped.count() == 1.0 }
             appender.stop()
             assertThat(notStartedFallback.events).isEmpty()
         }
@@ -1735,18 +1738,18 @@ class KafkaAppenderTest {
             // counters must be read before stop() unbinds the meters)
             pollUntil { fallback.events.size == 1 }
             val accepted =
-                registry
-                    .find("kafka.appender.events.accepted")
-                    .tag("topic.class", TopicClass.TECHNICAL.tag)
-                    .counter()
-            assertThat(checkNotNull(accepted) { "accepted counter not registered" }.count()).isEqualTo(1.0)
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+            assertThat(accepted.count()).isEqualTo(1.0)
             val diverted =
-                registry
-                    .find("kafka.appender.events.fallback")
-                    .tag("topic.class", TopicClass.TECHNICAL.tag)
-                    .tag("reason", "encoder.error")
-                    .counter()
-            assertThat(checkNotNull(diverted) { "fallback counter not registered" }.count()).isEqualTo(1.0)
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to "encoder.error",
+                )
+            assertThat(diverted.count()).isEqualTo(1.0)
             appender.stop()
         }
     }
@@ -2561,17 +2564,7 @@ class KafkaAppenderTest {
                         ): Future<RecordMetadata> {
                             sendWorker.set(Thread.currentThread())
                             sendEntered.countDown()
-                            var wasInterrupted = false
-                            while (release.count > 0) {
-                                try {
-                                    release.await()
-                                } catch (_: InterruptedException) {
-                                    wasInterrupted = true
-                                }
-                            }
-                            if (wasInterrupted) {
-                                Thread.currentThread().interrupt()
-                            }
+                            awaitUninterruptibly(release)
                             throw RuntimeException("late send failure")
                         }
                     }
@@ -2594,25 +2587,22 @@ class KafkaAppenderTest {
             val registry = SimpleMeterRegistry()
             appender.bindMeterRegistry(registry)
             val sendErrorFallbacks =
-                checkNotNull(
-                    registry
-                        .find("kafka.appender.events.fallback")
-                        .tags("topic.class", "technical", "reason", "send.error")
-                        .counter(),
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to "send.error",
                 )
             val shutdownFallbacks =
-                checkNotNull(
-                    registry
-                        .find("kafka.appender.events.fallback")
-                        .tags("topic.class", "technical", "reason", "shutdown")
-                        .counter(),
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to "shutdown",
                 )
             val sendErrors =
-                checkNotNull(
-                    registry
-                        .find("kafka.appender.send.duration")
-                        .tags("topic.class", "technical", "outcome", "error")
-                        .timer(),
+                registry.requireTimer(
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                    MicrometerKafkaAppenderMetrics.TAG_OUTCOME to "error",
                 )
             appender.doAppend(newTestLoggingEvent(message = "pinned"))
             assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
@@ -2941,8 +2931,7 @@ class KafkaAppenderTest {
             assertThat(first.meters).noneMatch(ownMeter)
             assertThat(second.meters.filter(ownMeter).map { it.id })
                 .containsExactlyInAnyOrderElementsOf(boundToFirst)
-            val queueSize =
-                checkNotNull(second.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauge())
+            val queueSize = second.requireGauge(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE)
             pollUntil { queueSize.value() == 2.0 }
             release.countDown()
             appender.stop()
@@ -3019,10 +3008,10 @@ class KafkaAppenderTest {
             appenderA.doAppend(newTestLoggingEvent(message = "still counted on the first registry"))
             assertThat(
                 first
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                    .tags("topic.class", TopicClass.TECHNICAL.tag)
-                    .counter()
-                    ?.count(),
+                    .requireCounter(
+                        MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                        MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                    ).count(),
             ).isEqualTo(1.0)
         }
 
@@ -3090,11 +3079,9 @@ class KafkaAppenderTest {
             appender.start()
             appender.bindMeterRegistry(registry)
             val oldAccepted =
-                checkNotNull(
-                    registry
-                        .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                        .tags("topic.class", TopicClass.TECHNICAL.tag)
-                        .counter(),
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
                 )
             rejectCounters.set(true)
 
@@ -3229,12 +3216,12 @@ class KafkaAppenderTest {
                 registry.meters.filter { it.id.name.startsWith("kafka.appender.circuitbreaker") }
             assertThat(breakerMeters).isNotEmpty()
             assertThat(breakerMeters).allSatisfy { meter ->
-                assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_A")
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isEqualTo("KAFKA_A")
                 assertThat(meter.id.getTag("name")).isEqualTo("kafka-appender-technical")
             }
             assertThat(breakerMeters.map { it.id.name }).contains(
-                "kafka.appender.circuitbreaker.state",
-                "kafka.appender.circuitbreaker.calls",
+                "${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.state",
+                "${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.calls",
                 "kafka.appender.circuitbreaker.not.permitted.calls",
                 "kafka.appender.circuitbreaker.buffered.calls",
                 "kafka.appender.circuitbreaker.failure.rate",
@@ -3270,12 +3257,12 @@ class KafkaAppenderTest {
             // Then: the successful-calls timer of THIS appender counted it
             //   (the send - and with it the breaker outcome - completes on
             //   the dispatcher worker, hence the bounded poll)
-            val successTimer =
-                registry
-                    .find("kafka.appender.circuitbreaker.calls")
-                    .tags("kind", "successful", "appender", "KAFKA_A")
-                    .timer()
-            val timer = checkNotNull(successTimer) { "successful-calls timer not registered" }
+            val timer =
+                registry.requireTimer(
+                    "${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.calls",
+                    "kind" to "successful",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA_A",
+                )
             pollUntil { timer.count() == 1L }
             appender.stop()
         }
@@ -3311,9 +3298,9 @@ class KafkaAppenderTest {
             // Then: both instances' breaker meters coexist, distinct by tag
             val stateGauges =
                 registry
-                    .find("kafka.appender.circuitbreaker.state")
+                    .find("${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.state")
                     .gauges()
-            assertThat(stateGauges.map { it.id.getTag("appender") }.toSet())
+            assertThat(stateGauges.map { it.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER) }.toSet())
                 .containsExactlyInAnyOrder("KAFKA_A", "KAFKA_B")
             // And: no collision warning was emitted for distinct names
             assertThat(appenderB.statusMessages())
@@ -3328,7 +3315,7 @@ class KafkaAppenderTest {
                 registry.meters.filter { it.id.name.startsWith("kafka.appender.circuitbreaker") }
             assertThat(remaining).isNotEmpty()
             assertThat(remaining).allSatisfy { meter ->
-                assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_B")
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isEqualTo("KAFKA_B")
             }
             appenderB.stop()
             assertThat(registry.meters)
@@ -3385,11 +3372,12 @@ class KafkaAppenderTest {
             appenderB.doAppend(newTestLoggingEvent(message = "counted nowhere"))
             appenderA.doAppend(newTestLoggingEvent(message = "counted by A"))
             val accepted =
-                registry
-                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
-                    .tags("appender", "KAFKA", "topic.class", TopicClass.TECHNICAL.tag)
-                    .counter()
-            assertThat(accepted?.count()).isEqualTo(1.0)
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+            assertThat(accepted.count()).isEqualTo(1.0)
 
             // When: the refused appender stops
             appenderB.stop()
@@ -3397,8 +3385,8 @@ class KafkaAppenderTest {
             // Then: A's series are intact and still count
             assertThat(registry.meters).hasSize(metersAfterFirstBind)
             appenderA.doAppend(newTestLoggingEvent(message = "still counted by A"))
-            assertThat(accepted?.count()).isEqualTo(2.0)
-            assertThat(registry.find("kafka.appender.circuitbreaker.state").gauges()).isNotEmpty()
+            assertThat(accepted.count()).isEqualTo(2.0)
+            assertThat(registry.find("${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.state").gauges()).isNotEmpty()
             appenderA.stop()
             assertThat(registry.meters).isEmpty()
         }
@@ -3590,15 +3578,19 @@ class KafkaAppenderTest {
             appender.bindMeterRegistry(registry)
 
             // Then
-            val info = registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauge()
-            assertThat(info).isNotNull
-            assertThat(info!!.id.getTag(MicrometerKafkaAppenderMetrics.TAG_FALLBACK)).isEqualTo("FALLBACK_FILE")
+            val info = registry.requireGauge(MicrometerKafkaAppenderMetrics.METRIC_INFO)
+            assertThat(info.id.getTag(MicrometerKafkaAppenderMetrics.TAG_FALLBACK)).isEqualTo("FALLBACK_FILE")
             assertThat(info.id.getTag(MicrometerKafkaAppenderMetrics.TAG_FALLBACK_TYPE))
                 .isEqualTo(RecordingAppender::class.java.simpleName)
             assertThat(info.id.getTag(MicrometerKafkaAppenderMetrics.TAG_DEBUG)).isEqualTo("true")
             assertThat(
                 registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges().map { gauge ->
-                    listOf("topic", "topic.class", "acks", "linger.ms").map { gauge.id.getTag(it) }
+                    listOf(
+                        MicrometerKafkaAppenderMetrics.TAG_TOPIC,
+                        MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS,
+                        MicrometerKafkaAppenderMetrics.TAG_ACKS,
+                        MicrometerKafkaAppenderMetrics.TAG_LINGER_MS,
+                    ).map { gauge.id.getTag(it) }
                 },
             ).containsExactlyInAnyOrder(
                 listOf("default.topic", "technical", "1", "50"),

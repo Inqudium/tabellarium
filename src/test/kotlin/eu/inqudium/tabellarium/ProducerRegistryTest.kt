@@ -12,6 +12,7 @@ import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.TimeSource
 
 class ProducerRegistryTest {
     private val baseProperties =
@@ -68,17 +69,7 @@ class ProducerRegistryTest {
 
         override fun close(timeout: Duration) {
             entered.countDown()
-            var wasInterrupted = false
-            while (release.count > 0) {
-                try {
-                    release.await()
-                } catch (_: InterruptedException) {
-                    wasInterrupted = true
-                }
-            }
-            if (wasInterrupted) {
-                Thread.currentThread().interrupt()
-            }
+            awaitUninterruptibly(release)
         }
 
         fun unblock() = release.countDown()
@@ -528,13 +519,13 @@ class ProducerRegistryTest {
             val closer = Thread({ registry.close().also { closeReturned.countDown() } }, "test-registry-closer")
             try {
                 // When: close runs while the parked producer stays parked
-                val startNanos = System.nanoTime()
+                val closeStarted = TimeSource.Monotonic.markNow()
                 closer.start()
                 assertThat(parked.entered.await(2, TimeUnit.SECONDS)).isTrue()
 
                 // Then: close returned within the budget plus a wide margin
                 assertThat(closeReturned.await(5, TimeUnit.SECONDS)).isTrue()
-                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+                val elapsedMs = closeStarted.elapsedNow().inWholeMilliseconds
                 assertThat(elapsedMs).isLessThan(200 + 500 + 3000)
                 assertThat(healthy).singleElement().satisfies({ producer ->
                     assertThat(producer.closed()).isTrue()

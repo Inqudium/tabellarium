@@ -54,17 +54,7 @@ class FallbackDispatcherTest {
                 if (interruptible) {
                     release.await()
                 } else {
-                    var wasInterrupted = false
-                    while (release.count > 0) {
-                        try {
-                            release.await()
-                        } catch (_: InterruptedException) {
-                            wasInterrupted = true
-                        }
-                    }
-                    if (wasInterrupted) {
-                        Thread.currentThread().interrupt()
-                    }
+                    awaitUninterruptibly(release)
                 }
                 appendCount.incrementAndGet()
             } finally {
@@ -324,7 +314,7 @@ class FallbackDispatcherTest {
             val dispatcher =
                 FallbackDispatcher(
                     fallbackAppender = blockingAppender,
-                    shutdownTimeoutMs = 100,
+                    drainTimeoutMs = 100,
                 )
 
             // First enqueue a single event and wait for the worker to
@@ -358,7 +348,7 @@ class FallbackDispatcherTest {
         @Test
         fun `should keep delivering for the whole shutdown budget before dropping the remainder`() {
             // What is to be tested? That close() lets the worker drain by
-            //   DELIVERING for the full shutdownTimeoutMs before it
+            //   DELIVERING for the full drainTimeoutMs before it
             //   interrupts - the interrupt ends the drain, so sending it
             //   early would drop everything still queued although budget
             //   remains.
@@ -391,7 +381,7 @@ class FallbackDispatcherTest {
                         delivered.incrementAndGet()
                     }
                 }
-            val dispatcher = FallbackDispatcher(slowAppender, shutdownTimeoutMs = 5000)
+            val dispatcher = FallbackDispatcher(slowAppender, drainTimeoutMs = 5000)
             (1..30).forEach { dispatcher.enqueue(newTestLoggingEvent(message = "slow-$it")) }
 
             // When
@@ -430,7 +420,7 @@ class FallbackDispatcherTest {
             val dispatcher =
                 FallbackDispatcher(
                     fallbackAppender = appender,
-                    shutdownTimeoutMs = 100,
+                    drainTimeoutMs = 100,
                 )
             try {
                 dispatcher.enqueue(newTestLoggingEvent(message = "parked"))
@@ -508,7 +498,7 @@ class FallbackDispatcherTest {
             val dispatcher =
                 FallbackDispatcher(
                     fallbackAppender = blockingAppender,
-                    shutdownTimeoutMs = 100,
+                    drainTimeoutMs = 100,
                 )
             dispatcher.enqueue(newTestLoggingEvent(message = "trigger"))
             pollUntil { blockingAppender.inAppend.get() }

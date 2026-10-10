@@ -16,9 +16,7 @@ class MessageEnricherTest {
     private val cmdbId = "CMDB-12345"
     private val environment = "prod"
 
-    private fun newEnricher(): MessageEnricher = MessageEnricher(component = component, cmdbId = cmdbId, environment = environment)
-
-    private fun newEnricherWith(extractor: (ILoggingEvent) -> String?): MessageEnricher =
+    private fun newEnricher(extractor: (ILoggingEvent) -> String? = MessageEnricher.DEFAULT_TRACE_ID_EXTRACTOR): MessageEnricher =
         MessageEnricher(
             component = component,
             cmdbId = cmdbId,
@@ -459,7 +457,7 @@ class MessageEnricherTest {
             //   while believing they had configured something else.
 
             // Given: an extractor that returns the formatted message
-            val enricher = newEnricherWith { event -> event.formattedMessage }
+            val enricher = newEnricher { event -> event.formattedMessage }
             val event = newTestLoggingEvent(message = "specific-message")
 
             // When
@@ -483,7 +481,7 @@ class MessageEnricherTest {
             //   ability to opt out of keying on a per-event basis.
 
             // Given
-            val enricher = newEnricherWith { _ -> null }
+            val enricher = newEnricher { _ -> null }
             val event = newTestLoggingEvent()
 
             // When
@@ -508,7 +506,7 @@ class MessageEnricherTest {
             //   where the value is attacker-influenced.
 
             // Given
-            val enricher = newEnricherWith { "x".repeat(MessageEnricher.MAX_PARTITIONING_KEY_LENGTH + 1) }
+            val enricher = newEnricher { "x".repeat(MessageEnricher.MAX_PARTITIONING_KEY_LENGTH + 1) }
 
             // When
             val result = enricher.enrich(newTestLoggingEvent())
@@ -531,7 +529,7 @@ class MessageEnricherTest {
             //   creating the same hot-partition pathology described above.
 
             // Given
-            val enricher = newEnricherWith { _ -> "   " }
+            val enricher = newEnricher { _ -> "   " }
             val event = newTestLoggingEvent()
 
             // When

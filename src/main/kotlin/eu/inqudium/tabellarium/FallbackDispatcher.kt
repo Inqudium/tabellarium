@@ -64,9 +64,9 @@ import java.util.concurrent.atomic.AtomicLong
  *                      the default of 1024 balances memory (each event
  *                      holds MDC, throwable, ...) against tolerance for
  *                      brief fallback slowness.
- * @param shutdownTimeoutMs Passed through to [BoundedWorkerDispatcher]
- *                          as its drain budget; here the drain means
- *                          delivering to the fallback appender.
+ * @param drainTimeoutMs Passed through to [BoundedWorkerDispatcher]
+ *                       as its drain budget; here the drain means
+ *                       delivering to the fallback appender.
  * @param onWorkerDeath Invoked after a worker death was accounted for
  *                      (in-flight and queued events counted as
  *                      dropped); the appender reports it to the status
@@ -76,12 +76,12 @@ import java.util.concurrent.atomic.AtomicLong
 internal class FallbackDispatcher(
     private val fallbackAppender: Appender<ILoggingEvent>,
     private val queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
-    shutdownTimeoutMs: Long = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    drainTimeoutMs: Long = DEFAULT_DRAIN_TIMEOUT_MS,
     onWorkerDeath: (Throwable) -> Unit = {},
 ) : BoundedWorkerDispatcher<ILoggingEvent>(
         threadName = THREAD_NAME,
         queueCapacity = queueCapacity,
-        drainTimeoutMs = shutdownTimeoutMs,
+        drainTimeoutMs = drainTimeoutMs,
         onWorkerDeath = onWorkerDeath,
     ) {
     private val droppedCount = AtomicLong(0)
@@ -128,9 +128,9 @@ internal class FallbackDispatcher(
     fun enqueue(event: ILoggingEvent): Boolean = offer(event)
 
     override fun deliver(item: ILoggingEvent) {
-        // A stopped or never-started appender (its own start() failed, a
-        // foreign owner stopped it) returns from doAppend without
-        // appending; refuse so the skeleton counts the drop.
+        // Safety: a stopped or never-started appender (its own start()
+        // failed, a foreign owner stopped it) returns from doAppend
+        // without appending; refuse so the skeleton counts the drop.
         if (!fallbackAppender.isStarted) {
             throw FallbackAppenderNotStartedException
         }
@@ -158,7 +158,7 @@ internal class FallbackDispatcher(
         const val DEFAULT_QUEUE_CAPACITY: Int = 1024
 
         /** Default time allowed in close() for the worker to drain by delivering, in milliseconds. */
-        const val DEFAULT_SHUTDOWN_TIMEOUT_MS: Long = 5000
+        const val DEFAULT_DRAIN_TIMEOUT_MS: Long = 5000
 
         /**
          * The worker thread name. Fixed and library-owned: the

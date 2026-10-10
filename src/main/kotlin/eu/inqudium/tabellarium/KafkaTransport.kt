@@ -173,10 +173,10 @@ internal class KafkaTransport private constructor(
             var selfLoggingGuard: SelfLoggingGuard? = null
             val sendDispatchers = LinkedHashMap<TopicClass, SendDispatcher>()
             try {
-                // The guard needs the producers' client ids, so it comes
-                // right after the registry - inside the rollback, because a
-                // throwing factory (a substituted one, in tests) would
-                // otherwise leak the producers, and a created guard must
+                // Safety: the guard needs the producers' client ids, so it
+                // comes right after the registry - inside the rollback,
+                // because a throwing factory (a substituted one, in tests)
+                // would otherwise leak the producers, and a created guard must
                 // leave the process-wide registry again if a later step
                 // throws.
                 selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
@@ -323,10 +323,10 @@ internal class KafkaTransport private constructor(
             } catch (e: Exception) {
                 warn("Error closing fallback dispatcher: ${e.message}", e)
             }
-            // The guard leaves the process-wide registry LAST: until here
-            // the producers and workers could still log, and their echo
-            // must be recognized to the end. Null only in the rollback of
-            // a guard factory that threw.
+            // Invariant: the guard leaves the process-wide registry LAST -
+            // until here the producers and workers could still log, and
+            // their echo must be recognized to the end. Null only in the
+            // rollback of a guard factory that threw.
             try {
                 selfLoggingGuard?.close()
             } catch (e: Exception) {

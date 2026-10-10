@@ -206,8 +206,9 @@ internal class MetricsBindings(
         if (registry === boundRegistry) {
             unbind()
         }
-        // Same derivation as MicrometerKafkaAppenderMetrics: every meter
-        // of this appender carries the identical appender tag value.
+        // Invariant: every meter of this appender carries the identical
+        // appender tag value - same derivation as
+        // MicrometerKafkaAppenderMetrics.
         val appenderTag = appenderName?.takeIf { it.isNotBlank() } ?: "unnamed"
         if (isIdentityBound(registry, commonTags, appenderTag)) {
             status.addWarn(
@@ -219,14 +220,15 @@ internal class MetricsBindings(
             )
             return null
         }
-        // Transactional: a failure halfway removes the meters registered
-        // so far, so nothing is left for the identity probe to mistake
-        // for a live appender on the retry.
+        // Safety: transactional - a failure halfway removes the meters
+        // registered so far, so nothing is left for the identity probe
+        // to mistake for a live appender on the retry.
         val impl =
             MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info) { message, cause ->
                 status.addWarn(message, cause)
             }
-        // The new binding stands; only now replace the previous one.
+        // Invariant: the new binding stands; only now replace the
+        // previous one.
         unbind()
         boundMetrics = impl
         boundRegistry = registry
@@ -251,8 +253,9 @@ internal class MetricsBindings(
         producerMetricBindings.clear()
         producerMetricsMirror?.close()
         producerMetricsMirror = null
-        // Per meter: one failing removal must not skip the rest, which
-        // would stay registered with nothing left to remove them.
+        // Safety: per meter - one failing removal must not skip the
+        // rest, which would stay registered with nothing left to remove
+        // them.
         boundResilience4jMeters.forEach { meter ->
             try {
                 registry.remove(meter)
@@ -313,9 +316,9 @@ internal class MetricsBindings(
                 bindBreakerMeters(registry, commonTags, appenderTag, breaker)
             }
         } catch (e: Exception) {
-            // WARN like the teardown failures: an operator filtering the
-            // status output for warnings must learn that the breaker
-            // meters are missing.
+            // Rationale: WARN like the teardown failures - an operator
+            // filtering the status output for warnings must learn that the
+            // breaker meters are missing.
             status.addWarn(
                 "Failed to bind Resilience4j metrics to MeterRegistry " +
                     "(circuit-breaker state metrics will be unavailable): ${e.message}",
@@ -339,31 +342,20 @@ internal class MetricsBindings(
         // One 0/1 gauge per possible state, exactly like the official
         // binder - dashboards select the active state via `== 1`.
         for (state in CircuitBreaker.State.entries) {
-            registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.state", "state", state.name.lowercase(), "The states of the circuit breaker") {
-                if (it.state == state) 1.0 else 0.0
-            }
+            registerBreakerGauge(
+                registry = registry,
+                breaker = breaker,
+                tags = tags,
+                gauge =
+                    BreakerGauge(
+                        name = "$CIRCUIT_BREAKER_PREFIX.state",
+                        tag = Tag.of("state", state.name.lowercase()),
+                        description = "The states of the circuit breaker",
+                    ) { if (it.state == state) 1.0 else 0.0 },
+            )
         }
-        // The buffered/slow-call and rate gauges of the official binder,
-        // as a table: name, kind tag (null = untagged), description,
-        // value - so the mirror the class KDoc commits to checking on
-        // every Resilience4j upgrade is one list, not a page of chains.
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.buffered.calls", "kind", "successful", "The number of buffered successful calls stored in the ring buffer") {
-            it.metrics.numberOfSuccessfulCalls.toDouble()
-        }
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.buffered.calls", "kind", "failed", "The number of buffered failed calls stored in the ring buffer") {
-            it.metrics.numberOfFailedCalls.toDouble()
-        }
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.calls", "kind", "successful", "The number of slow successful calls which were slower than a certain threshold") {
-            it.metrics.numberOfSlowSuccessfulCalls.toDouble()
-        }
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.calls", "kind", "failed", "The number of slow failed calls which were slower than a certain threshold") {
-            it.metrics.numberOfSlowFailedCalls.toDouble()
-        }
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.failure.rate", null, null, "The failure rate of the circuit breaker") {
-            it.metrics.failureRate.toDouble()
-        }
-        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.call.rate", null, null, "The slow call rate of the circuit breaker") {
-            it.metrics.slowCallRate.toDouble()
+        for (gauge in BREAKER_GAUGES) {
+            registerBreakerGauge(registry = registry, breaker = breaker, tags = tags, gauge = gauge)
         }
 
         // Event-driven call meters. The consumers are attached exactly
@@ -399,21 +391,15 @@ internal class MetricsBindings(
                 .also { boundResilience4jMeters += it }
     }
 
-    /** Registers one breaker gauge (optionally with one extra tag) and tracks it for [unbind]. */
+    /** Registers one breaker gauge (plus its optional extra tag) and tracks it for [unbind]. */
     private fun registerBreakerGauge(
         registry: MeterRegistry,
         breaker: CircuitBreaker,
         tags: Tags,
-        name: String,
-        tagKey: String?,
-        tagValue: String?,
-        description: String,
-        value: (CircuitBreaker) -> Double,
+        gauge: BreakerGauge,
     ) {
-        val builder = Gauge.builder(name, breaker) { value(it) }.description(description).tags(tags)
-        if (tagKey != null && tagValue != null) {
-            builder.tag(tagKey, tagValue)
-        }
+        val builder = Gauge.builder(gauge.name, breaker) { gauge.value(it) }.description(gauge.description).tags(tags)
+        gauge.tag?.let { builder.tag(it.key, it.value) }
         boundResilience4jMeters += builder.register(registry)
     }
 
@@ -490,6 +476,35 @@ internal class MetricsBindings(
         const val CIRCUIT_BREAKER_PREFIX: String = "kafka.appender.circuitbreaker"
 
         /**
+         * The buffered/slow-call and rate gauges of the official binder,
+         * one row each: name, kind tag (`null` = untagged), description,
+         * value. Rationale: the mirror the class KDoc commits to checking
+         * on every Resilience4j upgrade is this one list, not a page of
+         * builder chains.
+         */
+        private val BREAKER_GAUGES: List<BreakerGauge> =
+            listOf(
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.buffered.calls", Tag.of("kind", "successful"), "The number of buffered successful calls stored in the ring buffer") {
+                    it.metrics.numberOfSuccessfulCalls.toDouble()
+                },
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.buffered.calls", Tag.of("kind", "failed"), "The number of buffered failed calls stored in the ring buffer") {
+                    it.metrics.numberOfFailedCalls.toDouble()
+                },
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.slow.calls", Tag.of("kind", "successful"), "The number of slow successful calls which were slower than a certain threshold") {
+                    it.metrics.numberOfSlowSuccessfulCalls.toDouble()
+                },
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.slow.calls", Tag.of("kind", "failed"), "The number of slow failed calls which were slower than a certain threshold") {
+                    it.metrics.numberOfSlowFailedCalls.toDouble()
+                },
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.failure.rate", null, "The failure rate of the circuit breaker") {
+                    it.metrics.failureRate.toDouble()
+                },
+                BreakerGauge("$CIRCUIT_BREAKER_PREFIX.slow.call.rate", null, "The slow call rate of the circuit breaker") {
+                    it.metrics.slowCallRate.toDouble()
+                },
+            )
+
+        /**
          * The appender-namespace name of a Kafka client binder meter. Every
          * meter of the binder lands under `kafka.appender.producer.`:
          * `kafka.producer.record.send.total` becomes
@@ -509,3 +524,16 @@ internal class MetricsBindings(
         }
     }
 }
+
+/**
+ * One row of the circuit-breaker gauge table: meter [name], an optional
+ * extra [tag] (the official binder's `kind`/`state`), [description] and
+ * the [value] read from the breaker. A plain class: it carries a
+ * function, so data-class equality would be meaningless.
+ */
+private class BreakerGauge(
+    val name: String,
+    val tag: Tag?,
+    val description: String,
+    val value: (CircuitBreaker) -> Double,
+)

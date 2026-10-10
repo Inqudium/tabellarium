@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
+import java.util.concurrent.CountDownLatch
 
 /**
  * Shared test-helper for constructing [ILoggingEvent] instances in unit
@@ -47,4 +48,30 @@ internal fun pollUntil(
         Thread.sleep(intervalMs)
     }
     throw AssertionError("Condition did not become true within ${timeoutMs}ms")
+}
+
+/**
+ * Waits until [latch] reaches zero and swallows interrupts while doing so
+ * - the shared blocking body of the fakes that model a producer or
+ * appender stuck in a call that ignores interruption (a hung broker
+ * round-trip, a slow fallback appender). Once the wait is over, a
+ * swallowed interrupt is restored on the current thread so the code under
+ * test still observes it.
+ *
+ * Rationale: the fakes must outlast the dispatcher's interrupt grace, so
+ * a plain `await()` (which ends on the first interrupt) would model a
+ * different, cooperative callee.
+ */
+internal fun awaitUninterruptibly(latch: CountDownLatch) {
+    var wasInterrupted = false
+    while (latch.count > 0) {
+        try {
+            latch.await()
+        } catch (_: InterruptedException) {
+            wasInterrupted = true
+        }
+    }
+    if (wasInterrupted) {
+        Thread.currentThread().interrupt()
+    }
 }

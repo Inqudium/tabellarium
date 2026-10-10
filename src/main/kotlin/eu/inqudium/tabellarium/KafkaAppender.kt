@@ -24,7 +24,8 @@ import kotlin.concurrent.withLock
  * close) and the [KafkaTransport] carries records to Kafka (producers,
  * breakers, send queues, fallback dispatcher - stateful, opened in
  * [start] and closed in [stop]). The start-up messages it
- * reports come from [StartupDiagnostics].
+ * reports come from the functions in `StartupDiagnostics.kt`
+ * ([debugMessages] and its siblings).
  *
  * ## Configuration surface
  *
@@ -371,10 +372,10 @@ class KafkaAppender :
         this.transport = transport
 
         transport.producerRegistry.mandatoryOverrideViolations.forEach { violation ->
-            addWarn(StartupDiagnostics.mandatoryOverrideWarning(violation))
+            addWarn(mandatoryOverrideWarning(violation))
         }
-        StartupDiagnostics.cleartextTransportWarning(transport.producerRegistry)?.let(::addWarn)
-        StartupDiagnostics.sharedClientIdWarning(transport.producerRegistry)?.let(::addWarn)
+        cleartextTransportWarning(transport.producerRegistry)?.let(::addWarn)
+        sharedClientIdWarning(transport.producerRegistry)?.let(::addWarn)
         fallbackAppender?.takeUnless { it.isStarted }?.let {
             // Its doAppend would return without appending; the fallback
             // dispatcher refuses such deliveries and counts them as drops
@@ -386,8 +387,7 @@ class KafkaAppender :
             )
         }
         if (debug) {
-            StartupDiagnostics
-                .debugMessages(transport.producerRegistry, fallbackAppender, kafkaProducerProperties)
+            debugMessages(transport.producerRegistry, fallbackAppender, kafkaProducerProperties)
                 .forEach(::addInfo)
         }
 
@@ -514,7 +514,7 @@ class KafkaAppender :
                 // partitioning-key extractor, a fallback layout - runs
                 // into the same failure again; only then can the event
                 // be delivered as-is instead of failing the hot path
-                // (docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.R2.md,
+                // (`CODE_ANALYSIS-2026-09-07T19-09-00.R2`,
                 // finding R2-1). The setter
                 // refuses an already-materialized map; that case cannot
                 // be the one that just failed, so the refusal is ignored.
@@ -582,13 +582,15 @@ class KafkaAppender :
     // -- Shutdown -------------------------------------------------------
 
     override fun stop() {
+        val transport = this.transport
         if (transport == null) {
-            // Nothing was built (start() never ran, or refused): there is
-            // no first life to end, so the ADR-0004 no-restart latch stays
-            // open and a corrected configuration may still start this
-            // instance. Logback's state machine, the attached fallback
-            // appender and the encoder are still released - Joran started
-            // them, and on a context reset nothing else reaches them.
+            // Rationale: nothing was built (start() never ran, or
+            // refused): there is no first life to end, so the ADR-0004
+            // no-restart latch stays open and a corrected configuration
+            // may still start this instance. Logback's state machine, the
+            // attached fallback appender and the encoder are still
+            // released - Joran started them, and on a context reset
+            // nothing else reaches them.
             super.stop()
             stopFallbackAppenderAndEncoder()
             return
@@ -607,15 +609,15 @@ class KafkaAppender :
         super.stop()
         // The transport closes its components in reverse ownership order
         // (send dispatchers, producer registry, fallback dispatcher); the
-        // order and its rationale live in KafkaTransport. Null when
-        // start() never succeeded. The plan has nothing to close.
-        transport?.close { message, cause ->
+        // order and its rationale live in KafkaTransport. The plan has
+        // nothing to close.
+        transport.close { message, cause ->
             if (cause != null) addWarn(message, cause) else addWarn(message)
         }
-        // Unbind the metrics only now: the dispatcher closes are where
-        // the shutdown diversions and drops are counted, and a
-        // scrape during the (multi-second) teardown should still see
-        // them. Under the bind lock - see bindLock.
+        // Rationale: unbind the metrics only now - the dispatcher
+        // closes are where the shutdown diversions and drops are
+        // counted, and a scrape during the (multi-second) teardown
+        // should still see them. Under the bind lock - see bindLock.
         bindLock.withLock {
             metricsBindings?.unbind()
             metrics = KafkaAppenderMetrics.NO_OP
@@ -744,8 +746,8 @@ class KafkaAppender :
             if (bindings == null || !isOwnedBy(bindings)) {
                 return false
             }
-            // Detach the recorders first, so no event records into a
-            // meter that the unbind below has already removed.
+            // Safety: detach the recorders first, so no event records into
+            // a meter that the unbind below has already removed.
             metrics = KafkaAppenderMetrics.NO_OP
             transport?.setMetrics(KafkaAppenderMetrics.NO_OP)
             bindings.unbind()
@@ -799,11 +801,11 @@ class KafkaAppender :
      */
     override fun addAppender(newAppender: Appender<ILoggingEvent>) {
         if (isStarted) {
+            val wiring = fallbackAppender?.let { "to '${it.name}'" } ?: "without a fallback"
             addWarn(
                 "KafkaAppender ignores attaching fallback appender '${newAppender.name}' while started: the " +
-                    "running pipeline was wired at start() " +
-                    (fallbackAppender?.let { "to '${it.name}'" } ?: "without a fallback") +
-                    " (ADR-0004: one life, one slot). Stop the KafkaAppender first, or configure a new instance.",
+                    "running pipeline was wired at start() $wiring (ADR-0004: one life, one slot). " +
+                    "Stop the KafkaAppender first, or configure a new instance.",
             )
             return
         }

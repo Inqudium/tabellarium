@@ -74,7 +74,11 @@ import java.util.concurrent.atomic.AtomicReference
  *             registers none.
  * @param registeredMeters Receives every meter as it is registered;
  *             handed in by [register] so the meters of a construction
- *             that aborts halfway stay reachable for its rollback.
+ *             that aborts halfway stay reachable for its rollback, and
+ *             read by [deregisterFrom] when the appender stops or
+ *             re-binds. Safety: guarded by its own monitor - registration
+ *             happens on the bind thread, deregistration possibly on a
+ *             different shutdown thread.
  * @param warn Operator-facing sink for a queue-gauge registration
  *             that failed (the Logback status manager via
  *             [MetricsBindings]); defaults to silence.
@@ -114,17 +118,6 @@ internal class MicrometerKafkaAppenderMetrics(
         Tags
             .of(commonTags)
             .and(TAG_APPENDER, appenderName?.takeIf { it.isNotBlank() } ?: "unnamed")
-
-    // registeredMeters: every meter this instance registered, so
-    // deregisterFrom can remove them from the registry when the appender
-    // stops or re-binds. Guarded by its own monitor: registration happens
-    // on the bind thread, deregistration possibly on a different shutdown
-    // thread.
-
-    private fun <M : Meter> track(meter: M): M {
-        synchronized(registeredMeters) { registeredMeters += meter }
-        return meter
-    }
 
     private val accepted: Map<TopicClass, Counter> =
         TopicClass.entries.associateWith { tc ->
@@ -229,9 +222,15 @@ internal class MicrometerKafkaAppenderMetrics(
      * instance: without a fallback appender there is no queue, and a
      * constant-zero size series next to a missing capacity series would
      * read as a healthy queue where events are dropped by policy
-     * (`docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md`, finding 9).
+     * (`CODE_ANALYSIS-2026-09-15T21-09-11`, finding 9).
      */
     private val fallbackGaugesRegistered = AtomicBoolean(false)
+
+    init {
+        if (info != null) {
+            safe { registerInfoGauges(info) }
+        }
+    }
 
     /**
      * Removes every meter this instance registered from [registry].
@@ -249,10 +248,9 @@ internal class MicrometerKafkaAppenderMetrics(
         }
     }
 
-    init {
-        if (info != null) {
-            safe { registerInfoGauges(info) }
-        }
+    private fun <M : Meter> track(meter: M): M {
+        synchronized(registeredMeters) { registeredMeters += meter }
+        return meter
     }
 
     private fun registerInfoGauges(info: AppenderInfo) {
@@ -491,7 +489,7 @@ internal class MicrometerKafkaAppenderMetrics(
         const val TAG_OUTCOME: String = "outcome"
         const val TAG_APPENDER: String = "appender"
 
-        // Info-gauge labels. `appender.version` rather than `version`:
+        // Info-gauge labels. Rationale: `appender.version` rather than `version` -
         // a `version` common tag (the application's version) is common
         // and would be overridden on the info series, breaking joins.
         const val TAG_FALLBACK: String = "fallback"

@@ -44,25 +44,24 @@ class RenamingMeterMirrorTest {
             // When
             Gauge
                 .builder("kafka.producer.buffer.available.bytes", state) { it.get().toDouble() }
-                .tags("topic.class", "audit", "appender", "KAFKA")
+                .tags(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit", MicrometerKafkaAppenderMetrics.TAG_APPENDER, "KAFKA")
                 .description("free buffer")
                 .baseUnit("bytes")
                 .register(mirror.source)
             FunctionCounter
                 .builder("kafka.producer.record.send.total", state) { it.get() * 10.0 }
-                .tags("topic.class", "audit", "appender", "KAFKA")
+                .tags(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit", MicrometerKafkaAppenderMetrics.TAG_APPENDER, "KAFKA")
                 .register(mirror.source)
             state.set(7)
 
             // Then
-            val gauge = target.find("kafka.appender.producer.buffer.available.bytes").gauge()
-            assertThat(gauge).isNotNull
-            assertThat(gauge!!.value()).isEqualTo(7.0)
-            assertThat(gauge.id.getTag("topic.class")).isEqualTo("audit")
-            assertThat(gauge.id.getTag("appender")).isEqualTo("KAFKA")
+            val gauge = target.requireGauge("kafka.appender.producer.buffer.available.bytes")
+            assertThat(gauge.value()).isEqualTo(7.0)
+            assertThat(gauge.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("audit")
+            assertThat(gauge.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isEqualTo("KAFKA")
             assertThat(gauge.id.baseUnit).isEqualTo("bytes")
             assertThat(gauge.id.description).isEqualTo("free buffer")
-            assertThat(target.find("kafka.appender.producer.record.send.total").functionCounter()?.count()).isEqualTo(70.0)
+            assertThat(target.requireFunctionCounter("kafka.appender.producer.record.send.total").count()).isEqualTo(70.0)
             assertThat(target.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
         }
 
@@ -84,9 +83,8 @@ class RenamingMeterMirrorTest {
             TimeGauge.builder("kafka.producer.io.wait.time", this, TimeUnit.MILLISECONDS) { 250.0 }.register(mirror.source)
 
             // Then
-            val mirrored = target.find("kafka.appender.producer.io.wait.time").timeGauge()
-            assertThat(mirrored).isNotNull
-            assertThat(mirrored!!.value(TimeUnit.MILLISECONDS)).isEqualTo(250.0)
+            val mirrored = target.requireTimeGauge("kafka.appender.producer.io.wait.time")
+            assertThat(mirrored.value(TimeUnit.MILLISECONDS)).isEqualTo(250.0)
         }
 
         @Test

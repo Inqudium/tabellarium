@@ -85,7 +85,7 @@ internal class AppenderInfo(
  * settings of that class (see the metrics guide, "Each class has its
  * own floor").
  */
-internal class TopicInfo(
+internal data class TopicInfo(
     val topic: String,
     val topicClass: TopicClass,
     val acks: String,

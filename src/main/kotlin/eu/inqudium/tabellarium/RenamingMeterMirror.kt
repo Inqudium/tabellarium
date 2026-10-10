@@ -81,7 +81,8 @@ internal class RenamingMeterMirror(
         try {
             val mirrored = register(meter, name)
             mirrors.put(meter.id, mirrored)?.let(::removeFromTarget)
-            // Lost the race with close(): it may already have swept the map.
+            // Safety: lost the race with close() - it may already have
+            // swept the map.
             if (closed.get()) mirrors.remove(meter.id)?.let(::removeFromTarget)
         } catch (e: Exception) {
             if (failureReported.compareAndSet(false, true)) {

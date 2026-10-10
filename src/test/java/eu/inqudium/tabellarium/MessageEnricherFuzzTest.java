@@ -3,6 +3,7 @@ package eu.inqudium.tabellarium;
 import ch.qos.logback.classic.spi.LoggingEvent;
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
 import com.code_intelligence.jazzer.junit.FuzzTest;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
@@ -40,7 +41,9 @@ class MessageEnricherFuzzTest {
         String environment = data.consumeString(24);
         String key = data.consumeBoolean() ? null : data.consumeRemainingAsString();
 
-        boolean anyBlank = kotlinBlank(component) || kotlinBlank(cmdbId) || kotlinBlank(environment);
+        boolean anyBlank = FuzzOracles.kotlinBlank(component)
+                || FuzzOracles.kotlinBlank(cmdbId)
+                || FuzzOracles.kotlinBlank(environment);
         MessageEnricher enricher;
         try {
             enricher = new MessageEnricher(component, cmdbId, environment, event -> key);
@@ -58,7 +61,7 @@ class MessageEnricherFuzzTest {
         var record = enricher.enrich(new LoggingEvent());
 
         boolean expectKey =
-                key != null && !kotlinBlank(key) && key.length() <= MessageEnricher.MAX_PARTITIONING_KEY_LENGTH;
+                key != null && !FuzzOracles.kotlinBlank(key) && key.length() <= MessageEnricher.MAX_PARTITIONING_KEY_LENGTH;
         String actual = record.getPartitioningKey();
         if (expectKey ? !key.equals(actual) : actual != null) {
             throw new IllegalStateException(
@@ -69,20 +72,11 @@ class MessageEnricherFuzzTest {
             throw new IllegalStateException("header set incomplete: " + record.getHeaders());
         }
         for (String identity : new String[] {component, cmdbId, environment}) {
-            byte[] utf8 = identity.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] utf8 = identity.getBytes(StandardCharsets.UTF_8);
             boolean found = record.getHeaders().stream().anyMatch(h -> Arrays.equals(h.value(), utf8));
             if (!found) {
                 throw new IllegalStateException("identity value missing from headers: '" + identity + "'");
             }
         }
-    }
-
-    /**
-     * Kotlin's isBlank(), which the library uses: a char is whitespace per
-     * Character.isWhitespace OR isSpaceChar - NBSP counts, unlike in Java's
-     * String.isBlank(). The oracle must speak the library's dialect.
-     */
-    private static boolean kotlinBlank(String s) {
-        return s.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c));
     }
 }
