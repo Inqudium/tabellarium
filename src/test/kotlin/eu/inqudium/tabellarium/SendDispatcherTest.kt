@@ -78,10 +78,9 @@ class SendDispatcherTest {
             //   real producer.send may park for up to max.block.ms when
             //   metadata or buffer space is missing).
             // How will the test case be deemed successful and why? Successful
-            //   if dispatch of a second event completes in far less than
-            //   the time the first event's send is parked. A latch pins
-            //   the send action deterministically; 200 ms is a generous
-            //   bound for an O(1) queue offer.
+            //   if a caller thread returns from dispatching two events while
+            //   the first event's send is still parked on a latch - no
+            //   wall-clock bound, so scheduling noise cannot fail it.
             // Why is it important to test this test case? This is the
             //   latency assertion the defect analysis found missing
             //   (finding H-3, same report): a
@@ -101,20 +100,31 @@ class SendDispatcherTest {
                     },
                     fallbackDispatcher = null,
                 )
+            // The dispatches run on a helper thread: a regression that sends
+            //   on the caller would park the CALLER in release.await(), and
+            //   on the test thread that is a hung build instead of a red
+            //   test (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 3).
+            val bothDispatchesReturned = CountDownLatch(1)
+            val caller =
+                Thread {
+                    dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("first"))
+                    dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("second"))
+                    bothDispatchesReturned.countDown()
+                }
             try {
-                // When: the first dispatch parks the worker in the send
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("first"))
+                // When: the first dispatch parks the worker in the send, the
+                //   second follows while it is parked
+                caller.start()
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
 
-                // And: a second dispatch while the send is parked
-                val startNanos = System.nanoTime()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("second"))
-                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
-
-                // Then: the caller returned immediately
-                assertThat(elapsedMs).isLessThan(200)
+                // Then: the caller returned from both although the send is
+                //   still parked
+                assertThat(bothDispatchesReturned.await(2, TimeUnit.SECONDS)).isTrue()
+                assertThat(release.count).isEqualTo(1)
             } finally {
                 release.countDown()
+                caller.join(2000)
                 dispatcher.close()
             }
         }
@@ -199,6 +209,12 @@ class SendDispatcherTest {
                 assertThat(workerName.get()).isEqualTo(SendDispatcher.threadNameFor(TopicClass.TECHNICAL))
             } finally {
                 dispatcher.close()
+                // The guard entered the worker names into the process-wide
+                // registry; leaving it open would keep them there for every
+                // later test class in this JVM
+                // (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+                // finding 8).
+                guard.close()
             }
         }
     }
@@ -440,6 +456,79 @@ class SendDispatcherTest {
             assertThat(recorder.events.map { it.formattedMessage }).containsExactly("parked")
             assertThat(metrics.fallbackReasons)
                 .containsExactly(KafkaAppenderMetrics.FallbackReason.SEND_ERROR)
+        }
+
+        @Test
+        fun `should account for the remainder and keep the interrupt when closed from an interrupted thread`() {
+            // What is to be tested? close() called on a thread that is
+            //   already interrupted - the common case of a stop() on an
+            //   interrupted shutdown thread: the waits end early, the
+            //   in-flight and queued items are still accounted for, and the
+            //   caller's interrupt flag is restored.
+            // How will the test case be deemed successful and why? Successful
+            //   if close() returns although the drain budget is a minute and
+            //   the worker stays pinned, every item reaches the fallback
+            //   exactly once as SHUTDOWN, and the calling thread is still
+            //   interrupted afterwards. Dropping the flag restore turns the
+            //   last assertion red; letting the interrupt abort the
+            //   accounting loses the items
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 5).
+            // Why is it important to test this test case? Swallowing the
+            //   interrupt breaks the caller's own shutdown logic, and an
+            //   aborted accounting loses exactly the events of an
+            //   interrupted shutdown without a count.
+
+            // Given: a worker pinned uninterruptibly, one item in flight and
+            //   two queued, a drain budget far beyond the test timeout
+            val release = CountDownLatch(1)
+            val entered = CountDownLatch(1)
+            val recorder = RecordingAppender(testContext)
+            val metrics = RecordingMetrics()
+            val fallbackDispatcher = newFallback(recorder)
+            val dispatcher =
+                SendDispatcher(
+                    topicClass = TopicClass.TECHNICAL,
+                    sendAction = {
+                        entered.countDown()
+                        var wasInterrupted = false
+                        while (release.count > 0) {
+                            try {
+                                release.await()
+                            } catch (_: InterruptedException) {
+                                wasInterrupted = true
+                            }
+                        }
+                        if (wasInterrupted) {
+                            Thread.currentThread().interrupt()
+                        }
+                    },
+                    fallbackDispatcher = fallbackDispatcher,
+                    drainTimeoutMs = 60_000,
+                )
+            dispatcher.setMetrics(metrics)
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-1"))
+            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-2"))
+
+            // When: closed from an interrupted thread
+            Thread.currentThread().interrupt()
+            dispatcher.close()
+            val interruptKept = Thread.interrupted()
+
+            // Then: the interrupt survived, everything was accounted once
+            try {
+                assertThat(interruptKept).isTrue()
+                pollUntil { recorder.events.size == 3 }
+                assertThat(recorder.events.map { it.formattedMessage })
+                    .containsExactlyInAnyOrder("in-flight", "queued-1", "queued-2")
+                assertThat(metrics.fallbackReasons)
+                    .containsOnly(KafkaAppenderMetrics.FallbackReason.SHUTDOWN)
+                    .hasSize(3)
+            } finally {
+                release.countDown()
+            }
         }
 
         @Test

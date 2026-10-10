@@ -6,6 +6,7 @@ import ch.qos.logback.core.AppenderBase
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -117,9 +118,9 @@ class FallbackDispatcherTest {
             //   exists - the Kafka I/O thread must never be held hostage by
             //   a slow downstream appender.
             // How will the test case be deemed successful and why? Successful
-            //   if enqueue completes in under 200 ms even when the blocking
-            //   appender holds the worker thread indefinitely. 200 ms is a
-            //   generous upper bound; the actual time should be sub-millisecond.
+            //   if a caller thread returns from two enqueues while the
+            //   blocking appender holds the worker thread indefinitely - no
+            //   wall-clock bound, so scheduling noise cannot fail it.
             // Why is it important to test this test case? Without this test,
             //   a regression that synchronously called doAppend from enqueue
             //   would not be caught - and that regression would re-introduce
@@ -128,18 +129,32 @@ class FallbackDispatcherTest {
             // Given: a fallback that blocks forever in append()
             val blockingAppender = BlockingAppender()
             val dispatcher = FallbackDispatcher(blockingAppender)
+            // The enqueues run on a helper thread: a regression that calls
+            //   doAppend on the caller would park the CALLER forever, and on
+            //   the test thread that is a hung build instead of a red test
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 3).
+            val accepted = Collections.synchronizedList(mutableListOf<Boolean>())
+            val enqueuesReturned = CountDownLatch(1)
+            val caller =
+                Thread {
+                    accepted += dispatcher.enqueue(newTestLoggingEvent(message = "blocked"))
+                    accepted += dispatcher.enqueue(newTestLoggingEvent(message = "queued behind it"))
+                    enqueuesReturned.countDown()
+                }
             try {
-                // When: enqueue an event, measure the time
-                val event = newTestLoggingEvent(message = "blocked")
-                val startNanos = System.nanoTime()
-                val accepted = dispatcher.enqueue(event)
-                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+                // When: two events are enqueued while the worker blocks in
+                //   the first one's append
+                caller.start()
 
-                // Then: enqueue accepted the event and returned quickly
-                assertThat(accepted).isTrue()
-                assertThat(elapsedMs).isLessThan(200)
+                // Then: the caller returned from both, both were accepted,
+                //   and the appender is still blocked
+                assertThat(enqueuesReturned.await(2, TimeUnit.SECONDS)).isTrue()
+                assertThat(accepted).containsExactly(true, true)
+                pollUntil { blockingAppender.inAppend.get() }
             } finally {
                 blockingAppender.unblock()
+                caller.join(2000)
                 dispatcher.close()
             }
         }
@@ -561,6 +576,12 @@ class FallbackDispatcherTest {
                 assertThat(guardSeen.get()).isTrue()
             } finally {
                 dispatcher.close()
+                // The guard entered the worker names into the process-wide
+                // registry; leaving it open would keep them there for every
+                // later test class in this JVM
+                // (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+                // finding 8).
+                guard.close()
             }
         }
     }

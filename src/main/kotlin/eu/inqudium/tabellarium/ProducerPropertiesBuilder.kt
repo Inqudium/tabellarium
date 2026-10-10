@@ -40,6 +40,12 @@ import org.apache.kafka.clients.producer.ProducerConfig
  *    [MandatoryOverrideViolation]. See [capMaxBlockMs] for why the
  *    bound is non-negotiable.
  *
+ * Combinations the Kafka producer constructor would refuse anyway -
+ * idempotence preconditions, an explicit `delivery.timeout.ms` below
+ * `linger.ms + request.timeout.ms` - are rejected with a named
+ * [IllegalArgumentException] instead of the construction failure the
+ * appender withholds unless `<debug>` is on.
+ *
  * The recorded violations are not warnings logged here - the builder has
  * no logging side effects. Callers (typically the appender's `start()`
  * method) are expected to forward them to Logback's status manager so
@@ -123,6 +129,7 @@ internal class ProducerPropertiesBuilder(
         capMaxBlockMs(merged, topicClass, violations)
 
         validateIdempotenceCompatibility(merged, topicClass)
+        validateDeliveryTimeout(merged, topicClass)
 
         return TopicClassProperties(
             topicClass = topicClass,
@@ -205,6 +212,38 @@ internal class ProducerPropertiesBuilder(
             }
         }
     }
+
+    /**
+     * Rejects an explicit `delivery.timeout.ms` below
+     * `linger.ms + request.timeout.ms` - the Kafka producer constructor
+     * refuses exactly that combination with a `ConfigException` (an
+     * unset `delivery.timeout.ms` is silently raised instead, so only an
+     * explicit value is checked; the appender sets no default for it).
+     * The natural trigger is capping the retry window below the close
+     * timeout without lowering `request.timeout.ms`
+     * (`DEFECT_ANALYSIS-2026-10-10T15-19-31`, finding 1). Unparseable
+     * values are left to Kafka's own validation.
+     */
+    private fun validateDeliveryTimeout(
+        merged: Map<String, String>,
+        topicClass: TopicClass,
+    ) {
+        val deliveryTimeoutMs = merged[ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG]?.trim()?.toLongOrNull() ?: return
+        val lingerMs = effectiveLong(merged, ProducerConfig.LINGER_MS_CONFIG) ?: return
+        val requestTimeoutMs = effectiveLong(merged, ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG) ?: return
+        require(deliveryTimeoutMs >= lingerMs + requestTimeoutMs) {
+            "delivery.timeout.ms=$deliveryTimeoutMs is below linger.ms + request.timeout.ms " +
+                "($lingerMs + $requestTimeoutMs = ${lingerMs + requestTimeoutMs}) for $topicClass: " +
+                "the Kafka producer refuses this combination - lower request.timeout.ms " +
+                "together with delivery.timeout.ms"
+        }
+    }
+
+    /** The merged value of [key] as a number, or Kafka's default when unset; null if unparseable. */
+    private fun effectiveLong(
+        merged: Map<String, String>,
+        key: String,
+    ): Long? = (merged[key] ?: ProducerConfig.configDef().defaultValues()[key]?.toString())?.trim()?.toLongOrNull()
 }
 
 /**

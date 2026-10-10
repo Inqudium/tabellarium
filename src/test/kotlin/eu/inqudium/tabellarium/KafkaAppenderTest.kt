@@ -12,6 +12,7 @@ import ch.qos.logback.core.encoder.EncoderBase
 import ch.qos.logback.core.status.Status
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry
@@ -716,6 +717,51 @@ class KafkaAppenderTest {
                         it.contains("AUDIT") &&
                         it.contains(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG)
                 }
+        }
+
+        @Test
+        fun `should warn when another running appender derives the same client id`() {
+            // What is to be tested? Whether a second running appender with
+            //   the same <component> - and therefore the same derived
+            //   client.id per class - is warned about at start, and only it.
+            // How will the test case be deemed successful and why? Successful
+            //   if the second appender's status names the shared client.id,
+            //   the first appender (started alone) has no such warning, an
+            //   appender with a distinct component gets none either, and a
+            //   restart of the same component after the first stopped is
+            //   quiet again. The guide used to promise that derived ids
+            //   never collide
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 7).
+            // Why is it important to test this test case? Kafka keys its JMX
+            //   MBeans by client.id: the two producers' JMX metrics collide
+            //   and the first stop removes them for both, with nothing in the
+            //   appender's own output pointing at the cause.
+
+            // Given: two appenders with one component, one with another
+            val first = newAppender(component = "shared-service")
+            val second = newAppender(component = "shared-service")
+            val distinct = newAppender(component = "other-service")
+            val sharedWarning: (String) -> Boolean = {
+                it.contains("tabellarium-shared-service-technical") && it.contains("also used by another running KafkaAppender")
+            }
+
+            // When
+            first.start()
+            second.start()
+            distinct.start()
+
+            // Then: only the second is warned
+            assertThat(first.statusMessages()).noneMatch(sharedWarning)
+            assertThat(second.statusMessages()).anyMatch(sharedWarning)
+            assertThat(distinct.statusMessages()).noneMatch { it.contains("also used by another running KafkaAppender") }
+
+            // And: once both are stopped, a new one with the component is quiet
+            first.stop()
+            second.stop()
+            val successor = newAppender(component = "shared-service")
+            successor.start()
+            assertThat(successor.statusMessages()).noneMatch(sharedWarning)
         }
 
         @Test
@@ -1779,6 +1825,56 @@ class KafkaAppenderTest {
         }
 
         @Test
+        fun `should release the self-logging guard and the fallback worker when pipeline construction fails`() {
+            // What is to be tested? The rest of the rollback in
+            //   KafkaTransport.open: a failure after the guard and the
+            //   fallback dispatcher exist (breaker wiring) must close those
+            //   too, not only the producers.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after the refused start, the guard was closed and no
+            //   fallback worker started by this start() is still alive. The
+            //   producer-only assertions of the neighbouring tests stay green
+            //   when either is dropped from the rollback
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 4).
+            // Why is it important to test this test case? A leaked guard
+            //   keeps its client ids in the process-wide registry, so a later
+            //   appender's echo filter drops foreign events; a leaked worker
+            //   is a thread per failed (re)configuration.
+
+            // Given: a fallback appender, a guard that records its close,
+            //   and breaker wiring that fails after both exist
+            val guardClosed = AtomicBoolean(false)
+            val recordingGuardFactory =
+                SelfLoggingGuardFactory { clientIds ->
+                    val delegate = ClientIdSelfLoggingGuard(clientIds)
+                    object : SelfLoggingGuard by delegate {
+                        override fun close() {
+                            guardClosed.set(true)
+                            delegate.close()
+                        }
+                    }
+                }
+            val failingBreakerRegistry =
+                object : CircuitBreakerRegistry by ResilientMessageSender.defaultCircuitBreakerRegistry() {
+                    override fun circuitBreaker(name: String): CircuitBreaker = throw IllegalStateException("simulated breaker wiring failure")
+                }
+            val appender = newAppender(fallback = RecordingAppender(), selfLoggingGuardFactory = recordingGuardFactory)
+            appender.circuitBreakerRegistry = failingBreakerRegistry
+            val fallbackWorkersBefore = liveThreadsNamed(FallbackDispatcher.THREAD_NAME)
+
+            // When
+            appender.start()
+
+            // Then: refused, guard closed, no new fallback worker alive
+            assertThat(appender.isStarted).isFalse()
+            assertThat(guardClosed.get()).isTrue()
+            assertThat(liveThreadsNamed(FallbackDispatcher.THREAD_NAME) - fallbackWorkersBefore).isEmpty()
+        }
+
+        private fun liveThreadsNamed(name: String): Set<Thread> = Thread.getAllStackTraces().keys.filterTo(HashSet()) { it.name == name && it.isAlive }
+
+        @Test
         fun `should close already-created producers when the self-logging guard factory fails`() {
             // What is to be tested? Whether the transport's rollback also
             //   covers the SelfLoggingGuardFactory call - the one step
@@ -2067,30 +2163,52 @@ class KafkaAppenderTest {
         @Test
         fun `should keep appending normally after a reentrant event was dropped`() {
             // What is to be tested? Whether the reentry guard is released
-            //   after each top-level append - a guard that stuck in the
-            //   "inside" state would silently drop every later event on
-            //   that thread.
+            //   after a top-level append in which a nested event WAS dropped
+            //   - a guard that stuck in the "inside" state would silently
+            //   drop every later event on that thread.
             // How will the test case be deemed successful and why? Successful
-            //   if consecutive top-level events on the same thread all
-            //   reach the producer.
+            //   if the first event's nested echo is dropped and the three
+            //   following top-level events on the same thread all reach the
+            //   producer. The former body appended only plain events, so no
+            //   drop ever happened before the "after"
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 9).
             // Why is it important to test this test case? The guard is
             //   ThreadLocal state manipulated in a finally block; a
             //   regression here would turn one recursion incident into a
             //   permanently silenced application thread.
 
-            // Given
+            // Given: an encoder that echoes once, on the caller thread, while
+            //   encoding the first event
+            var appenderRef: KafkaAppender? = null
+            val echoingEncoder =
+                object : MessageBytesEncoder() {
+                    override fun encode(event: ILoggingEvent): ByteArray {
+                        if (event.formattedMessage == "event-0") {
+                            checkNotNull(appenderRef).doAppend(
+                                newTestLoggingEvent(
+                                    message = "nested echo",
+                                    threadName = Thread.currentThread().name,
+                                ),
+                            )
+                        }
+                        return super.encode(event)
+                    }
+                }
             val factory = RecordingProducerFactory()
-            val appender = newAppender(producerFactory = factory)
+            val appender = newAppender(encoder = echoingEncoder, producerFactory = factory)
+            appenderRef = appender
             appender.start()
 
-            // When: multiple sequential appends on this thread
-            repeat(3) { i ->
-                appender.doAppend(newTestLoggingEvent(message = "event-$i"))
+            // When: the echoing event, then three plain ones on this thread
+            repeat(4) { i ->
+                appender.doAppend(newTestLoggingEvent(message = "event-$i", threadName = Thread.currentThread().name))
             }
 
-            // Then: all delivered
+            // Then: the echo was dropped, every top-level event was sent
             appender.stop()
-            assertThat(factory.createdProducers[0].history()).hasSize(3)
+            assertThat(factory.createdProducers[0].history().map { String(it.value(), Charsets.UTF_8) })
+                .containsExactly("event-0", "event-1", "event-2", "event-3")
         }
     }
 
@@ -2545,6 +2663,8 @@ class KafkaAppenderTest {
                 }
 
             fun historySize(): Int = synchronized(mock) { mock.history().size }
+
+            fun sentMessages(): List<String> = synchronized(mock) { mock.history().map { String(it.value(), Charsets.UTF_8) } }
         }
 
         @Test
@@ -2618,6 +2738,12 @@ class KafkaAppenderTest {
                 assertThat(failures.get()).isZero()
                 pollUntil(timeoutMs = 10_000) { factory.historySize() == threadCount * eventsPerThread }
                 assertThat(fallback.events).isEmpty()
+                // And: every event exactly once - a count alone lets one loss
+                //   and one duplicate cancel out
+                //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+                //   finding 10)
+                val expected = (0 until threadCount).flatMap { t -> (0 until eventsPerThread).map { i -> "t$t-e$i" } }
+                assertThat(factory.sentMessages()).containsExactlyInAnyOrderElementsOf(expected)
             } finally {
                 executor.shutdownNow()
                 appender.stop()
@@ -2820,6 +2946,166 @@ class KafkaAppenderTest {
             pollUntil { queueSize.value() == 2.0 }
             release.countDown()
             appender.stop()
+        }
+
+        @Test
+        fun `should refuse a bind on an appender that is not started and register nothing`() {
+            // What is to be tested? The not-started branch of the bind: a
+            //   bindMeterRegistry call before start() and after stop()
+            //   returns false, warns, and registers no meter.
+            // How will the test case be deemed successful and why? Successful
+            //   if both calls return false, the status names the ignored
+            //   bind, and the registry stays empty - the boolean is what
+            //   the Spring helper logs on, so a true here would print a
+            //   success for nothing
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 5).
+            // Why is it important to test this test case? Meters registered
+            //   by a stopped appender have no later unbind to remove them.
+
+            // Given
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender()
+
+            // When / Then: before start
+            assertThat(appender.bindMeterRegistry(registry)).isFalse()
+            assertThat(registry.meters).isEmpty()
+
+            // When / Then: after stop
+            appender.start()
+            appender.stop()
+            assertThat(appender.bindMeterRegistry(registry)).isFalse()
+            assertThat(registry.meters).isEmpty()
+            assertThat(appender.statusMessages())
+                .filteredOn { it.contains("bindMeterRegistry called on a stopped/uninitialized appender") }
+                .hasSize(2)
+        }
+
+        @Test
+        fun `should keep the binding to the first registry when a re-bind to another one is refused`() {
+            // What is to be tested? A re-bind to a second registry that is
+            //   refused (a same-named appender already publishes there) must
+            //   leave the working binding to the first registry in place.
+            // How will the test case be deemed successful and why? Successful
+            //   if the refused call returns false, the appender is still
+            //   bound, the first registry still holds its meters and they
+            //   still count. Before the fix the bind tore the first binding
+            //   down before it knew the second would be refused, and the
+            //   appender ended with no metrics at all
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 6).
+            // Why is it important to test this test case? A refused call
+            //   that silently turns working monitoring dark is worse than
+            //   the refusal it reports.
+
+            // Given: A bound to the first registry, a same-named B to the second
+            val first = SimpleMeterRegistry()
+            val second = SimpleMeterRegistry()
+            val appenderA = newAppender().apply { name = "KAFKA" }
+            val appenderB = newAppender().apply { name = "KAFKA" }
+            appenderA.start()
+            appenderB.start()
+            assertThat(appenderA.bindMeterRegistry(first)).isTrue()
+            assertThat(appenderB.bindMeterRegistry(second)).isTrue()
+            val metersOnFirst = first.meters.map { it.id }
+
+            // When: A is re-bound to the second registry
+            val rebound = appenderA.bindMeterRegistry(second)
+
+            // Then: refused, but the first binding is intact and counting
+            assertThat(rebound).isFalse()
+            assertThat(appenderA.isMeterRegistryBound).isTrue()
+            assertThat(first.meters.map { it.id }).containsExactlyInAnyOrderElementsOf(metersOnFirst)
+            appenderA.doAppend(newTestLoggingEvent(message = "still counted on the first registry"))
+            assertThat(
+                first
+                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                    .tags("topic.class", TopicClass.TECHNICAL.tag)
+                    .counter()
+                    ?.count(),
+            ).isEqualTo(1.0)
+        }
+
+        @Test
+        fun `should keep the binding to the first registry when a re-bind to another one fails`() {
+            // What is to be tested? A re-bind to a second registry whose
+            //   registration throws must leave the binding to the first
+            //   registry in place - the new binding is built before the old
+            //   one is torn down.
+            // How will the test case be deemed successful and why? Successful
+            //   if the failure propagates to the caller, the appender is still
+            //   bound and the first registry's meters are all still there
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 6).
+            // Why is it important to test this test case? A transient registry
+            //   error on the new side must not cost the working old side.
+
+            // Given
+            val first = SimpleMeterRegistry()
+            val counterRejectingRegistry =
+                object : SimpleMeterRegistry() {
+                    override fun newCounter(id: Meter.Id): Counter = throw IllegalStateException("simulated counter registration failure")
+                }
+            val appender = newAppender()
+            appender.start()
+            appender.bindMeterRegistry(first)
+            val metersOnFirst = first.meters.map { it.id }
+
+            // When / Then: the failure propagates
+            assertThatThrownBy { appender.bindMeterRegistry(counterRejectingRegistry) }
+                .hasMessageContaining("simulated counter registration failure")
+
+            // And: the first binding is intact
+            assertThat(appender.isMeterRegistryBound).isTrue()
+            assertThat(first.meters.map { it.id }).containsExactlyInAnyOrderElementsOf(metersOnFirst)
+        }
+
+        @Test
+        fun `should stop recording into removed meters when a re-bind to the same registry fails`() {
+            // What is to be tested? A re-bind to the SAME registry has to
+            //   remove the old meters first (the new ones would share their
+            //   IDs). When the registration then fails, the hot path must
+            //   switch to no-op metrics instead of recording into the
+            //   removed meter objects.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after the failed re-bind, the appender is unbound and an
+            //   appended event does not increment the old (removed) counter.
+            //   Without the switch the hot path kept the old implementation
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 6).
+            // Why is it important to test this test case? Counts into meters
+            //   no registry exports are silent loss, and the appender would
+            //   claim to be unbound while still recording.
+
+            // Given: bound once; the registry rejects counters from now on
+            val rejectCounters = AtomicBoolean(false)
+            val registry =
+                object : SimpleMeterRegistry() {
+                    override fun newCounter(id: Meter.Id): Counter {
+                        check(!rejectCounters.get()) { "simulated counter registration failure" }
+                        return super.newCounter(id)
+                    }
+                }
+            val appender = newAppender()
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            val oldAccepted =
+                checkNotNull(
+                    registry
+                        .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                        .tags("topic.class", TopicClass.TECHNICAL.tag)
+                        .counter(),
+                )
+            rejectCounters.set(true)
+
+            // When: re-bound to the same registry, which now fails
+            assertThatThrownBy { appender.bindMeterRegistry(registry) }
+                .hasMessageContaining("simulated counter registration failure")
+            appender.doAppend(newTestLoggingEvent(message = "after the failed re-bind"))
+
+            // Then: unbound, and the removed counter did not move
+            assertThat(appender.isMeterRegistryBound).isFalse()
+            assertThat(oldAccepted.count()).isEqualTo(0.0)
         }
 
         @Test

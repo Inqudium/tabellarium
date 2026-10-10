@@ -56,42 +56,50 @@ class LogstashEncoderPipelineTest {
                 topicMapping = TopicMappingConfig().apply { defaultTopic = "logstash.topic" }
                 producerFactory = factory
             }
-        appender.start()
-        assertThat(appender.isStarted).isTrue()
-        appender.bindMeterRegistry(registry)
-        // Held before stop(), which removes the meters from the registry
-        val fallbackCounters = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK).counters()
-        val dispatchedCounters = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED).counters()
-        assertThat(fallbackCounters).isNotEmpty
+        // stop() in finally: a failing assertion before it would leak the
+        // workers and the process-wide guard names into later tests
+        // (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md, finding 11).
+        try {
+            appender.start()
+            assertThat(appender.isStarted).isTrue()
+            appender.bindMeterRegistry(registry)
+            // Held before stop(), which removes the meters from the registry
+            val fallbackCounters = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK).counters()
+            val dispatchedCounters = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED).counters()
+            assertThat(fallbackCounters).isNotEmpty
 
-        // When: one event with an MDC entry and a key-value pair is logged
-        val event =
-            (
-                newTestLoggingEvent(
-                    message = "order shipped",
-                    mdc = mapOf("traceId" to "trace-7"),
-                    level = Level.WARN,
-                    loggerName = "com.example.Shipping",
-                ) as LoggingEvent
-            ).apply { addKeyValuePair(KeyValuePair("order.id", "o-42")) }
-        appender.doAppend(event)
-        appender.stop()
+            // When: one event with an MDC entry and a key-value pair is logged
+            val event =
+                (
+                    newTestLoggingEvent(
+                        message = "order shipped",
+                        mdc = mapOf("traceId" to "trace-7"),
+                        level = Level.WARN,
+                        loggerName = "com.example.Shipping",
+                    ) as LoggingEvent
+                ).apply { addKeyValuePair(KeyValuePair("order.id", "o-42")) }
+            appender.doAppend(event)
+            appender.stop()
 
-        // Then: the payload is the encoder's JSON document
-        val record =
-            factory.createdProducers
-                .single()
-                .history()
-                .single()
-        val json = ObjectMapper().readTree(record.value())
-        assertThat(json.get("message").asText()).isEqualTo("order shipped")
-        assertThat(json.get("level").asText()).isEqualTo("WARN")
-        assertThat(json.get("logger_name").asText()).isEqualTo("com.example.Shipping")
-        assertThat(json.get("traceId").asText()).isEqualTo("trace-7")
-        assertThat(json.get("order.id").asText()).isEqualTo("o-42")
+            // Then: the payload is the encoder's JSON document
+            val record =
+                factory.createdProducers
+                    .single()
+                    .history()
+                    .single()
+            val json = ObjectMapper().readTree(record.value())
+            assertThat(json.get("message").asText()).isEqualTo("order shipped")
+            assertThat(json.get("level").asText()).isEqualTo("WARN")
+            assertThat(json.get("logger_name").asText()).isEqualTo("com.example.Shipping")
+            assertThat(json.get("traceId").asText()).isEqualTo("trace-7")
+            assertThat(json.get("order.id").asText()).isEqualTo("o-42")
 
-        // And: dispatched, not diverted
-        assertThat(fallbackCounters).allSatisfy { assertThat(it.count()).isZero() }
-        assertThat(dispatchedCounters.sumOf { it.count() }).isEqualTo(1.0)
+            // And: dispatched, not diverted
+            assertThat(fallbackCounters).allSatisfy { assertThat(it.count()).isZero() }
+            assertThat(dispatchedCounters.sumOf { it.count() }).isEqualTo(1.0)
+        } finally {
+            // Idempotent: a no-op after the regular stop above.
+            appender.stop()
+        }
     }
 }

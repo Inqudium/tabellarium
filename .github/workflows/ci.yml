@@ -20,6 +20,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A hung test must not hold the runner for GitHub's six-hour default.
+    timeout-minutes: 30
     steps:
       # Actions are pinned to commit SHAs, not to mutable tags: a retagged
       # or compromised release would otherwise execute here with the
@@ -59,6 +61,7 @@ jobs:
   broker-integration:
     name: Real-broker integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -85,6 +88,7 @@ jobs:
   dependency-scan:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

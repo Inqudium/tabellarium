@@ -178,10 +178,18 @@ internal class MetricsBindings(
     /**
      * Binds everything to [registry] and returns the appender-metrics
      * implementation the caller should install on its hot path. A
-     * previous bind is torn down first so a repeated bind replaces
-     * instead of duplicating. Returns [KafkaAppenderMetrics.NO_OP] and
-     * binds nothing when [registry] already holds a live binding with
-     * the same meter identity (see the class KDoc).
+     * repeated bind replaces the previous one instead of duplicating it.
+     * Returns `null` and binds nothing when [registry] already holds a
+     * live binding with the same meter identity (see the class KDoc).
+     *
+     * Order: the previous binding is torn down only once the new one is
+     * known to take effect - a refused or throwing bind to *another*
+     * registry leaves a working binding in place instead of turning
+     * monitoring dark (`DEFECT_ANALYSIS-2026-10-10T15-19-31`, finding 6).
+     * A re-bind to the *same* registry must unbind first: the new meters
+     * would carry the old ones' IDs, and Micrometer would hand back the
+     * very meter objects the later unbind removes; a failure there
+     * leaves the appender unbound ([isBound] false).
      *
      * @param info Configuration metadata for the info gauges; `null`
      *             (the benchmarks' sender-only binding) registers none.
@@ -194,8 +202,10 @@ internal class MetricsBindings(
         circuitBreakerRegistry: CircuitBreakerRegistry,
         producerRegistry: ProducerRegistry,
         info: AppenderInfo? = null,
-    ): KafkaAppenderMetrics {
-        unbind()
+    ): KafkaAppenderMetrics? {
+        if (registry === boundRegistry) {
+            unbind()
+        }
         // Same derivation as MicrometerKafkaAppenderMetrics: every meter
         // of this appender carries the identical appender tag value.
         val appenderTag = appenderName?.takeIf { it.isNotBlank() } ?: "unnamed"
@@ -207,12 +217,14 @@ internal class MetricsBindings(
                     "same meters, mixing their counts and removing the shared series when either stops. " +
                     "Give each KafkaAppender a distinct name and bind again.",
             )
-            return KafkaAppenderMetrics.NO_OP
+            return null
         }
         // Transactional: a failure halfway removes the meters registered
         // so far, so nothing is left for the identity probe to mistake
         // for a live appender on the retry.
         val impl = MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info)
+        // The new binding stands; only now replace the previous one.
+        unbind()
         boundMetrics = impl
         boundRegistry = registry
         bindResilience4jMetrics(registry, commonTags, appenderTag, circuitBreakerRegistry)

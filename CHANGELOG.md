@@ -121,6 +121,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rolled back before.
 - `KafkaAppenderMetricsBinding` no longer logs "Bound KafkaAppender ..."
   for a bind that was refused for a duplicate meter identity.
+- The configuration guide's advice to cap `delivery.timeout.ms=10000`
+  for AUDIT topics made the appender refuse to start: the Kafka producer
+  rejects an explicit `delivery.timeout.ms` below `linger.ms +
+  request.timeout.ms` (30 s by default), and the appender withheld that
+  cause unless `<debug>` was on. The guide now recommends a consistent
+  pair (`request.timeout.ms=5000`, `delivery.timeout.ms=10000`), and the
+  start-up validation rejects an inconsistent pair with a named error.
+- A metrics re-bind to another registry that was refused (same-named
+  appender there) or failed no longer tears down the working binding
+  first; a failed re-bind to the same registry stops recording into the
+  removed meters.
+- Two running appenders with the same `<component>` derive identical
+  `client.id`s, which makes their producers' JMX metrics collide; the
+  second appender now warns at start-up (the guide no longer claims the
+  derived ids never collide).
 
 ## [1.1.2] - 2026-09-16
 

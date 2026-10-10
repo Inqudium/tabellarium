@@ -78,6 +78,8 @@ class OptionalDependencyClasspathTest {
             val micrometerVisible =
                 runCatching { Class.forName("io.micrometer.core.instrument.MeterRegistry") }.isSuccess
             val context = LoggerContext()
+            val started: Boolean?
+            val fallbackEvents: List<String>?
             try {
                 val configurator = JoranConfigurator()
                 configurator.context = context
@@ -86,17 +88,23 @@ class OptionalDependencyClasspathTest {
                 context.getLogger("optional.dependencies").info("delivered without micrometer")
                 val fallback = (appender as? KafkaAppender)?.fallbackAppender as? ThreadSafeListAppender
                 fallback?.let { pollUntil(timeoutMs = 5000) { it.events.size == 1 } }
-                val problems =
-                    context.statusManager.copyOfStatusList
-                        .filter { it.level >= Status.WARN }
-                        .joinToString(" | ") { "${it.message} ${it.throwable ?: ""}" }
-                return "micrometerVisible=$micrometerVisible " +
-                    "started=${appender?.isStarted} " +
-                    "fallbackEvents=${fallback?.events?.map { it.formattedMessage }} " +
-                    "problems=[$problems]"
+                started = appender?.isStarted
+                fallbackEvents = fallback?.events?.map { it.formattedMessage }
             } finally {
                 context.stop()
             }
+            // Read after stop(): the Micrometer-free teardown is part of the
+            //   contract, and a warning it raised must fail the test too
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 12).
+            val problems =
+                context.statusManager.copyOfStatusList
+                    .filter { it.level >= Status.WARN }
+                    .joinToString(" | ") { "${it.message} ${it.throwable ?: ""}" }
+            return "micrometerVisible=$micrometerVisible " +
+                "started=$started " +
+                "fallbackEvents=$fallbackEvents " +
+                "problems=[$problems]"
         }
     }
 

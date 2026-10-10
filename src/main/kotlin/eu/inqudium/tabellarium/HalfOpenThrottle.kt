@@ -106,8 +106,13 @@ internal class HalfOpenThrottle(
             // CLOSED or OPEN - throttle is transparent.
             return true
         }
-        val now = nanoTimeSource()
+        // The slot is read BEFORE the clock: a racer that claims the slot
+        // after this read makes the CAS below fail, whatever the clock
+        // says - and the test can park callers inside the clock to force
+        // exactly that interleaving deterministically
+        // (DEFECT_ANALYSIS-2026-10-10T15-19-31, finding 2).
         val last = lastProbeNanos.get()
+        val now = nanoTimeSource()
         if (now - last < minProbeGapNanos) {
             // Too soon since the previous probe.
             return false
