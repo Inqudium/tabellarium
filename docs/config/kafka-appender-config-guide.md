@@ -580,11 +580,23 @@ Every event is diverted at most once, whichever gate fires first.
 
 - **Single slot, first wins.** Only one fallback appender is attached; a
   second `<appender-ref>` is ignored.
-- **Owned by the appender.** `stop()` stops the fallback appender (it
-  stays attached and inspectable). Do not share it with other loggers
-  unless a full-context shutdown is the only stop path in your
-  deployment: a selective stop of the Kafka appender would silence the
-  shared appender for everyone.
+- **Owned by the appender - use a dedicated one.** `stop()` stops the
+  fallback appender (it stays attached and inspectable). Give the
+  KafkaAppender a fallback appender of its own, referenced by no logger.
+  Sharing one that is also attached to a logger (e.g. `CONSOLE` on root)
+  fails in both directions:
+  - a selective stop of the Kafka appender silences the shared appender
+    for everyone;
+  - a full-context shutdown or reconfiguration stops each logger's
+    appenders in attach order. If the shared appender is attached
+    *before* the KafkaAppender, it is already stopped when the
+    KafkaAppender drains its queues and closes its producers, and every
+    event that teardown diverts - exactly the events of a shutdown during
+    a broker outage - is counted in `kafka.appender.fallback.dropped`
+    instead of written. The KafkaAppender names this case in a status
+    warning at `stop()`. If a shared fallback cannot be avoided, attach
+    the KafkaAppender ahead of it (`<appender-ref ref="KAFKA"/>` before
+    `<appender-ref ref="CONSOLE"/>`).
 - **Must not log through SLF4J per event.** The fallback's `doAppend`
   runs on the dispatcher's worker thread, which carries the appender's
   reentry guard: log events it emits there are dropped (no metrics, no

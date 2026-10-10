@@ -12,6 +12,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
@@ -39,6 +40,21 @@ import java.util.concurrent.TimeUnit
  */
 @Tag("integration")
 class KafkaBrokerIntegrationTest {
+    /**
+     * Every appender a test built; stopped after the test (stop() is
+     * idempotent), so an assertion failing before a test's own stop()
+     * does not leave real producers, workers and the process-wide
+     * self-logging registrations behind for the rest of the JVM's suite
+     * (`DEFECT_ANALYSIS-2026-10-10T17-20-10`, finding 5).
+     */
+    private val createdAppenders = mutableListOf<KafkaAppender>()
+
+    @AfterEach
+    fun stopAppenders() {
+        createdAppenders.forEach { it.stop() }
+        createdAppenders.clear()
+    }
+
     @Nested
     inner class `Delivery through a real broker` {
         @Test
@@ -211,7 +227,7 @@ class KafkaBrokerIntegrationTest {
             kafkaProducerProperties = "bootstrap.servers=$bootstrapServers",
             topicMapping = topicMapping,
             producerFactory = ProducerFactory.default(),
-        )
+        ).also { createdAppenders += it }
 
     private fun createTopics(bootstrapServers: String) {
         Admin.create(mapOf<String, Any>(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG to bootstrapServers)).use { admin ->

@@ -228,7 +228,13 @@ internal class MicrometerKafkaAppenderMetrics(
 
     init {
         if (info != null) {
-            safe { registerInfoGauges(info) }
+            // As one transaction with a warning, like the queue gauge
+            // pairs: a half-registered info set would silently drop
+            // series from every join on its labels
+            // (`DEFECT_ANALYSIS-2026-10-10T17-20-10`, finding 3).
+            registerAllOrNone("info", "configuration labels will be missing from joins") {
+                registerInfoGauges(info)
+            }
         }
     }
 
@@ -331,7 +337,7 @@ internal class MicrometerKafkaAppenderMetrics(
             queueSizeSupplier.set(queueSize)
             if (!fallbackGaugesRegistered.compareAndSet(false, true)) return@safe
             val registered =
-                registerGaugePair("fallback queue") {
+                registerAllOrNone("fallback queue", QUEUE_UNOBSERVED) {
                     track(
                         Gauge
                             .builder(METRIC_FALLBACK_QUEUE_SIZE) {
@@ -365,7 +371,7 @@ internal class MicrometerKafkaAppenderMetrics(
             // One dispatcher per class exists for the appender's lifetime
             // and calls this once per bind, so both gauges are registered
             // directly (a repeated bind deregisters first).
-            registerGaugePair("send queue (topic.class=${topicClass.tag})") {
+            registerAllOrNone("send queue (topic.class=${topicClass.tag})", QUEUE_UNOBSERVED) {
                 track(
                     Gauge
                         .builder(METRIC_SEND_QUEUE_SIZE) { queueSize().toDouble() }
@@ -385,18 +391,20 @@ internal class MicrometerKafkaAppenderMetrics(
     }
 
     /**
-     * Registers a size/capacity gauge pair as one transaction: if
-     * [block] throws, the gauges it already registered are removed
-     * again and [warn] reports the failure, so the registry never shows
-     * a size series without its capacity (or vice versa) and the
-     * operator learns that the queue is unobserved - a failure the
-     * non-throwing hook contract would otherwise hide
+     * Registers a group of gauges - a size/capacity pair, the info set -
+     * as one transaction: if [block] throws, the gauges it already
+     * registered are removed again and [warn] reports the failure with
+     * its [consequence], so the registry never shows a size series
+     * without its capacity (or a partial info set) and the operator
+     * learns what is unobserved - a failure the non-throwing hook
+     * contract would otherwise hide
      * (`DEFECT_ANALYSIS-2026-10-10T15-52-19`, finding 2).
      *
-     * @return `true` if both gauges were registered.
+     * @return `true` if every gauge of the group was registered.
      */
-    private inline fun registerGaugePair(
+    private inline fun registerAllOrNone(
         what: String,
+        consequence: String,
         block: () -> Unit,
     ): Boolean {
         val before = synchronized(registeredMeters) { registeredMeters.size }
@@ -414,7 +422,7 @@ internal class MicrometerKafkaAppenderMetrics(
                     e.addSuppressed(rollbackFailure)
                 }
             }
-            warn("Failed to register the $what gauges (queue saturation will be unobserved): ${e.message}", e)
+            warn("Failed to register the $what gauges ($consequence): ${e.message}", e)
             return false
         }
     }
@@ -470,6 +478,9 @@ internal class MicrometerKafkaAppenderMetrics(
                 throw e
             }
         }
+
+        /** The [registerAllOrNone] consequence of a failed queue gauge pair. */
+        private const val QUEUE_UNOBSERVED: String = "queue saturation will be unobserved"
 
         const val METRIC_EVENTS_ACCEPTED: String = "kafka.appender.events.accepted"
         const val METRIC_EVENTS_DISPATCHED: String = "kafka.appender.events.dispatched"

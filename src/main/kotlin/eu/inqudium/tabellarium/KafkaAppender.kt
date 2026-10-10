@@ -226,10 +226,15 @@ class KafkaAppender :
      * dispatcher. Opened in [start] after the plan, closed as one unit
      * in [stop]; null until [start] succeeded.
      *
-     * Both fields are published to other threads through Logback's
+     * Both fields are published to the hot path through Logback's
      * volatile `started` flag, which [start] sets after them and which
-     * `doAppend` checks before calling [append].
+     * `doAppend` checks before calling [append]. Volatile itself because
+     * [stop] reads it without passing that flag first: a stop on a
+     * thread without a happens-before edge to [start] could otherwise
+     * see `null` and skip the teardown, leaking producers and workers
+     * (`DEFECT_ANALYSIS-2026-10-10T17-20-10`, finding 6).
      */
+    @Volatile
     private var transport: KafkaTransport? = null
 
     /**
@@ -600,6 +605,22 @@ class KafkaAppender :
             super.stop()
             return
         }
+        fallbackAppender?.takeUnless { it.isStarted }?.let {
+            // Rationale: a context reset stops each logger's appenders in
+            // attach order, so a fallback that is also attached to a logger
+            // ahead of this appender is already stopped here - and every
+            // event the teardown below diverts is counted as dropped
+            // instead of written (`DEFECT_ANALYSIS-2026-10-10T17-20-10`,
+            // finding 1). Name the cause instead of leaving only the
+            // generic drop count.
+            addWarn(
+                "Fallback appender '${it.name}' (${it.javaClass.simpleName}) is already stopped when " +
+                    "KafkaAppender '$name' stops: events diverted during the shutdown (queued remainder, " +
+                    "records aborted by the producer close) will be counted as dropped instead of written. " +
+                    "A Logback context reset stops each logger's appenders in attach order - give the " +
+                    "KafkaAppender a dedicated fallback appender, or attach it before the shared one.",
+            )
+        }
         // Safety: close Logback's ingress gate first (the volatile
         // isStarted that doAppend checks), so no new event enters a
         // multi-second teardown; see the lifecycle section of the class
@@ -768,11 +789,13 @@ class KafkaAppender :
      * **Ownership:** the KafkaAppender assumes it owns the attached
      * fallback appender's lifecycle - [stop] stops it (it stays attached
      * and inspectable; the appender itself is not restarted, ADR-0004)
-     * to release file handles and worker threads. Do not attach an appender that is
-     * simultaneously referenced by other loggers unless a full-context
-     * shutdown is the only stop path in your deployment; a selective
-     * stop of this appender would silence the shared appender for
-     * everyone.
+     * to release file handles and worker threads. Do not attach an
+     * appender that is also referenced by a logger: a selective stop of
+     * this appender would silence the shared appender for everyone, and
+     * a full-context reset - which stops each logger's appenders in
+     * attach order - may stop the shared appender before this one, so
+     * every event the teardown diverts is dropped (warned at [stop];
+     * `DEFECT_ANALYSIS-2026-10-10T17-20-10`, finding 1).
      *
      * **One life, one slot:** the slot is read once, in [start], when
      * the transport wires its fallback dispatcher to the attached

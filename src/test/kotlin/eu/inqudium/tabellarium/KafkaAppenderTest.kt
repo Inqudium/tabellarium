@@ -2018,6 +2018,76 @@ class KafkaAppenderTest {
             assertThat(fallback.isStarted).isFalse()
             assertThat(appender.fallbackAppender).isSameAs(fallback)
         }
+
+        @Test
+        fun `should warn when a context reset stopped a shared fallback appender before the KafkaAppender`() {
+            // What is to be tested? Whether a full-context reset that reaches a
+            //   fallback appender shared with the root logger BEFORE the
+            //   KafkaAppender - Logback stops each logger's appenders in attach
+            //   order - is named in a status warning when the KafkaAppender
+            //   then stops, instead of surfacing only as generic drops.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after LoggerContext.reset() on a root logger with the
+            //   fallback attached first, the KafkaAppender's status names the
+            //   fallback as already stopped and points at the attach order.
+            //   The reset runs the real Logback path, so the ordering
+            //   assumption is checked against Logback itself
+            //   (DEFECT_ANALYSIS-2026-10-10T17-20-10, finding 1).
+            // Why is it important to test this test case? Every event the
+            //   teardown diverts in that configuration is dropped although a
+            //   fallback is configured - exactly at a shutdown during a broker
+            //   outage, when the fallback is needed most.
+
+            // Given: the fallback shared with root and attached ahead of the KafkaAppender
+            val appender = newAppender(fallback = null)
+            val context = appender.context as LoggerContext
+            val sharedFallback = RecordingAppender(context).apply { name = "CONSOLE" }
+            appender.addAppender(sharedFallback)
+            appender.name = "KAFKA"
+            appender.start()
+            val root = context.getLogger(Logger.ROOT_LOGGER_NAME)
+            root.addAppender(sharedFallback)
+            root.addAppender(appender)
+
+            // When: the full-context shutdown path
+            context.reset()
+
+            // Then: the KafkaAppender stopped and named the cause
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Fallback appender 'CONSOLE'") && it.contains("already stopped") && it.contains("attach order") }
+        }
+
+        @Test
+        fun `should not warn about the fallback when the KafkaAppender stops ahead of it`() {
+            // What is to be tested? The counterpart: with the KafkaAppender
+            //   attached before the shared fallback, the reset stops the
+            //   KafkaAppender while its fallback still runs, so its teardown
+            //   diversions can be written and no warning is due.
+            // How will the test case be deemed successful and why? Successful
+            //   if no "already stopped" status exists after the reset; the
+            //   warning must stay specific to the hazardous order, or operators
+            //   learn to ignore it.
+            // Why is it important to test this test case? It is the documented
+            //   remedy for the shared-fallback configuration.
+
+            // Given: the KafkaAppender attached ahead of the shared fallback
+            val appender = newAppender(fallback = null)
+            val context = appender.context as LoggerContext
+            val sharedFallback = RecordingAppender(context).apply { name = "CONSOLE" }
+            appender.addAppender(sharedFallback)
+            appender.start()
+            val root = context.getLogger(Logger.ROOT_LOGGER_NAME)
+            root.addAppender(appender)
+            root.addAppender(sharedFallback)
+
+            // When
+            context.reset()
+
+            // Then
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages()).noneMatch { it.contains("already stopped") }
+        }
     }
 
     @Nested

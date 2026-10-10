@@ -494,6 +494,14 @@ class MicrometerKafkaAppenderMetricsTest {
         ) : SimpleMeterRegistry() {
             val failures = AtomicInteger()
 
+            /** Every id removed from this registry, in order - pins the scope of a rollback or teardown. */
+            val removals: MutableList<Meter.Id> = mutableListOf()
+
+            override fun remove(mappedId: Meter.Id): Meter? {
+                removals += mappedId
+                return super.remove(mappedId)
+            }
+
             override fun <T : Any> newGauge(
                 id: Meter.Id,
                 obj: T?,
@@ -532,13 +540,17 @@ class MicrometerKafkaAppenderMetricsTest {
             val warnings = mutableListOf<String>()
             val metrics =
                 MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", warn = { message, _ -> warnings += message })
+            val baseline = registry.meters.map { it.id }
 
             // When: the first wiring hits the failure
             metrics.registerFallbackQueueGauges(queueSize = { 5 }, capacity = 100)
 
-            // Then: no half pair is left behind and the operator is told
+            // Then: no half pair is left behind, the rollback removed nothing
+            //   but the pair (DEFECT_ANALYSIS-2026-10-10T17-20-10, finding 2),
+            //   and the operator is told
             assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauge()).isNull()
             assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(registry.meters.map { it.id }).containsExactlyInAnyOrderElementsOf(baseline)
             assertThat(warnings).singleElement().asString().contains("fallback queue")
 
             // When: wired again
@@ -569,14 +581,68 @@ class MicrometerKafkaAppenderMetricsTest {
             val warnings = mutableListOf<String>()
             val metrics =
                 MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", warn = { message, _ -> warnings += message })
+            val baseline = registry.meters.map { it.id }
 
             // When
             metrics.registerSendQueueGauges(TopicClass.AUDIT, queueSize = { 3 }, capacity = 50)
 
-            // Then
+            // Then: only the pair was rolled back, and the operator is told
             assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE).gauge()).isNull()
             assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(registry.meters.map { it.id }).containsExactlyInAnyOrderElementsOf(baseline)
             assertThat(warnings).singleElement().asString().contains("topic.class=audit")
+
+            // And: the rolled-back size gauge is no longer tracked - the
+            //   teardown removes exactly the surviving meters, nothing twice
+            registry.removals.clear()
+            metrics.deregisterFrom(registry)
+            assertThat(registry.removals).containsExactlyInAnyOrderElementsOf(baseline)
+            assertThat(appenderMeters(registry)).isEmpty()
+        }
+
+        @Test
+        fun `should roll back a half-registered info gauge set and warn`() {
+            // What is to be tested? Whether the info gauges are registered as one
+            //   transaction like the queue gauge pairs: when a topic-info gauge
+            //   fails after kafka.appender.info registered, the info gauges
+            //   registered so far are removed again and the failure reaches the
+            //   warn sink, while the rest of the instance is constructed normally.
+            // How will the test case be deemed successful and why? Successful if
+            //   no info gauge exists, exactly one warning names the info gauges,
+            //   and every other meter is present. Before the fix the failure was
+            //   swallowed silently and the appender series stayed without its
+            //   topic series (DEFECT_ANALYSIS-2026-10-10T17-20-10, finding 3).
+            // Why is it important to test this test case? Dashboards join the
+            //   other series onto the info labels; a partial info set drops
+            //   series from those joins without any signal to the operator.
+
+            // Given: a registry whose first topic-info gauge registration fails
+            val registry = FailOnceGaugeRegistry(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO)
+            val warnings = mutableListOf<String>()
+            val info =
+                AppenderInfo(
+                    fallback = AppenderInfo.NONE,
+                    fallbackType = AppenderInfo.NONE,
+                    debug = false,
+                    topics = listOf(TopicInfo("svc.logs", TopicClass.TECHNICAL, acks = "1", lingerMs = "50")),
+                )
+
+            // When
+            val metrics =
+                MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", info = info, warn = { message, _ -> warnings += message })
+
+            // Then: no info gauge is left, the operator is told, the rest stands
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauge()).isNull()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauge()).isNull()
+            assertThat(warnings).singleElement().asString().contains("info gauges")
+            metrics.eventAccepted(TopicClass.TECHNICAL)
+            assertThat(
+                registry
+                    .requireCounter(
+                        MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                        MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                    ).count(),
+            ).isEqualTo(1.0)
         }
     }
 
