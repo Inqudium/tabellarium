@@ -142,8 +142,8 @@ internal class KafkaTransport private constructor(
          * producers and queues derive from; [fallbackAppender],
          * [producerFactory] and [circuitBreakerRegistry] are
          * collaborators with state of their own; [warn] is the
-         * appender's hook. The [SelfLoggingGuard] is created here by
-         * [selfLoggingGuardFactory] from the registry's client ids.
+         * appender's hook. The [SelfLoggingGuard] is built here from the
+         * registry's client ids.
          *
          * @param warn Sink for asynchronous worker-death reports; the
          *             appender routes it to its status manager.
@@ -154,7 +154,6 @@ internal class KafkaTransport private constructor(
             fallbackAppender: Appender<ILoggingEvent>?,
             producerFactory: ProducerFactory,
             circuitBreakerRegistry: CircuitBreakerRegistry,
-            selfLoggingGuardFactory: SelfLoggingGuardFactory,
             warn: (message: String, cause: Throwable) -> Unit,
         ): KafkaTransport {
             val registry =
@@ -175,11 +174,9 @@ internal class KafkaTransport private constructor(
             try {
                 // Safety: the guard needs the producers' client ids, so it
                 // comes right after the registry - inside the rollback,
-                // because a throwing factory (a substituted one, in tests)
-                // would otherwise leak the producers, and a created guard must
-                // leave the process-wide registry again if a later step
-                // throws.
-                selfLoggingGuard = selfLoggingGuardFactory.create(registry.clientIds)
+                // because its constructor enters the process-wide registry,
+                // which a later step's failure must leave again.
+                selfLoggingGuard = SelfLoggingGuard(registry.clientIds)
                 // Wrap the fallback appender in a dispatcher so the Kafka I/O
                 // thread is never blocked on the fallback's downstream I/O.
                 // See FallbackDispatcher KDoc for the rationale.
@@ -326,7 +323,7 @@ internal class KafkaTransport private constructor(
             // Invariant: the guard leaves the process-wide registry LAST -
             // until here the producers and workers could still log, and
             // their echo must be recognized to the end. Null only in the
-            // rollback of a guard factory that threw.
+            // rollback of a failed guard construction.
             try {
                 selfLoggingGuard?.close()
             } catch (e: Exception) {

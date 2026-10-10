@@ -53,7 +53,10 @@ import java.util.IdentityHashMap
  *
  * Every meter a bind registers starts with `kafka.appender.`, so one
  * prefix selects, filters or switches off all of them, and none of them
- * mixes with the application's own breakers or Kafka clients. The
+ * mixes with the application's own breakers or Kafka clients - a
+ * product decision, recorded with its costs (a rename for dashboards on
+ * the standard names, a bridge to check on Micrometer upgrades) in
+ * ADR-0005. The
  * breaker meters get their names directly from the own binder. The Kafka
  * client meters come from Micrometer's `KafkaClientMetrics`, whose names
  * (`kafka.producer.*`) are fixed; the binders register into the private

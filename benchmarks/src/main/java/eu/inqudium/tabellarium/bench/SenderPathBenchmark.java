@@ -79,7 +79,6 @@ public class SenderPathBenchmark {
     private EnrichedRecord enrichment;
     private byte[] payload;
     private LoggingEvent[] events;
-    private DeliveryOwnership[] ownerships;
     private int next;
 
     @Setup
@@ -125,24 +124,24 @@ public class SenderPathBenchmark {
                     "bench.fqcn", context.getLogger("bench"), Level.INFO, "sender event " + i, null, null);
             events[i].setMDCPropertyMap(Map.of());
         }
-        // One pre-built ownership per event slot, reset per op: production
-        // allocates the ownership on the caller path (PendingSend), so it
-        // must not appear as allocation on the measured worker path here.
-        // A reset is needed because the sender hands the ownership off
-        // after producer.send and a handed-off one would fail that
-        // hand-off from the second op on, skipping the dispatched metric.
-        ownerships = new DeliveryOwnership[events.length];
-        for (int i = 0; i < ownerships.length; i++) {
-            ownerships[i] = new DeliveryOwnership();
-        }
     }
 
+    /**
+     * One fresh {@link DeliveryOwnership} per operation. Production
+     * allocates it on the caller path ({@code PendingSend}), so it is
+     * caller-path allocation that this worker-path measurement carries:
+     * 32 B/op (the ownership and its {@code AtomicInteger}, compressed
+     * class pointers), the same in both {@code metricsBound} arms, so
+     * the bound-vs-unbound delta is unaffected. A pre-built ring reset
+     * per op would avoid it, but needs a reset the production class
+     * does not have (an ownership is never reused; a reset existed for
+     * this benchmark alone and was removed -
+     * ARCHITECTURE_REVIEW-2026-10-10T22-15-57, finding 4).
+     */
     @Benchmark
     public void sendOneEvent() {
         int i = nextIndex();
-        DeliveryOwnership ownership = ownerships[i];
-        ownership.reset();
-        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, events[i], ownership);
+        sender.send(TopicClass.TECHNICAL, "bench.topic", payload, enrichment, events[i], new DeliveryOwnership());
     }
 
     private int nextIndex() {

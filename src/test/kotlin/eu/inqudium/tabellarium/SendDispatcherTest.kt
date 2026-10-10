@@ -193,7 +193,7 @@ class SendDispatcherTest {
             //   amplifies during broker trouble.
 
             // Given
-            val guard = ClientIdSelfLoggingGuard(emptySet())
+            val guard = SelfLoggingGuard(emptySet())
             val workerName = AtomicReference<String?>()
             val guardSeenTrue = AtomicBoolean(false)
             val dispatcher =

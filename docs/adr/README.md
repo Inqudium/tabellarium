@@ -22,6 +22,12 @@ draws the line between the supported operator surface and the
 | [0002](ADR-0002-public-api-is-the-operator-surface.md) | The public API is the operator surface | Accepted |
 | [0004](ADR-0004-appender-instances-are-not-restartable.md) | Appender instances are not restartable | Accepted |
 
+### Observability
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [0005](ADR-0005-one-metric-namespace.md) | One metric namespace for every meter the appender publishes | Accepted |
+
 ### Conventions & project process
 
 | ADR | Title | Status |

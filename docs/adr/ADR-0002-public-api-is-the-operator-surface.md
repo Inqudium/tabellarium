@@ -2,9 +2,11 @@
 
 **Status:** Accepted  
 **Date:** 2026-08-29  
+**Last updated:** 2026-10-11  
 **Deciders:** Dirk Haase (maintainer)  
 **Related:** ADR-0004 (bounds the lifecycle contract of `KafkaAppender`, the
-centre of this surface)
+centre of this surface), ADR-0005 (fixes the names of the meters the
+metrics binding publishes)
 
 ## Context
 
@@ -43,6 +45,14 @@ and nothing else.**
 | `TopicMappingConfig`, `TopicMappingEntry` | Joran-bound holders of the `<topicMapping>` XML element |
 | `TopicClass` | Names the four topic classes in configuration and documentation |
 | `KafkaAppenderMetricsBinding` | The opt-in Spring helper that binds appenders to a `MeterRegistry` |
+| `bindMeterRegistry` (top-level extension function on `KafkaAppender` in `KafkaAppenderMeterRegistry.kt`; from Java `KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry)`; its `unbindMeterRegistry` sibling is `internal`, used by the Spring helper) | The Micrometer-typed entry point without Spring. A top-level function rather than a `KafkaAppender` member so that the appender class never mentions a Micrometer type: Joran resolves the types of every method while configuring the appender, and a consumer without Micrometer got `NoClassDefFoundError` before the appender existed (CHANGELOG, "Fixed", 2026-10-10) |
+
+`KafkaAppenderMetricsBinding` is `open`, and its two event hooks
+(`bindAppenders`, `unbindAppenders`) are `open`: the one documented
+extension point of the surface, for an application whose readiness
+signal is not `ContextRefreshedEvent`. It is part of the surface and
+carries the same compatibility commitment as the rest of the table; no
+other class is open for subclassing.
 
 ### Everything else is `internal`
 
@@ -86,3 +96,13 @@ public `MessageEnricher` constructor.
 - Reversal is deliberate: making a type public again is a conscious,
   documented API addition (follow-up ADR), never a side effect of a
   refactoring.
+
+## History
+
+- 2026-08-29: accepted; four public declarations.
+- 2026-10-11: `bindMeterRegistry` added as the fifth row - the Micrometer-typed entry point had moved out of
+  `KafkaAppender` on 2026-10-10 for a verified reason, and the table had
+  not followed (`docs/assessment/ARCHITECTURE_REVIEW-2026-10-10T22-15-57.md`,
+  finding 5). The `open` hooks of `KafkaAppenderMetricsBinding` are
+  recorded as the surface's one extension point; the same review had
+  found them undecided.
