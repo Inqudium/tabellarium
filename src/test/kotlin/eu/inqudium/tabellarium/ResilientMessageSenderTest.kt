@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
+import org.junit.jupiter.params.provider.ValueSource
 import java.time.Duration
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
@@ -1103,22 +1104,38 @@ class ResilientMessageSenderTest {
             assertThat(breaker.state).isEqualTo(CircuitBreaker.State.OPEN)
         }
 
-        @Test
-        fun `should also ignore InvalidTopicException and SerializationException`() {
-            // What is to be tested? Whether the full ignoreExceptions list of
-            //   defaultCircuitBreakerConfig - not just RecordTooLargeException -
-            //   is wired: InvalidTopicException, SerializationException and
-            //   TopicAuthorizationException must not count as failures.
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(
+            classes = [
+                RecordTooLargeException::class,
+                InvalidTopicException::class,
+                SerializationException::class,
+                TopicAuthorizationException::class,
+            ],
+        )
+        fun `should ignore every exception type of the ignoreExceptions list on its own`(
+            ignoredType: Class<out RuntimeException>,
+        ) {
+            // What is to be tested? Whether EACH entry of the ignoreExceptions
+            //   list of defaultCircuitBreakerConfig is wired - not just
+            //   RecordTooLargeException: InvalidTopicException,
+            //   SerializationException and TopicAuthorizationException must
+            //   not count as failures either.
             // How will the test case be deemed successful and why? Successful
-            //   if 20 callback errors cycling through all four exception types
-            //   leave the breaker CLOSED; with minimumNumberOfCalls=10 and a
-            //   50 % threshold, a single non-ignored type in the mix would open
-            //   it.
+            //   if 20 callback errors of the single type under test leave the
+            //   breaker CLOSED. One type per run: Resilience4j does not record
+            //   ignored calls, so in a mixed flood a type missing from the
+            //   list would contribute only its share of the calls - below
+            //   minimumNumberOfCalls=10 - and the breaker would stay CLOSED
+            //   regardless. 20 failures of one type are twice that minimum
+            //   and a 100 % failure rate; the TimeoutException flood above is
+            //   the counter-check that the same volume of a counted exception
+            //   does open the breaker.
             // Why is it important to test this test case? Each of these is
             //   deterministic per record (bad topic name, encoder bug, ACL
-            //   change) and unaffected by a breaker recovery; counting them
-            //   would silence a healthy topic class for 30 s per trip - while
-            //   the RecordTooLargeException test alone would still pass.
+            //   change) and unaffected by a breaker recovery; counting any one
+            //   of them would divert a whole healthy topic class to the
+            //   fallback for 30 s per trip.
 
             // Given
             val productionCbRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry()
@@ -1128,14 +1145,7 @@ class ResilientMessageSenderTest {
                     ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT),
                 )
 
-            // When: a mix of client-side exceptions, all ignored
-            val ignoredExceptions =
-                listOf<RuntimeException>(
-                    RecordTooLargeException("too big"),
-                    InvalidTopicException("bad name"),
-                    SerializationException("encode failed"),
-                    TopicAuthorizationException("denied"),
-                )
+            // When: 20 callback errors of the one ignored type
             repeat(20) { i ->
                 ctx.sender.send(
                     topicClass = TopicClass.AUDIT,
@@ -1144,11 +1154,14 @@ class ResilientMessageSenderTest {
                     enrichment = basicEnrichment,
                     originalEvent = newTestLoggingEvent(message = "evt-$i"),
                 )
-                ctx.factory.createdProducers[0].errorNext(ignoredExceptions[i % ignoredExceptions.size])
+                ctx.factory.createdProducers[0].errorNext(
+                    ignoredType.getConstructor(String::class.java).newInstance("ignored-$i"),
+                )
             }
 
-            // Then: breaker remains CLOSED
+            // Then: breaker remains CLOSED, and every event went to fallback
             assertThat(breaker.state).isEqualTo(CircuitBreaker.State.CLOSED)
+            pollUntil { ctx.recorder.events.size == 20 }
         }
     }
 

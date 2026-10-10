@@ -4,6 +4,7 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.AdminClientConfig
 import org.apache.kafka.clients.admin.NewTopic
@@ -140,6 +141,71 @@ class KafkaBrokerIntegrationTest {
         }
     }
 
+    @Test
+    fun `should mirror the producer's broker-dependent meters and remove them on stop`() {
+        // What is to be tested? The dynamic path of the producer-metrics
+        //   mirror against a real broker: the per-topic and per-node meters
+        //   the Kafka client creates only once it has connected and sent,
+        //   which Micrometer's KafkaClientMetrics picks up on its refresh
+        //   schedule and the RenamingMeterMirror republishes under
+        //   kafka.appender.producer.* - and their removal on stop().
+        // How will the test case be deemed successful and why? Successful
+        //   if, after one delivered TECHNICAL record, the operator's
+        //   registry holds kafka.appender.producer.topic.* meters for the
+        //   record's topic and kafka.appender.producer.node.* meters, all
+        //   tagged with topic.class and appender, and no raw kafka.producer.*
+        //   meter; and if after stop() no kafka.appender.* meter is left.
+        //   The offline suite never connects (unreachable broker) and so
+        //   only sees the meters the client registers at construction.
+        // Why is it important to test this test case? The topic and node
+        //   meters are the ones operators chart for per-topic throughput
+        //   and per-broker latency; a gap in mirroring later additions, or
+        //   an orphan left behind after stop, would show only under real
+        //   conditions.
+
+        KafkaContainer(KAFKA_IMAGE).use { kafka ->
+            kafka.start()
+            createTopics(kafka.bootstrapServers)
+
+            // Given: a started appender against the broker, bound to a registry
+            val registry = SimpleMeterRegistry()
+            val appender =
+                KafkaAppender().apply {
+                    context = LoggerContext()
+                    encoder = MessageBytesEncoder()
+                    component = "integration-test"
+                    cmdbId = "CMDB-IT"
+                    environment = "it"
+                    kafkaProducerProperties = "bootstrap.servers=${kafka.bootstrapServers}"
+                    topicMapping = TopicMappingConfig().apply { defaultTopic = TECHNICAL_TOPIC }
+                }
+            appender.start()
+            assertThat(appender.isStarted).isTrue()
+            appender.bindMeterRegistry(registry)
+
+            // When: one record is delivered
+            appender.doAppend(newTestLoggingEvent(message = "metrics over the wire"))
+
+            // Then: the broker-dependent meters appear in the appender's
+            //   namespace - KafkaClientMetrics adds them on its refresh
+            //   schedule (60 s by default), hence the generous bound
+            val topicMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.topic.") } }
+            val nodeMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.node.") } }
+            pollUntil(timeoutMs = METER_REFRESH_TIMEOUT.toMillis(), intervalMs = 250) {
+                topicMeters().any { it.id.getTag("topic") == TECHNICAL_TOPIC } && nodeMeters().isNotEmpty()
+            }
+            assertThat(topicMeters() + nodeMeters()).allSatisfy { meter ->
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("technical")
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
+            }
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+
+            // And: stop() removes every appender meter, the dynamic ones included
+            appender.stop()
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
+        }
+    }
+
     private fun createTopics(bootstrapServers: String) {
         Admin.create(mapOf<String, Any>(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG to bootstrapServers)).use { admin ->
             admin
@@ -187,5 +253,11 @@ class KafkaBrokerIntegrationTest {
 
         /** Generous bound: a fresh broker may need a moment for topic auto-creation. */
         private val CONSUME_TIMEOUT: Duration = Duration.ofSeconds(30)
+
+        /**
+         * KafkaClientMetrics checks for new client metrics every 60 s
+         * (first check after one interval); bound with headroom.
+         */
+        private val METER_REFRESH_TIMEOUT: Duration = Duration.ofSeconds(90)
     }
 }

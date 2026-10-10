@@ -512,7 +512,12 @@ class KafkaAppender :
             // happens on the dispatcher's worker thread.
             transport.dispatch(record, event)
         } catch (e: Exception) {
-            // Hot-path failure (encoder bug, OOM, etc. - should be rare).
+            // Hot-path failure (encoder bug, routing failure - should be
+            // rare). Exceptions only: an Error (OOM, a LinkageError from
+            // a mismatched optional encoder dependency) propagates to the
+            // logging call like in Logback's own doAppend, and the event
+            // is then counted as accepted without being dispatched or
+            // diverted.
             // Log the first occurrence so operators notice, then suppress
             // to prevent log storms; route the event to fallback
             // regardless.
@@ -638,11 +643,15 @@ class KafkaAppender :
      *
      * **Additional bindings:** the circuit-breaker state and
      * call-outcome metrics are bound by the appender's own binder
-     * (mirroring `resilience4j-micrometer`'s metric names, with an
-     * additional `appender` tag so multiple appender instances on one
-     * registry never collide). If the Micrometer Kafka binder is on
-     * the classpath, the underlying Kafka producers' internal metrics
-     * are bound as well, carrying the same `appender` tag. A binding
+     * (the meters, types and tags of `resilience4j-micrometer`'s
+     * `TaggedCircuitBreakerMetrics`, named `kafka.appender.circuitbreaker.*`
+     * instead of `resilience4j.circuitbreaker.*`, with an additional
+     * `appender` tag so multiple appender instances on one registry
+     * never collide). If the Micrometer Kafka binder is on the
+     * classpath, the underlying Kafka producers' internal metrics are
+     * bound as well, published as `kafka.appender.producer.*` instead
+     * of `kafka.producer.*` and carrying the same `appender` tag. Every
+     * meter of a bind therefore lives under `kafka.appender.`. A binding
      * failing (missing classpath, registry error) is non-fatal and
      * reported via Logback's status manager.
      *
@@ -699,6 +708,31 @@ class KafkaAppender :
                 )
             metrics = impl
             transport.setMetrics(impl)
+        }
+    }
+
+    /**
+     * Reverses a [bindMeterRegistry] binding to [registry] while the
+     * appender keeps running: the hot path and the dispatchers switch
+     * back to no-op metrics, then every meter of the binding is removed.
+     * A binding to any other registry is left untouched, so an owner
+     * of a registry can withdraw from it without knowing who else bound
+     * the appender. Used by [KafkaAppenderMetricsBinding] when its
+     * Spring context closes.
+     *
+     * @return `true` if a binding to [registry] was removed.
+     */
+    internal fun unbindMeterRegistry(registry: MeterRegistry): Boolean {
+        bindLock.withLock {
+            if (!metricsBindings.isBoundTo(registry)) {
+                return false
+            }
+            // Detach the recorders first, so no event records into a
+            // meter that the unbind below has already removed.
+            metrics = KafkaAppenderMetrics.NO_OP
+            transport?.setMetrics(KafkaAppenderMetrics.NO_OP)
+            metricsBindings.unbind()
+            return true
         }
     }
 

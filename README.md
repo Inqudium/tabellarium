@@ -1066,6 +1066,10 @@ class LoggingConfig
 The binding listens for `ContextRefreshedEvent`, walks the Logback
 `LoggerContext`, finds every `KafkaAppender`, and calls
 `bindMeterRegistry()` on each. No further application code required.
+When its context closes (`ContextClosedEvent`), it unbinds the appenders
+from its registry again, so a later context in the same JVM - a restart
+without Logback re-initialization, Spring's test context cache - binds
+them to its own registry instead of finding them bound to a closed one.
 
 One limitation: a **Logback reconfiguration** at runtime
 (`<configuration scan="true">`, or a programmatic reset) replaces the

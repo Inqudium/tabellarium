@@ -18,12 +18,13 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.ResourceLock
-import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.event.ContextClosedEvent
 import org.springframework.context.event.ContextRefreshedEvent
+import org.springframework.context.support.GenericApplicationContext
 
 /**
  * Mutates the GLOBAL SLF4J LoggerContext (the binding discovers
@@ -39,6 +40,21 @@ class KafkaAppenderMetricsBindingTest {
     private lateinit var loggerContext: LoggerContext
     private lateinit var appender: KafkaAppender
 
+    /**
+     * Dedicated, non-additive logger the fixture appenders hang on. The
+     * binding walks every logger, so it finds them here as well as on
+     * root - but unlike root, no other log event in the JVM (Spring's
+     * own lifecycle logging, late WARNs of producer network threads
+     * other tests closed without join) reaches them, which keeps the
+     * exact counter deltas below deterministic
+     * (DEFECT_ANALYSIS-2026-10-10T13-00-00, finding 11).
+     */
+    private val bindingTestLogger
+        get() =
+            loggerContext.getLogger("eu.inqudium.tabellarium.KafkaAppenderMetricsBindingTest.sink").also {
+                it.isAdditive = false
+            }
+
     @BeforeEach
     fun setUp() {
         // The binding discovers appenders via LoggerFactory.getILoggerFactory()
@@ -46,12 +62,12 @@ class KafkaAppenderMetricsBindingTest {
         loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
 
         appender = newStartedAppender()
-        loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(appender)
+        bindingTestLogger.addAppender(appender)
     }
 
     @AfterEach
     fun tearDown() {
-        loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).detachAppender(appender)
+        bindingTestLogger.detachAppender(appender)
         appender.stop()
     }
 
@@ -121,7 +137,7 @@ class KafkaAppenderMetricsBindingTest {
         fun `should register the appender's counters in the registry after the context refreshes`() {
             // What is to be tested? Whether the binding's
             //   ContextRefreshedEvent handler discovers the appender on
-            //   the root logger and invokes bindMeterRegistry on it
+            //   a logger of the context and invokes bindMeterRegistry on it
             //   end-to-end, such that the registry contains the
             //   appender's metric counters after the context refreshes.
             // How will the test case be deemed successful and why? Successful
@@ -202,13 +218,9 @@ class KafkaAppenderMetricsBindingTest {
             //   nothing while an untagged series silently absorbed the data.
 
             // Note: this test uses the before/after delta pattern (same
-            //   as the hot-path test) rather than an absolute count.
-            //   Spring's own lifecycle may emit log events through the
-            //   appender between ContextRefreshedEvent (which performs
-            //   the binding) and the test's doAppend(...). Those events
-            //   are observed by the binding and increment the counter -
-            //   asserting absolute counts would make the test brittle
-            //   against Spring's internal logging.
+            //   as the hot-path test) rather than an absolute count, so
+            //   it does not depend on the fixture appender seeing no
+            //   event other than the test's own (see bindingTestLogger).
 
             // Given: a binding with two common tags
             ApplicationContextRunner()
@@ -316,9 +328,9 @@ class KafkaAppenderMetricsBindingTest {
             //   leave every appender that starts after the context
             //   refresh without metrics, with no error anywhere.
 
-            // Given: a second appender on the root logger that is not started
+            // Given: a second appender on the test logger that is not started
             val late = newUnstartedAppender("LATE_KAFKA")
-            loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(late)
+            bindingTestLogger.addAppender(late)
             try {
                 ApplicationContextRunner()
                     .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
@@ -336,7 +348,7 @@ class KafkaAppenderMetricsBindingTest {
                         assertThat(late.isMeterRegistryBound).isTrue()
                     }
             } finally {
-                loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).detachAppender(late)
+                bindingTestLogger.detachAppender(late)
                 late.stop()
             }
         }
@@ -374,6 +386,128 @@ class KafkaAppenderMetricsBindingTest {
                     val registry = ctx.getBean(MeterRegistry::class.java)
                     assertThat(registry.find("kafka.appender.events.accepted").counters()).isNotEmpty
                 }
+        }
+    }
+
+    @Nested
+    inner class `Context close` {
+        @Test
+        fun `should unbind on context close so that the next context binds to its own registry`() {
+            // What is to be tested? Whether the binding unbinds the
+            //   appender from its registry when its application context
+            //   closes, so that a second context in the same JVM (a
+            //   restart without Logback re-initialization, Spring's test
+            //   context cache) binds the still-running appender to ITS
+            //   registry instead of skipping it as "already bound".
+            // How will the test case be deemed successful and why? Successful
+            //   if, after the first context closed, the appender is
+            //   unbound, still started, and its meters are gone from the
+            //   first registry; and after the second context refreshed,
+            //   a hot-path event advances the accepted counter of the
+            //   second registry by exactly one. Without the close
+            //   handler the second refresh skips the appender and the
+            //   second registry has no appender meters at all.
+            // Why is it important to test this test case? Without it the
+            //   appender keeps recording into the closed context's
+            //   registry and the live context's monitoring silently
+            //   lacks every appender metric
+            //   (DEFECT_ANALYSIS-2026-10-10T13-00-00, finding 4).
+
+            // Given: a first context that bound the appender
+            val firstRegistries = mutableListOf<MeterRegistry>()
+            ApplicationContextRunner()
+                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                .run { ctx ->
+                    firstRegistries += ctx.getBean(MeterRegistry::class.java)
+                    assertThat(appender.isMeterRegistryBound).isTrue()
+                }
+            val firstRegistry = firstRegistries.single()
+
+            // Then: closing it unbound the appender and removed its meters
+            assertThat(appender.isMeterRegistryBound).isFalse()
+            assertThat(appender.isStarted).isTrue()
+            assertThat(firstRegistry.find("kafka.appender.events.accepted").counters()).isEmpty()
+
+            // When: a second context refreshes
+            ApplicationContextRunner()
+                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                .run { ctx ->
+                    val registry = ctx.getBean(MeterRegistry::class.java)
+                    assertThat(registry).isNotSameAs(firstRegistry)
+
+                    fun accepted() =
+                        registry
+                            .find("kafka.appender.events.accepted")
+                            .counters()
+                            .sumOf { it.count() }
+                    val before = accepted()
+                    appender.doAppend(loggingEvent())
+
+                    // Then: the appender records into the second registry
+                    assertThat(appender.isMeterRegistryBound).isTrue()
+                    assertThat(accepted() - before).isEqualTo(1.0)
+                }
+        }
+
+        @Test
+        fun `should ignore the close event of another context`() {
+            // What is to be tested? Whether a ContextClosedEvent of
+            //   ANOTHER context - Spring publishes a child context's
+            //   events to the parent's listeners as well - leaves the
+            //   binding to the still-open registry in place.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender is still bound after a close event whose
+            //   source is a foreign context, and unbound after its own
+            //   context closed. Removing the source check would unbind
+            //   on the foreign event.
+            // Why is it important to test this test case? In a context
+            //   hierarchy, closing a child would otherwise take the
+            //   appender metrics off the parent's live registry.
+
+            ApplicationContextRunner()
+                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                .run { ctx ->
+                    assertThat(appender.isMeterRegistryBound).isTrue()
+
+                    // When: a foreign context's close event reaches the binding
+                    ctx
+                        .getBean(KafkaAppenderMetricsBinding::class.java)
+                        .unbindAppenders(ContextClosedEvent(GenericApplicationContext()))
+
+                    // Then: still bound to the open registry
+                    assertThat(appender.isMeterRegistryBound).isTrue()
+                }
+            // ... and the own context's close unbound it
+            assertThat(appender.isMeterRegistryBound).isFalse()
+        }
+
+        @Test
+        fun `should leave a binding to another registry in place on close`() {
+            // What is to be tested? Whether the close handler withdraws
+            //   only from the binding's own registry: an appender the
+            //   operator re-bound manually to a different registry stays
+            //   bound when the context closes.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender, re-bound manually to a registry outside
+            //   the context, is still bound - with its meters in that
+            //   registry - after the context closed. Removing the
+            //   registry-identity check of unbindMeterRegistry would
+            //   unbind it.
+            // Why is it important to test this test case? A context
+            //   closing must not switch off the metrics of a registry it
+            //   does not own.
+
+            val external = SimpleMeterRegistry()
+            ApplicationContextRunner()
+                .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                .run {
+                    // Given: re-bound manually to a registry outside the context
+                    appender.bindMeterRegistry(external)
+                }
+
+            // Then
+            assertThat(appender.isMeterRegistryBound).isTrue()
+            assertThat(external.find("kafka.appender.events.accepted").counters()).isNotEmpty
         }
     }
 

@@ -13,7 +13,8 @@ following hold:
    never automatic:
    - Spring: declare `KafkaAppenderMetricsBinding` as a bean or `@Import`
      it (needs `spring-context`, also optional). It binds every
-     `KafkaAppender` of the Logback context on `ContextRefreshedEvent`.
+     `KafkaAppender` of the Logback context on `ContextRefreshedEvent`
+     and unbinds them from its registry when its context closes.
      It is deliberately not Spring Boot auto-configuration.
    - Without Spring: call `KafkaAppender.bindMeterRegistry()` for each
      appender once the registry exists.
@@ -196,7 +197,7 @@ The value is the meter identity of the instance, so it must be unique per regist
 | `breaker.open`  | Circuit breaker gave no permission (OPEN, or HALF_OPEN exhausted) |
 | `throttle`      | Half-open throttle: probe gap not yet elapsed                |
 | `send.error`    | `producer.send()` threw synchronously, the callback reported an exception, or the class's SendDispatcher worker died |
-| `encoder.error` | Hot-path exception before `send()` (encoder, routing, OOM)   |
+| `encoder.error` | Hot-path exception before `send()` (encoder, routing); an `Error` such as OOM or `LinkageError` is not caught and propagates to the logging call |
 | `queue.full`    | The class's SendDispatcher queue was full — Kafka delivery cannot keep up |
 | `shutdown`      | Event was still in the SendDispatcher queue, or in flight but not yet accepted by the producer, when the appender stopped, or was logged after it stopped |
 

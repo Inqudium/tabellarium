@@ -161,7 +161,11 @@ internal interface KafkaAppenderMetrics {
          */
         SEND_ERROR("send.error"),
 
-        /** Hot-path exception before send was even attempted (encoder, routing, OOM). */
+        /**
+         * Hot-path exception before send was even attempted (encoder,
+         * routing). An `Error` (OOM, `LinkageError`) is not caught and
+         * not counted here; it propagates to the logging call.
+         */
         ENCODER_ERROR("encoder.error"),
 
         /** The [SendDispatcher] queue was full - Kafka delivery is not keeping up. */

@@ -11,6 +11,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatCode
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.function.ToDoubleFunction
@@ -184,6 +185,66 @@ class RenamingMeterMirrorTest {
             // Then
             assertThat(target.meters).isEmpty()
             assertThat(target.isClosed).isFalse()
+        }
+
+        @Test
+        fun `should remove a mirror whose registration was in progress while close swept`() {
+            // What is to be tested? The actual race between the binder's
+            //   refresh thread and the unbind: an addition that passed the
+            //   closed check before close() ran, and registers its mirror in
+            //   the target only after close() swept the mirror map.
+            // How will the test case be deemed successful and why? Successful if
+            //   the target is empty once both the registration and close()
+            //   have completed. Deterministic: the target's gauge registration
+            //   parks on a latch, and is released only once close() has swept
+            //   the mirror map and sits blocked in source.close() - Micrometer
+            //   runs the onMeterAdded listener under the source's meter-map
+            //   lock, which close() needs as well. The mirror is then put into
+            //   the already swept map, and only the re-check after the put can
+            //   remove it again.
+            // Why is it important to test this test case? KafkaMetrics refreshes
+            //   on its own scheduler; a refresh coinciding with stop() would
+            //   otherwise leave an orphaned producer meter in the operator's
+            //   registry after the appender is gone. The test above covers
+            //   only an addition after close().
+
+            // Given: a target whose gauge registration parks until released
+            val registering = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val target =
+                object : SimpleMeterRegistry() {
+                    override fun <T : Any> newGauge(
+                        id: Meter.Id,
+                        obj: T?,
+                        valueFunction: ToDoubleFunction<T>,
+                    ): Gauge {
+                        registering.countDown()
+                        check(release.await(10, TimeUnit.SECONDS)) { "never released" }
+                        return super.newGauge(id, obj, valueFunction)
+                    }
+                }
+            val mirror = mirrorInto(target)
+            val refresh =
+                Thread {
+                    Gauge.builder("kafka.producer.racing") { 1.0 }.register(mirror.source)
+                }
+            refresh.start()
+            assertThat(registering.await(10, TimeUnit.SECONDS)).isTrue()
+
+            // When: close() sweeps while the registration is parked, then the
+            // registration completes
+            val closer = Thread { mirror.close() }
+            closer.start()
+            pollUntil { closer.state == Thread.State.BLOCKED || closer.state == Thread.State.WAITING }
+            release.countDown()
+            refresh.join(10_000)
+            closer.join(10_000)
+
+            // Then
+            assertThat(refresh.isAlive).isFalse()
+            assertThat(closer.isAlive).isFalse()
+            assertThat(target.meters).isEmpty()
+            assertThat(mirror.mirroredNames).isEmpty()
         }
 
         @Test

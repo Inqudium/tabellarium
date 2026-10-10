@@ -224,12 +224,14 @@
 
             <!--
                 Security pin for Jackson 3 (tools.jackson), raised above the 3.1.5 the
-                Boot BOM manages. Jackson 3 arrives only through the OPTIONAL
-                logstash-logback-encoder, so consumers never get it from this artifact
-                and a managed (not direct) pin suffices: it fixes this build, its tests
+                Boot BOM manages (currently ${jackson3.version}). Jackson 3 arrives only
+                through the OPTIONAL logstash-logback-encoder, so consumers never get it
+                from this artifact and a managed (not direct) pin suffices: it fixes this
+                build, its tests (LogstashEncoderPipelineTest drives the encoder in the
+                default run, so a pin bump that breaks the encoder turns the build red)
                 and the CycloneDX SBOM the OSV scan reads.
 
-                jackson-core/-databind 3.1.5 carry seven advisories fixed in 3.1.7
+                jackson-core/-databind 3.1.5 carry seven advisories, first fixed in 3.1.7
                 (3.1.6 for some): GHSA-7hhh-6rmp-j9qf, GHSA-p6pp-m3f8-5c89,
                 GHSA-cxp5-3px4-pw24, GHSA-q4xh-88c3-wmh7, GHSA-wv8q-qhhj-9h54,
                 GHSA-gx83-3vf8-gh7j, GHSA-wjgm-6hv5-3cvf. Our own exposure is nil: all
@@ -240,8 +242,9 @@
                 writes JSON. Applications that add the encoder manage their own
                 Jackson version.
 
-                Dependabot keeps it current; drop the pin once the Boot BOM manages
-                3.1.7 or newer by itself.
+                Dependabot keeps it current; drop the pin only once the Boot BOM manages
+                a version at least as new as the pinned ${jackson3.version} by itself -
+                dropping it earlier would downgrade Jackson.
             -->
             <dependency>
                 <groupId>tools.jackson</groupId>
@@ -354,8 +357,9 @@
             micrometer-core enables the bindMeterRegistry() integration on
             the appender, including the circuit-breaker metrics: those are
             registered by the appender's own binder (MetricsBindings),
-            which mirrors resilience4j-micrometer's metric names and adds
-            a per-appender tag - so resilience4j-micrometer itself is no
+            which mirrors resilience4j-micrometer's meters under the
+            kafka.appender.circuitbreaker.* namespace and adds a
+            per-appender tag - so resilience4j-micrometer itself is no
             longer needed.
 
             <optional>true</optional>: consumers that do not want metrics
