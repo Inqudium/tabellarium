@@ -217,4 +217,33 @@ class RenamingMeterMirrorTest {
             assertThat(warnings).hasSize(1)
         }
     }
+
+    @Nested
+    inner class `Kafka client names` {
+        @Test
+        fun `should map every Kafka client binder group under kafka-appender-producer`() {
+            // What is to be tested? The name mapping the producer mirror uses:
+            //   the producer groups keep their structure below the new prefix,
+            //   a group outside kafka.producer (the client's app info) goes
+            //   under kafka.appender.producer too, and anything else - an
+            //   already renamed name, the binder's delete.this probe - is not
+            //   published.
+            // How will the test case be deemed successful and why? Successful if
+            //   each input maps to exactly the expected name, or to null.
+            // Why is it important to test this test case? kafka.appender.app.info
+            //   would sit next to the appender's own kafka.appender.info and
+            //   read like one of its meters; and a mapping that accepted an
+            //   already renamed name would rename it twice.
+
+            // When / Then
+            assertThat(MetricsBindings.kafkaClientMeterName("kafka.producer.record.send.total"))
+                .isEqualTo("kafka.appender.producer.record.send.total")
+            assertThat(MetricsBindings.kafkaClientMeterName("kafka.producer.node.request.latency.avg"))
+                .isEqualTo("kafka.appender.producer.node.request.latency.avg")
+            assertThat(MetricsBindings.kafkaClientMeterName("kafka.app.info.start.time.ms"))
+                .isEqualTo("kafka.appender.producer.app.info.start.time.ms")
+            assertThat(MetricsBindings.kafkaClientMeterName("kafka.appender.producer.record.send.total")).isNull()
+            assertThat(MetricsBindings.kafkaClientMeterName("delete.this")).isNull()
+        }
+    }
 }

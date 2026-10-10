@@ -3046,6 +3046,9 @@ class KafkaAppenderTest {
                 assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
             }
             assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+            // the client's app info lands under producer too, not next to kafka.appender.info
+            assertThat(registry.meters).anyMatch { it.id.name.startsWith("kafka.appender.producer.app.info") }
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.app.") }
             appender.stop()
             assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
             assertThat(registry.isClosed).isFalse()

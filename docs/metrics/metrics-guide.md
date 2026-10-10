@@ -457,7 +457,7 @@ Registered by the appender's own binder (no `resilience4j-micrometer` needed; `m
 
 ## Kafka producer bridge (when `KafkaClientMetrics` is on the classpath)
 
-Activated automatically via reflection when `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` is available. One binding per active TopicClass. The binder's own names (`kafka.producer.*`, `kafka.producer.node.*`, `kafka.producer.topic.*`) are published under the appender's prefix - `kafka.X` becomes `kafka.appender.X` - so they never mix with the application's own Kafka clients:
+Activated automatically via reflection when `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` is available. One binding per active TopicClass. The binder's own names are published under `kafka.appender.producer.`, so they never mix with the application's own Kafka clients: `kafka.producer.*` (including `kafka.producer.node.*` and `kafka.producer.topic.*`) becomes `kafka.appender.producer.*`, and the client's app info `kafka.app.info.*` (client version and commit id as tags) becomes `kafka.appender.producer.app.info.*`:
 
 | Metric                                           | Examples                                  |
 | ------------------------------------------------ | ----------------------------------------- |
@@ -471,6 +471,17 @@ Activated automatically via reflection when `io.micrometer.core.instrument.binde
 | …                                                | (~40 producer-internal metrics in total)  |
 
 All carry the `topic.class` tag to disambiguate between the per-class producers, plus the `appender` tag, the binder's own tags (`client.id`, `kafka.version`, ...) and the common tags.
+
+**JMX keeps the Kafka client's names.** The renaming applies to the
+Micrometer meters only. The Kafka client also registers its metrics as
+JMX MBeans of its own (`kafka.producer:type=producer-metrics,client-id=...`,
+`type=producer-node-metrics`, `type=producer-topic-metrics`,
+`kafka.producer:type=app-info`); those are created by the client itself,
+not by the appender, and keep their original names. A JMX-based exporter
+(for example the Prometheus JMX exporter) therefore still reports them
+under `kafka_producer_*`, independent of this binding - tell the appender's
+producers apart there by their `client-id`, which the appender derives
+from `<component>` and the topic class (see the configuration guide).
 
 **How the renaming works.** The binder registers into a private registry
 that nothing exports; for every meter it adds there, the appender

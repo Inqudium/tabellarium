@@ -465,18 +465,22 @@ internal class MetricsBindings(
         const val CIRCUIT_BREAKER_PREFIX: String = "kafka.appender.circuitbreaker"
 
         /**
-         * The appender-namespace name of a Kafka client binder meter:
+         * The appender-namespace name of a Kafka client binder meter. Every
+         * meter of the binder lands under `kafka.appender.producer.`:
          * `kafka.producer.record.send.total` becomes
-         * `kafka.appender.producer.record.send.total`, and likewise for
-         * every other `kafka.*` group the binder registers. `null` for
+         * `kafka.appender.producer.record.send.total` (likewise the
+         * `producer.node` and `producer.topic` groups), and a group outside
+         * `kafka.producer` - the client's `kafka.app.info` - becomes
+         * `kafka.appender.producer.app.info` rather than
+         * `kafka.appender.app.info`, which would read like one of the
+         * appender's own meters next to `kafka.appender.info`. `null` for
          * anything else (the binder's transient `delete.this` probe), which
          * is then not published.
          */
-        internal fun kafkaClientMeterName(name: String): String? =
-            if (name.startsWith("kafka.") && !name.startsWith("kafka.appender.")) {
-                "kafka.appender." + name.removePrefix("kafka.")
-            } else {
-                null
-            }
+        internal fun kafkaClientMeterName(name: String): String? {
+            if (!name.startsWith("kafka.") || name.startsWith("kafka.appender.")) return null
+            val group = name.removePrefix("kafka.")
+            return if (group.startsWith("producer.")) "kafka.appender.$group" else "kafka.appender.producer.$group"
+        }
     }
 }
