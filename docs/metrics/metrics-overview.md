@@ -31,6 +31,92 @@ configured (`<appender-ref>`): without one there is no queue, and both
 series are absent rather than reading a constant zero. An absent
 `fallback.queue.size` therefore means "drop policy", never "empty queue".
 
+### Info gauges
+
+| Metric                      | Tags                                                                                    | What it shows                                                |
+| --------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `kafka.appender.info`       | `appender`, `fallback`, `fallback.type`, `appender.version`, `kafka.client.version`, `debug` | Configuration of the appender instance; the value is always `1` |
+| `kafka.appender.topic.info` | `appender`, `topic.class`, `topic`, `acks`, `linger.ms`                                 | One series per configured topic (mapped topics plus the default topic); the value is always `1` |
+
+Info gauges follow the Prometheus `*_info` convention: the value carries
+no information, the labels do. They are joined onto the other series
+with `group_left`, and because the value is `1` the join leaves the
+joined values untouched:
+
+```promql
+# Fallback rate per reason, labelled with where the events end up
+sum by (job, instance, appender, reason) (rate(kafka_appender_events_fallback_total[5m]))
+  * on (job, instance, appender) group_left (fallback, fallback_type) kafka_appender_info
+
+# Send latency per class next to the settings that set its floor
+histogram_quantile(0.99,
+    sum by (job, instance, appender, topic_class, le) (rate(kafka_appender_send_duration_seconds_bucket[5m])))
+  * on (job, instance, appender, topic_class) group_left (acks, linger_ms)
+    max by (job, instance, appender, topic_class, acks, linger_ms) (kafka_appender_topic_info)
+```
+
+Join on the target labels (`job`, `instance`) together with `appender`:
+appender names repeat across services (`KAFKA` everywhere), so
+`on (appender)` alone matches the info series of other services and the
+join fails with "many-to-many matching". The second query collapses the
+topics with `max by` because `group_left` needs one info series per
+class, and `acks`/`linger.ms` are the same for every topic of a class.
+
+The labels are fixed for the lifetime of an appender instance: the
+fallback slot refuses changes while the appender runs, and the topic
+mapping and producer properties are built once at start. A Logback
+reconfiguration replaces the instance, its info series end and new ones
+begin. Keep that in mind for alerts that filter on a label value - a
+renamed fallback appender is a new series.
+
+| Label                  | Value                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `fallback`             | Name of the fallback appender (`<appender-ref ref="...">`); `none` without one, `unnamed` for one without a name. `fallback="none"` marks the appenders whose `events.fallback` are dropped events |
+| `fallback.type`        | Simple class name of the fallback appender (e.g. `RollingFileAppender`); `none` without one |
+| `appender.version`     | tabellarium version (the same value as the `meta.agent.version` record header). Not `version`, so that a `version` common tag for the application is not overridden on the info series |
+| `kafka.client.version` | Version of the Kafka client on the classpath - often chosen by the application's dependency management, not by tabellarium |
+| `debug`                | `true` or `false`, the `<debug>` setting                                                |
+| `topic`                | Topic name as configured                                                                |
+| `acks`, `linger.ms`    | The effective producer settings of the topic's class - the configured value, or the Kafka client default when the class leaves the key out (`acks` under explicit idempotence) |
+
+The producer properties are deliberately not exported beyond these two
+settings: they may hold credentials (`sasl.jaas.config`) and
+infrastructure details that do not belong in a time-series database.
+
+**Cost.** The info gauges never run on the logging path: they are
+registered once by `bindMeterRegistry()` and read only when the registry
+exports. Their cost is one series per appender plus one per configured
+topic. Measured on 2026-10-10 with a `PrometheusMeterRegistry` (Micrometer
+1.17.1), one appender with a fallback, all four topic classes and five
+topics, real producers without a reachable broker:
+
+| Measure                        | Info gauges on | Info gauges denied | Difference          |
+| ------------------------------ | -------------- | ------------------ | ------------------- |
+| Sample lines per scrape        | 505            | 499                | +6 (+1.2 %)         |
+| Scrape size                    | 102,318 bytes  | 100,997 bytes      | +1,321 bytes (+1.3 %) |
+| Scrape time (mean of 5,000)    | 546-607 µs     | 593-601 µs         | within run-to-run noise |
+| Retained heap                  | -              | -                  | ~390 bytes per info gauge |
+
+Of the 505 lines, 340 come from `kafka.producer.*`, 88 from the
+circuit-breaker binder and 67 from the appender's other meters. With a
+reachable broker the producer adds per-node and per-topic series, so the
+info gauges' share drops further.
+
+**Switching them off.** There is no appender setting for it; a Micrometer
+`MeterFilter` suppresses them like any other meter (denied meters are
+registered as no-ops, binding and `stop()` are unaffected):
+
+```kotlin
+registry.config().meterFilter(
+    MeterFilter.deny { it.name == "kafka.appender.info" || it.name == "kafka.appender.topic.info" },
+)
+```
+
+Alternatively, drop them in Prometheus with `metric_relabel_configs`.
+Without them, the dashboard panels that join on them ("Fallback events by
+destination", the configuration tables) stay empty; all other panels are
+unaffected.
+
 ## Tag values
 
 ### `appender` — one value per appender instance
@@ -99,7 +185,9 @@ These then appear in addition to the per-metric tags on all counters, timers, an
 | `fallback.queue.capacity` | 1 (only with a fallback appender)     |
 | `send.queue.size`         | 4 (one per active `topic.class`)      |
 | `send.queue.capacity`     | 4                                     |
-| **Total**                 | **51** (49 without a fallback appender) |
+| `info`                    | 1                                     |
+| `topic.info`              | one per configured topic              |
+| **Total**                 | **52** + one per configured topic (2 fewer without a fallback appender) |
 
 Multiplied by the `appender` tag (1 value in the default case) and the common-tags cardinality (typically 1, since constant per service).
 
@@ -219,3 +307,14 @@ resilience4j_circuitbreaker_state{name=~"kafka-appender-.*"}
 Ready-made Grafana dashboards built on these metrics live next to this page:
 [`kafka-appender-dashboard.json`](./kafka-appender-dashboard.json) and
 [`kafka-producer-internals-dashboard.json`](./kafka-producer-internals-dashboard.json).
+
+Both use the info gauges. The appender dashboard shows "Fallback events
+by destination" in its fallback row - the fallback rate joined with
+`kafka_appender_info`, where a destination of `none` (red) is dropped
+events that the "Drop rate" panel does not count - and a "Configuration"
+row with two tables: the appender configuration (`fallback="none"` and
+`debug="true"` highlighted) and the configured topics with `acks` and
+`linger.ms`. The tables count the scraped instances per configuration,
+so instances that differ, e.g. during a rolling deployment, show up as
+separate rows. The producer-internals dashboard has the topics table as
+well, filtered by its `topic_class` variable.

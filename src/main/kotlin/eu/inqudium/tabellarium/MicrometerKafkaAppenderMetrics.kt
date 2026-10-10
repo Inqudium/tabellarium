@@ -33,6 +33,18 @@ import java.util.concurrent.atomic.AtomicReference
  * fallback-dispatcher meters), so the series count per appender is a
  * function of the enum sizes alone - minus the two fallback queue
  * gauges, which exist only when a fallback appender is configured.
+ * The info gauges are the exception: `kafka.appender.info` is one
+ * series, `kafka.appender.topic.info` one per configured topic.
+ *
+ * ## Info gauges
+ *
+ * With an [AppenderInfo], two constant-1 gauges carry the appender's
+ * configuration as labels (the Prometheus `*_info` convention): the
+ * value says nothing, the labels are joined onto the other series with
+ * `* on(appender) group_left(...)`. The value stays 1 so that join
+ * leaves the joined series' values untouched. The labels are fixed for
+ * the appender's lifetime, so a series never changes identity while it
+ * is live; a reconfiguration replaces it with a new one.
  *
  * ## Pre-resolution
  *
@@ -56,11 +68,14 @@ import java.util.concurrent.atomic.AtomicReference
  *                   multiplies the cardinality. Typical use: a
  *                   `service` tag if your registry does not already
  *                   carry one.
+ * @param info Configuration metadata for the info gauges; `null`
+ *             registers none.
  */
 internal class MicrometerKafkaAppenderMetrics(
     private val registry: MeterRegistry,
     commonTags: Iterable<Tag> = Tags.empty(),
     appenderName: String? = null,
+    info: AppenderInfo? = null,
 ) : KafkaAppenderMetrics {
     /**
      * The full set of tags applied to every metric this instance
@@ -210,6 +225,41 @@ internal class MicrometerKafkaAppenderMetrics(
         }
     }
 
+    init {
+        if (info != null) {
+            safe { registerInfoGauges(info) }
+        }
+    }
+
+    private fun registerInfoGauges(info: AppenderInfo) {
+        track(
+            Gauge
+                .builder(METRIC_INFO) { 1.0 }
+                .tags(
+                    fullTags
+                        .and(TAG_FALLBACK, info.fallback)
+                        .and(TAG_FALLBACK_TYPE, info.fallbackType)
+                        .and(TAG_APPENDER_VERSION, info.version)
+                        .and(TAG_KAFKA_CLIENT_VERSION, info.kafkaClientVersion)
+                        .and(TAG_DEBUG, info.debug.toString()),
+                ).description("Configuration of the KafkaAppender instance as labels; the value is always 1")
+                .register(registry),
+        )
+        info.topics.forEach { topic ->
+            track(
+                Gauge
+                    .builder(METRIC_TOPIC_INFO) { 1.0 }
+                    .tags(
+                        tagsWith(TAG_TOPIC_CLASS, topic.topicClass.tag)
+                            .and(TAG_TOPIC, topic.topic)
+                            .and(TAG_ACKS, topic.acks)
+                            .and(TAG_LINGER_MS, topic.lingerMs),
+                    ).description("A configured topic with its topic class and producer settings as labels; the value is always 1")
+                    .register(registry),
+            )
+        }
+    }
+
     override fun eventAccepted(topicClass: TopicClass) {
         safe { accepted.getValue(topicClass).increment() }
     }
@@ -324,10 +374,24 @@ internal class MicrometerKafkaAppenderMetrics(
         const val METRIC_FALLBACK_QUEUE_CAPACITY: String = "kafka.appender.fallback.queue.capacity"
         const val METRIC_SEND_QUEUE_SIZE: String = "kafka.appender.send.queue.size"
         const val METRIC_SEND_QUEUE_CAPACITY: String = "kafka.appender.send.queue.capacity"
+        const val METRIC_INFO: String = "kafka.appender.info"
+        const val METRIC_TOPIC_INFO: String = "kafka.appender.topic.info"
 
         const val TAG_TOPIC_CLASS: String = "topic.class"
         const val TAG_REASON: String = "reason"
         const val TAG_OUTCOME: String = "outcome"
         const val TAG_APPENDER: String = "appender"
+
+        // Info-gauge labels. `appender.version` rather than `version`:
+        // a `version` common tag (the application's version) is common
+        // and would be overridden on the info series, breaking joins.
+        const val TAG_FALLBACK: String = "fallback"
+        const val TAG_FALLBACK_TYPE: String = "fallback.type"
+        const val TAG_APPENDER_VERSION: String = "appender.version"
+        const val TAG_KAFKA_CLIENT_VERSION: String = "kafka.client.version"
+        const val TAG_DEBUG: String = "debug"
+        const val TAG_TOPIC: String = "topic"
+        const val TAG_ACKS: String = "acks"
+        const val TAG_LINGER_MS: String = "linger.ms"
     }
 }

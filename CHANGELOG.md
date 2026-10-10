@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Info gauges `kafka.appender.info` and `kafka.appender.topic.info`
+  (value always `1`, the Prometheus `*_info` convention), registered by
+  `bindMeterRegistry()` and removed with the other meters on stop. The
+  first carries the fallback appender's name and class (`none` without
+  one), the tabellarium and Kafka client versions and the `debug` flag;
+  the second has one series per configured topic with its topic class
+  and the class's effective `acks` and `linger.ms`. Join them onto the
+  other series with `group_left` - e.g. to tell whether
+  `events.fallback` lands in a file or is dropped. Cardinality grows by
+  one series per appender plus one per configured topic; metrics
+  overview, README and configuration guide describe labels and queries.
+  Measured cost: +1.2 % series and +1.3 % scrape size for one appender
+  with five topics, nothing on the logging path; a Micrometer
+  `MeterFilter.deny` switches them off (metrics overview, "Cost").
+- Grafana dashboards use the info gauges: the appender dashboard gains
+  a "Fallback events by destination" panel (diversions joined with the
+  fallback appender; `none` marks dropped events the "Drop rate" panel
+  does not count) and a "Configuration" row with appender and topic
+  tables; the producer-internals dashboard gains the topic table.
+
 ### Changed
 
 - Reproducible builds: the POM sets `project.build.outputTimestamp`

@@ -64,6 +64,10 @@ internal class TopicTable(
         activeTopicClasses = (topicsToClass.values + fallbackClass).toSet()
     }
 
+    /** The explicitly mapped topics with their classes (without the fallback). */
+    val topics: Map<String, TopicClass>
+        get() = topicsToClass
+
     /**
      * Returns the class associated with [topic], or [fallbackClass] if the
      * topic was not explicitly mapped at construction time.

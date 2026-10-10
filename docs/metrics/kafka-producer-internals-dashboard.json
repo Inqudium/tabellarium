@@ -747,6 +747,59 @@
       ],
       "title": "Connection churn (open vs. close rate)",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 50},
+      "id": 106,
+      "panels": [],
+      "title": "Configuration",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "kafka_appender_topic_info: the topics behind each producer (one producer per topic class) with the class's effective acks and linger.ms - the settings that shape batch size, queue time and request latency above.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 51},
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": false, "displayName": "topic_class"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "count by (application, appender, topic_class, topic, acks, linger_ms) (kafka_appender_topic_info{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Configured topics",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {"excludeByName": {"Time": true}, "indexByName": {}, "renameByName": {"Value": "instances"}}
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "30s",

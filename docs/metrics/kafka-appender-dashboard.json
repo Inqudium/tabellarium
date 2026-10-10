@@ -573,8 +573,68 @@
       "type": "timeseries"
     },
     {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Where diverted events end up, per appender: the fallback rate joined with the fallback label of kafka_appender_info. A destination of 'none' means the appender has no fallback configured - every event shown there is dropped, not merely diverted, and is NOT counted by the 'Drop rate' panel (which covers the fallback dispatcher only).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "normal"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": ".* → none$"},
+            "properties": [
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+      "id": 13,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "sum by (appender, fallback, fallback_type) (rate(kafka_appender_events_fallback_total{application=~\"$application\",appender=~\"$appender\"}[1m]) * on (job, instance, appender) group_left (fallback, fallback_type) kafka_appender_info)",
+          "legendFormat": "{{appender}} ({{fallback_type}}) → {{fallback}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Fallback events by destination",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40},
       "id": 104,
       "panels": [],
       "title": "Circuit breaker",
@@ -619,7 +679,7 @@
           {"matcher": {"id": "byRegexp", "options": ".*open.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
         ]
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41},
       "id": 11,
       "options": {
         "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -676,7 +736,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41},
       "id": 12,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -693,6 +753,123 @@
       ],
       "title": "Circuit breaker failure rate",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 49},
+      "id": 105,
+      "panels": [],
+      "title": "Configuration",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "kafka_appender_info per appender: fallback appender (name and class; 'none' = events.fallback are dropped), tabellarium and Kafka client version, debug flag. 'instances' counts the scraped instances running that configuration - two rows for one appender mean the instances differ, e.g. during a rolling deployment.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "fallback"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "basic"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {"none": {"color": "red", "index": 0}}}]},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "debug"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "basic"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {"true": {"color": "orange", "index": 0}}}]},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 50},
+      "id": 14,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": false, "displayName": "appender"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "count by (application, appender, fallback, fallback_type, appender_version, kafka_client_version, debug) (kafka_appender_info{application=~\"$application\",appender=~\"$appender\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Appender configuration",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {"excludeByName": {"Time": true}, "indexByName": {}, "renameByName": {"Value": "instances"}}
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "kafka_appender_topic_info: every topic the appender can route to (mapped topics plus the default topic) with its topic class and the class's effective acks and linger.ms. linger.ms is the latency floor of the 'Send latency percentiles' panel at low volume.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 56},
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": false, "displayName": "topic"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "count by (application, appender, topic_class, topic, acks, linger_ms) (kafka_appender_topic_info{application=~\"$application\",appender=~\"$appender\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Configured topics",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {"excludeByName": {"Time": true}, "indexByName": {}, "renameByName": {"Value": "instances"}}
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "30s",

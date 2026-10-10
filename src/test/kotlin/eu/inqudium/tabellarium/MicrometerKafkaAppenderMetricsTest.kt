@@ -735,4 +735,135 @@ class MicrometerKafkaAppenderMetricsTest {
             assertThat(accepted?.count()).isEqualTo(1.0)
         }
     }
+
+    @Nested
+    inner class `Info gauges` {
+        private val info =
+            AppenderInfo(
+                fallback = "FALLBACK_FILE",
+                fallbackType = "RollingFileAppender",
+                debug = false,
+                topics =
+                    listOf(
+                        TopicInfo("audit.security", TopicClass.AUDIT, acks = "all", lingerMs = "50"),
+                        TopicInfo("svc.logs", TopicClass.TECHNICAL, acks = "1", lingerMs = "50"),
+                    ),
+                version = "1.2.3",
+                kafkaClientVersion = "4.0.0",
+            )
+
+        @Test
+        fun `should publish the appender info as a constant-1 gauge with every label`() {
+            // What is to be tested? Whether kafka.appender.info carries the
+            //   configuration labels plus the appender and common tags, with
+            //   the value 1.
+            // How will the test case be deemed successful and why? Successful
+            //   if exactly one info gauge exists, reads 1.0 and carries exactly
+            //   the documented label set with the given values.
+            // Why is it important to test this test case? The value must stay
+            //   1 for the group_left join to leave joined values untouched, and
+            //   the common tags must be present for the join to match at all.
+
+            // Given
+            val registry = newRegistry()
+
+            // When
+            MicrometerKafkaAppenderMetrics(registry, Tags.of("service", "svc"), appenderName = "KAFKA", info = info)
+
+            // Then
+            val gauges = registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauges()
+            assertThat(gauges).hasSize(1)
+            assertThat(gauges.single().value()).isEqualTo(1.0)
+            assertThat(
+                gauges
+                    .single()
+                    .id.tags
+                    .associate { it.key to it.value },
+            ).containsExactlyInAnyOrderEntriesOf(
+                mapOf(
+                    "service" to "svc",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    MicrometerKafkaAppenderMetrics.TAG_FALLBACK to "FALLBACK_FILE",
+                    MicrometerKafkaAppenderMetrics.TAG_FALLBACK_TYPE to "RollingFileAppender",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER_VERSION to "1.2.3",
+                    MicrometerKafkaAppenderMetrics.TAG_KAFKA_CLIENT_VERSION to "4.0.0",
+                    MicrometerKafkaAppenderMetrics.TAG_DEBUG to "false",
+                ),
+            )
+        }
+
+        @Test
+        fun `should publish one constant-1 topic info gauge per configured topic`() {
+            // What is to be tested? Whether kafka.appender.topic.info has one
+            //   series per topic, labelled with topic, class and producer
+            //   settings.
+            // How will the test case be deemed successful and why? Successful
+            //   if there are exactly two series, both reading 1.0, each with
+            //   its own topic's class and settings.
+            // Why is it important to test this test case? One series per topic
+            //   is the documented cardinality; the per-topic labels are what
+            //   the join onto broker-side metrics matches on.
+
+            // Given
+            val registry = newRegistry()
+
+            // When
+            MicrometerKafkaAppenderMetrics(registry, appenderName = "KAFKA", info = info)
+
+            // Then
+            val gauges = registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges()
+            assertThat(gauges.map { it.value() }).containsExactly(1.0, 1.0)
+            assertThat(
+                gauges.map { gauge ->
+                    gauge.id.tags
+                        .associate { it.key to it.value }
+                        .filterKeys { it != MicrometerKafkaAppenderMetrics.TAG_APPENDER }
+                },
+            ).containsExactlyInAnyOrder(
+                mapOf("topic" to "audit.security", "topic.class" to "audit", "acks" to "all", "linger.ms" to "50"),
+                mapOf("topic" to "svc.logs", "topic.class" to "technical", "acks" to "1", "linger.ms" to "50"),
+            )
+        }
+
+        @Test
+        fun `should register no info gauge without an AppenderInfo`() {
+            // What is to be tested? Whether the info gauges are opt-in per
+            //   instance (the sender-only binding of the benchmarks passes none).
+            // How will the test case be deemed successful and why? Successful
+            //   if neither info metric exists after constructing without info.
+            // Why is it important to test this test case? An info series with
+            //   placeholder labels would assert a configuration nobody made.
+
+            // Given
+            val registry = newRegistry()
+
+            // When
+            MicrometerKafkaAppenderMetrics(registry, appenderName = "KAFKA")
+
+            // Then
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauges()).isEmpty()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges()).isEmpty()
+        }
+
+        @Test
+        fun `should remove the info gauges on deregistration`() {
+            // What is to be tested? Whether deregisterFrom removes the info
+            //   gauges together with the other meters.
+            // How will the test case be deemed successful and why? Successful
+            //   if no kafka.appender.* meter remains.
+            // Why is it important to test this test case? A stale info series
+            //   after a reconfiguration would join the old fallback name onto
+            //   the new instance's counters.
+
+            // Given
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "KAFKA", info = info)
+
+            // When
+            metrics.deregisterFrom(registry)
+
+            // Then
+            assertThat(appenderMeters(registry)).isEmpty()
+        }
+    }
 }

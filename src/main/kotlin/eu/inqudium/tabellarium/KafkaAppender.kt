@@ -681,6 +681,7 @@ class KafkaAppender :
             // A repeated bind (context refresh, manual re-wiring) replaces the
             // previous registration - MetricsBindings tears it down first.
             val transport = checkNotNull(transport) { "a started appender always has a transport" }
+            val plan = checkNotNull(plan) { "a started appender always has a plan" }
             val impl =
                 metricsBindings.bind(
                     registry = registry,
@@ -688,6 +689,13 @@ class KafkaAppender :
                     appenderName = this.name,
                     circuitBreakerRegistry = transport.circuitBreakerRegistry,
                     producerRegistry = transport.producerRegistry,
+                    info =
+                        AppenderInfo.of(
+                            fallbackAppender = fallbackAppender,
+                            debug = debug,
+                            topics = plan.topics,
+                            effectiveProperties = transport.producerRegistry.effectiveProperties,
+                        ),
                 )
             metrics = impl
             transport.setMetrics(impl)

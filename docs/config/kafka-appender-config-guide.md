@@ -736,11 +736,14 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity; only with a fallback appender. |
 | `kafka.appender.send.queue.size`           | Gauge   | `topic.class`             | Current send-dispatcher queue depth for the class. |
 | `kafka.appender.send.queue.capacity`       | Gauge   | `topic.class`             | Fixed send queue capacity. |
+| `kafka.appender.info`                      | Gauge   | `fallback`, `fallback.type`, `appender.version`, `kafka.client.version`, `debug` | Appender configuration as labels; value always `1`. |
+| `kafka.appender.topic.info`                | Gauge   | `topic.class`, `topic`, `acks`, `linger.ms` | One series per configured topic; value always `1`. |
 
 Tag values: `topic.class` ∈ {`audit`, `functional`, `technical`,
 `performance`}; `reason` ∈ {`breaker.open`, `throttle`, `send.error`,
 `encoder.error`, `queue.full`, `shutdown`}; `outcome` ∈ {`success`,
-`error`}. Worst case ≈ 51 series per appender instance.
+`error`}. Worst case ≈ 52 series per appender instance plus one per
+configured topic.
 
 ### Additional bindings
 

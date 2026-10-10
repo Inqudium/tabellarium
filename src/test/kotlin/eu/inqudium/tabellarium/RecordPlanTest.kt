@@ -195,4 +195,51 @@ class RecordPlanTest {
             .isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("shared.topic")
     }
+
+    @Nested
+    inner class `Topics` {
+        @Test
+        fun `should list the mapped topics and the default topic with their classes`() {
+            // What is to be tested? Whether the plan's topic inventory holds
+            //   every topic route can resolve to: the mapped ones and the
+            //   default topic under the default class.
+            // How will the test case be deemed successful and why? Successful
+            //   if the map equals the mapped audit topic plus the default topic
+            //   as TECHNICAL - nothing missing, nothing extra.
+            // Why is it important to test this test case? The inventory feeds
+            //   kafka.appender.topic.info; a missing default topic would leave
+            //   the busiest topic of most deployments without its info series.
+
+            // When
+            val plan = planFor()
+
+            // Then
+            assertThat(plan.topics).containsExactlyInAnyOrderEntriesOf(
+                mapOf("audit.security" to TopicClass.AUDIT, "svc.logs" to TopicClass.TECHNICAL),
+            )
+        }
+
+        @Test
+        fun `should list the default topic once when a mapping also names it`() {
+            // What is to be tested? Whether a <mapping> that routes a marker to
+            //   the default topic does not produce a second entry.
+            // How will the test case be deemed successful and why? Successful
+            //   if the default topic appears exactly once, with its class.
+            // Why is it important to test this test case? Two entries would
+            //   register two info series for one topic.
+
+            // Given
+            val mapping =
+                TopicMappingConfig().apply {
+                    defaultTopic = "svc.logs"
+                    addMapping(mapping("OPS", "svc.logs", "TECHNICAL"))
+                }
+
+            // When
+            val plan = planFor(mapping)
+
+            // Then
+            assertThat(plan.topics).containsExactlyEntriesOf(mapOf("svc.logs" to TopicClass.TECHNICAL))
+        }
+    }
 }
