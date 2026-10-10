@@ -123,6 +123,9 @@ internal class MetricsBindings(
     val isBound: Boolean
         get() = boundRegistry != null
 
+    /** True while bound to exactly [registry] (identity). */
+    fun isBoundTo(registry: MeterRegistry): Boolean = boundRegistry === registry
+
     /**
      * Exactly the circuit-breaker meters THIS instance registered
      * (identity-compared: [Meter] does not override equals), so
@@ -270,12 +273,12 @@ internal class MetricsBindings(
 
     /**
      * Best-effort binding of the circuit-breaker metrics. Mirrors the
-     * metric names, tags and semantics of `resilience4j-micrometer`'s
-     * `TaggedCircuitBreakerMetrics` 1:1 and adds the `appender` tag
-     * (plus the operator's common tags) - see the class KDoc for why
-     * the official binder is not used. Failures are reported via the
-     * status manager; every meter registered before a failure is
-     * tracked and torn down by [unbind].
+     * meters, tags and semantics of `resilience4j-micrometer`'s
+     * `TaggedCircuitBreakerMetrics` 1:1 under the [CIRCUIT_BREAKER_PREFIX]
+     * namespace and adds the `appender` tag (plus the operator's common
+     * tags) - see the class KDoc for why the official binder is not
+     * used. Failures are reported via the status manager; every meter
+     * registered before a failure is tracked and torn down by [unbind].
      */
     private fun bindResilience4jMetrics(
         registry: MeterRegistry,
@@ -392,7 +395,7 @@ internal class MetricsBindings(
         boundResilience4jMeters += builder.register(registry)
     }
 
-    /** Registers one `resilience4j.circuitbreaker.calls` timer of the given kind and tracks it for [unbind]. */
+    /** Registers one `kafka.appender.circuitbreaker.calls` timer of the given kind and tracks it for [unbind]. */
     private fun registerCallTimer(
         registry: MeterRegistry,
         tags: Tags,

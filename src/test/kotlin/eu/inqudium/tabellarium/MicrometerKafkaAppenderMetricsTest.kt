@@ -482,11 +482,14 @@ class MicrometerKafkaAppenderMetricsTest {
             // What is to be tested? Whether the `safe` wrapper holds for every
             //   hook of the interface - the counter increments, the timer
             //   record, the two gauge registrations and the deregistration -
-            //   when the registry or its meters throw.
+            //   and for the info-gauge registration in the constructor, when
+            //   the registry or its meters throw.
             // How will the test case be deemed successful and why? Successful
             //   if every hook returns without an exception against a registry
             //   whose meters throw on use and whose gauge registration and
-            //   removal throw. The contract at KafkaAppenderMetrics ("a metrics
+            //   removal throw, and if the construction with an AppenderInfo
+            //   (the bindMeterRegistry path) returns normally as well. The
+            //   contract at KafkaAppenderMetrics ("a metrics
             //   failure must never corrupt the logging pipeline") is what the
             //   hot path relies on when it calls the hooks unguarded.
             // Why is it important to test this test case? A hook that let a
@@ -498,6 +501,25 @@ class MicrometerKafkaAppenderMetricsTest {
             // Given: an instance over a registry that fails every hook-time call
             val registry = HostileRegistry()
             val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "hostile")
+
+            // When / Then: the construction with info gauges returns normally -
+            // a failing info registration must cost only the info gauges, not
+            // the whole bind
+            assertThatCode {
+                MicrometerKafkaAppenderMetrics(
+                    registry,
+                    appenderName = "hostile-with-info",
+                    info =
+                        AppenderInfo(
+                            fallback = "FALLBACK_FILE",
+                            fallbackType = "RollingFileAppender",
+                            debug = false,
+                            topics = listOf(TopicInfo("audit.security", TopicClass.AUDIT, acks = "all", lingerMs = "50")),
+                            version = "1.2.3",
+                            kafkaClientVersion = "4.0.0",
+                        ),
+                )
+            }.doesNotThrowAnyException()
 
             // When / Then: every hook returns normally
             assertThatCode {
@@ -853,32 +875,48 @@ class MicrometerKafkaAppenderMetricsTest {
         fun `should publish one constant-1 topic info gauge per configured topic`() {
             // What is to be tested? Whether kafka.appender.topic.info has one
             //   series per topic, labelled with topic, class and producer
-            //   settings.
+            //   settings - plus the appender and common tags.
             // How will the test case be deemed successful and why? Successful
             //   if there are exactly two series, both reading 1.0, each with
-            //   its own topic's class and settings.
+            //   exactly its own topic's class and settings, the `appender` tag
+            //   and the common tag. The tag sets are compared in full: building
+            //   them from the topic labels alone (the Tags.of-instead-of-tagsWith
+            //   shadowing trap the fullTags KDoc warns about) must fail here.
             // Why is it important to test this test case? One series per topic
             //   is the documented cardinality; the per-topic labels are what
-            //   the join onto broker-side metrics matches on.
+            //   the join onto broker-side metrics matches on, and `appender`
+            //   is the documented join key (`on (job, instance, appender,
+            //   topic_class)`) - without it two appenders on one registry
+            //   would share their topic-info series.
 
             // Given
             val registry = newRegistry()
 
             // When
-            MicrometerKafkaAppenderMetrics(registry, appenderName = "KAFKA", info = info)
+            MicrometerKafkaAppenderMetrics(registry, Tags.of("service", "svc"), appenderName = "KAFKA", info = info)
 
             // Then
             val gauges = registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges()
             assertThat(gauges.map { it.value() }).containsExactly(1.0, 1.0)
             assertThat(
-                gauges.map { gauge ->
-                    gauge.id.tags
-                        .associate { it.key to it.value }
-                        .filterKeys { it != MicrometerKafkaAppenderMetrics.TAG_APPENDER }
-                },
+                gauges.map { gauge -> gauge.id.tags.associate { it.key to it.value } },
             ).containsExactlyInAnyOrder(
-                mapOf("topic" to "audit.security", "topic.class" to "audit", "acks" to "all", "linger.ms" to "50"),
-                mapOf("topic" to "svc.logs", "topic.class" to "technical", "acks" to "1", "linger.ms" to "50"),
+                mapOf(
+                    "service" to "svc",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    "topic" to "audit.security",
+                    "topic.class" to "audit",
+                    "acks" to "all",
+                    "linger.ms" to "50",
+                ),
+                mapOf(
+                    "service" to "svc",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    "topic" to "svc.logs",
+                    "topic.class" to "technical",
+                    "acks" to "1",
+                    "linger.ms" to "50",
+                ),
             )
         }
 

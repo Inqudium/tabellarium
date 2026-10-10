@@ -696,7 +696,9 @@ duplicates meters.
 
 `KafkaAppenderMetricsBinding` discovers every `KafkaAppender` in the
 `LoggerContext` (recursing into `AsyncAppender` wrappers) and binds it on
-`ContextRefreshedEvent`. It is **not** auto-configuration — import it
+`ContextRefreshedEvent`; on `ContextClosedEvent` of its own context it
+unbinds every appender bound to its registry, so a later context in the
+same JVM binds the still-running appenders to its own registry. It is **not** auto-configuration — import it
 explicitly so the appender library never transitively pulls Spring into
 projects that do not want it:
 
@@ -798,9 +800,12 @@ Three conditions are reported as **warnings** and do *not* stop the appender:
   compliance mandates (`TECHNICAL`, `PERFORMANCE`) do not trigger this
   warning.
 
-In the hot path, an unexpected per-event failure (encoder bug, OOM) is
-logged **once** (subsequent occurrences suppressed to prevent log storms)
-and the event is routed to the fallback. Two runtime conditions are
+In the hot path, an unexpected per-event exception (encoder bug, routing
+failure) is logged **once** (subsequent occurrences suppressed to prevent
+log storms) and the event is routed to the fallback. An `Error` (OOM, a
+`LinkageError` from a mismatched encoder dependency) is not caught: as in
+Logback's own `doAppend`, it propagates to the logging call, and the
+event is counted as accepted but neither dispatched nor diverted. Two runtime conditions are
 reported as warnings as well: a send or fallback worker that dies (an
 `Error` escaping the delivery) — the affected class then diverts every
 event with reason `send.error`, the fallback dispatcher drops and counts

@@ -133,7 +133,9 @@ class AppenderInfoTest {
             //   the producer actually runs with.
             // How will the test case be deemed successful and why? Successful
             //   if the labels equal the Kafka client's ConfigDef defaults, not
-            //   a blank or `unknown`.
+            //   a blank or `unknown` - and acks is the concrete "all": the
+            //   ConfigDef comparison alone reads the same source as the
+            //   implementation and would not catch a wrong lookup key.
             // Why is it important to test this test case? A blank acks label
             //   would hide that an idempotent producer runs with acks=all.
 
@@ -152,6 +154,7 @@ class AppenderInfoTest {
             // Then
             val topic = info.topics.single()
             assertThat(topic.acks).isEqualTo(defaults.getValue(ProducerConfig.ACKS_CONFIG).toString())
+            assertThat(topic.acks).isEqualTo("all")
             assertThat(topic.lingerMs).isEqualTo(defaults.getValue(ProducerConfig.LINGER_MS_CONFIG).toString())
         }
     }
