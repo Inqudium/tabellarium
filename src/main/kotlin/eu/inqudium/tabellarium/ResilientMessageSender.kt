@@ -222,6 +222,10 @@ internal class ResilientMessageSender(
         // hooks for this event use the same implementation, even if
         // setMetrics is called concurrently mid-send.
         val m = metrics
+        // Every event the worker takes up, whatever the gates decide
+        // below: the size distribution describes what the application
+        // logs, not what Kafka accepted.
+        m.eventSize(topicClass, payload.size)
 
         // Throttle first: when HALF_OPEN and the gap has not elapsed,
         // route to the fallback without consuming a Resilience4j

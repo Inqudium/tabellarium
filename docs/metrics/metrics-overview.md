@@ -17,6 +17,12 @@ All metrics carry the `appender` tag, reflecting the Logback appender name (`"un
 | ------------------------------ | ------------------------------------ | ------------------------------------------------------ |
 | `kafka.appender.send.duration` | `appender`, `topic.class`, `outcome` | Wall clock from the `producer.send()` call to the callback |
 
+### Distribution summaries
+
+| Metric                      | Tags                      | What is measured                                             |
+| --------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `kafka.appender.event.size` | `appender`, `topic.class` | Encoded payload size in bytes of every event the class's send worker takes up, before the breaker and throttle gates (key and headers excluded) |
+
 ### Gauges
 
 | Metric                                   | Tags                      | What it shows                                                |
@@ -180,6 +186,7 @@ These then appear in addition to the per-metric tags on all counters, timers, an
 | `events.dispatched`       | 4                                     |
 | `events.fallback`         | 24 (4 × 6 = `topic.class` × `reason`) |
 | `send.duration`           | 8 (4 × 2 = `topic.class` × `outcome`) |
+| `event.size`              | 4 (one per `topic.class`)             |
 | `fallback.dropped`        | 1                                     |
 | `fallback.queue.size`     | 1 (only with a fallback appender)     |
 | `fallback.queue.capacity` | 1 (only with a fallback appender)     |
@@ -187,7 +194,7 @@ These then appear in addition to the per-metric tags on all counters, timers, an
 | `send.queue.capacity`     | 4                                     |
 | `info`                    | 1                                     |
 | `topic.info`              | one per configured topic              |
-| **Total**                 | **52** + one per configured topic (2 fewer without a fallback appender) |
+| **Total**                 | **56** + one per configured topic (2 fewer without a fallback appender) |
 
 Multiplied by the `appender` tag (1 value in the default case) and the common-tags cardinality (typically 1, since constant per service).
 
@@ -229,6 +236,50 @@ The tail growth at 32 threads comes from oversubscribing the cores and from the 
 - **Errors separate by cap.** While the client still blocks synchronously in `send()`, `performance` errors cluster at up to 200 ms, the other classes at up to 500 ms.
 
 **Consequence for dashboards and alerts.** Aggregate and alert **per `topic_class`**. A quantile over all classes mixes the 50 ms and 100 ms floors and moves whenever the class mix shifts, without any change in Kafka. An alert threshold for `performance` has to sit above the one for `audit`. The shipped dashboard already groups its latency panels by `topic_class`.
+
+## Reading `kafka.appender.event.size`
+
+**What is counted.** The size of the encoded payload - what the encoder
+produced for the event, without the partitioning key and the `meta.*`
+headers - recorded once per event when the class's send worker takes it
+up, whatever the breaker and the throttle then decide. A diverted event
+is therefore measured too: the summary describes what the application
+logs, not what Kafka accepted. Not measured are events that never reach
+the worker: `queue.full`, `encoder.error` and `shutdown` remainders.
+
+**Exported series.** A Prometheus registry exports
+`kafka_appender_event_size_bytes_count`, `_sum` and `_max` per
+`topic_class`; `_count` equals the events the worker took up, so its
+rate trails `events.accepted` by exactly the three diversions above.
+Percentiles are opt-in like the send-duration timer's, via a
+`MeterFilter` that sets `percentileHistogram` for
+`kafka.appender.event.size`.
+
+```promql
+# Average payload size per class
+sum by (topic_class) (rate(kafka_appender_event_size_bytes_sum[5m]))
+  / sum by (topic_class) (rate(kafka_appender_event_size_bytes_count[5m]))
+
+# Largest payload in the max window, against max.request.size (default 1 MiB)
+max by (topic_class) (kafka_appender_event_size_bytes_max) / 1048576
+```
+
+**Relation to the Kafka client's `record.size`.** `kafka.producer.record.size.avg`
+and `.max` (Kafka binder) measure the whole serialized record - payload
+plus key and headers, before compression - only for records that
+reached `producer.send`, averaged over the client's own sample window.
+`event.size` measures the payload alone, includes diverted events and
+follows the registry's windows. Close to `max.request.size`, alert on
+the client's `record.size.max`: it is the value the client compares.
+
+**Cost.** One `record()` per event, on the send worker, never on the
+logging caller. Measured with `SenderPathBenchmark` on 2026-10-10
+(`benchmarks/results/2026-10-10/`): +21 to +31 ns per event with metrics
+bound (197/192 → 219/223 ns), unchanged without; the summary allocates
+nothing (224 B/op in three of four bound runs, the fourth fork-bimodal as
+documented for that benchmark). The run was single-threaded against an
+instantly completing producer, so the figure is the bare worker-side
+envelope; a real `producer.send` costs microseconds.
 
 ## Circuit breaker metrics
 
@@ -308,7 +359,8 @@ Ready-made Grafana dashboards built on these metrics live next to this page:
 [`kafka-appender-dashboard.json`](./kafka-appender-dashboard.json) and
 [`kafka-producer-internals-dashboard.json`](./kafka-producer-internals-dashboard.json).
 
-Both use the info gauges. The appender dashboard shows "Fallback events
+The appender dashboard plots `event.size` (average and max per class) in
+its send-latency row. Both use the info gauges. The appender dashboard shows "Fallback events
 by destination" in its fallback row - the fallback rate joined with
 `kafka_appender_info`, where a destination of `none` (red) is dropped
 events that the "Drop rate" panel does not count - and a "Configuration"

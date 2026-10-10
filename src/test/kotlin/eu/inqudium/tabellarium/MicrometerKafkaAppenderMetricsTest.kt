@@ -1,6 +1,7 @@
 package eu.inqudium.tabellarium
 
 import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.Tag
@@ -31,6 +32,7 @@ class MicrometerKafkaAppenderMetricsTest {
         metrics.eventDispatched(TopicClass.AUDIT)
         metrics.eventFallback(TopicClass.AUDIT, KafkaAppenderMetrics.FallbackReason.QUEUE_FULL)
         metrics.sendCompleted(TopicClass.AUDIT, KafkaAppenderMetrics.SendOutcome.SUCCESS, Duration.ofMillis(1))
+        metrics.eventSize(TopicClass.AUDIT, 512)
         metrics.fallbackDispatcherDropped()
         metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1024)
         TopicClass.entries.forEach { metrics.registerSendQueueGauges(it, queueSize = { 0 }, capacity = 1024) }
@@ -251,6 +253,50 @@ class MicrometerKafkaAppenderMetricsTest {
     }
 
     @Nested
+    inner class `Event-size summary` {
+        @Test
+        fun `should record count, total and max of the payload sizes per topic class in bytes`() {
+            // What is to be tested? Whether eventSize feeds the size summary of
+            //   the given class only, with the byte count as the recorded amount.
+            // How will the test case be deemed successful and why? Successful if
+            //   the audit summary reports count 2, total 1536 and max 1024, the
+            //   technical summary count 1, and both carry the base unit bytes -
+            //   the unit Prometheus appends to the name (_bytes).
+            // Why is it important to test this test case? A mis-indexed class
+            //   map would file audit sizes under technical, and a missing base
+            //   unit would export an unlabelled number that dashboards read as
+            //   events instead of bytes.
+
+            // Given
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry)
+
+            // When
+            metrics.eventSize(TopicClass.AUDIT, 512)
+            metrics.eventSize(TopicClass.AUDIT, 1024)
+            metrics.eventSize(TopicClass.TECHNICAL, 100)
+
+            // Then
+            val audit =
+                registry
+                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE)
+                    .tag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "audit")
+                    .summary()
+            assertThat(audit).isNotNull
+            assertThat(audit!!.count()).isEqualTo(2)
+            assertThat(audit.totalAmount()).isEqualTo(1536.0)
+            assertThat(audit.max()).isEqualTo(1024.0)
+            assertThat(audit.id.baseUnit).isEqualTo("bytes")
+            val technical =
+                registry
+                    .find(MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE)
+                    .tag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, "technical")
+                    .summary()
+            assertThat(technical?.count()).isEqualTo(1)
+        }
+    }
+
+    @Nested
     inner class `Queue gauges` {
         @Test
         fun `should expose live queue size via the supplier`() {
@@ -413,6 +459,15 @@ class MicrometerKafkaAppenderMetricsTest {
                     ): Unit = throw IllegalStateException("hostile timer")
                 }
 
+            override fun newDistributionSummary(
+                id: Meter.Id,
+                distributionStatisticConfig: DistributionStatisticConfig,
+                scale: Double,
+            ): DistributionSummary =
+                object : DistributionSummary by super.newDistributionSummary(id, distributionStatisticConfig, scale) {
+                    override fun record(amount: Double): Unit = throw IllegalStateException("hostile summary")
+                }
+
             override fun <T : Any> newGauge(
                 id: Meter.Id,
                 obj: T?,
@@ -450,6 +505,7 @@ class MicrometerKafkaAppenderMetricsTest {
                 metrics.eventDispatched(TopicClass.AUDIT)
                 metrics.eventFallback(TopicClass.AUDIT, KafkaAppenderMetrics.FallbackReason.QUEUE_FULL)
                 metrics.sendCompleted(TopicClass.AUDIT, KafkaAppenderMetrics.SendOutcome.SUCCESS, Duration.ofMillis(1))
+                metrics.eventSize(TopicClass.AUDIT, 512)
                 metrics.fallbackDispatcherDropped()
                 metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1)
                 metrics.registerSendQueueGauges(TopicClass.AUDIT, queueSize = { 0 }, capacity = 1)
@@ -604,6 +660,7 @@ class MicrometerKafkaAppenderMetricsTest {
                         setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_REASON),
                     MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION to
                         setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_OUTCOME),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE to setOf(appender, topicClass),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to setOf(appender),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to setOf(appender),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to setOf(appender),

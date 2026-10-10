@@ -1,6 +1,7 @@
 package eu.inqudium.tabellarium
 
 import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
@@ -29,7 +30,8 @@ import java.util.concurrent.atomic.AtomicReference
  * keeps that document in step with the `METRIC_*`/`TAG_*` constants
  * and the enum sizes here. Invariant: one pre-resolved meter per enum
  * combination (`topic.class` × `reason` for fallbacks, `topic.class` ×
- * `outcome` for send timers, `topic.class` for the rest, none for the
+ * `outcome` for send timers, `topic.class` for the rest - the event-size
+ * summary included -, none for the
  * fallback-dispatcher meters), so the series count per appender is a
  * function of the enum sizes alone - minus the two fallback queue
  * gauges, which exist only when a fallback appender is configured.
@@ -178,6 +180,23 @@ internal class MicrometerKafkaAppenderMetrics(
             }
         }
 
+    /**
+     * Payload size per class. Without a `MeterFilter` enabling
+     * percentiles a record is a count, a sum and a max update; it runs
+     * on the send worker (see [KafkaAppenderMetrics.eventSize]).
+     */
+    private val eventSizes: Map<TopicClass, DistributionSummary> =
+        TopicClass.entries.associateWith { tc ->
+            track(
+                DistributionSummary
+                    .builder(METRIC_EVENT_SIZE)
+                    .baseUnit("bytes")
+                    .tags(tagsWith(TAG_TOPIC_CLASS, tc.tag))
+                    .description("Encoded payload size of the events the send worker takes up (key and headers excluded)")
+                    .register(registry),
+            )
+        }
+
     private val fallbackDropped: Counter =
         track(
             Counter
@@ -288,6 +307,13 @@ internal class MicrometerKafkaAppenderMetrics(
         }
     }
 
+    override fun eventSize(
+        topicClass: TopicClass,
+        bytes: Int,
+    ) {
+        safe { eventSizes.getValue(topicClass).record(bytes.toDouble()) }
+    }
+
     override fun fallbackDispatcherDropped() {
         safe { fallbackDropped.increment() }
     }
@@ -369,6 +395,7 @@ internal class MicrometerKafkaAppenderMetrics(
         const val METRIC_EVENTS_DISPATCHED: String = "kafka.appender.events.dispatched"
         const val METRIC_EVENTS_FALLBACK: String = "kafka.appender.events.fallback"
         const val METRIC_SEND_DURATION: String = "kafka.appender.send.duration"
+        const val METRIC_EVENT_SIZE: String = "kafka.appender.event.size"
         const val METRIC_FALLBACK_DROPPED: String = "kafka.appender.fallback.dropped"
         const val METRIC_FALLBACK_QUEUE_SIZE: String = "kafka.appender.fallback.queue.size"
         const val METRIC_FALLBACK_QUEUE_CAPACITY: String = "kafka.appender.fallback.queue.capacity"

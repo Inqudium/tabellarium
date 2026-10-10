@@ -731,6 +731,7 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 | `kafka.appender.events.dispatched`         | Counter | `topic.class`             | Events handed to `producer.send()` without a synchronous failure (broker outcome still unknown; an event the client rejected before `send()` returned counts as `send.error` fallback instead). |
 | `kafka.appender.events.fallback`           | Counter | `topic.class`, `reason`   | Events diverted from Kafka delivery (to the fallback if configured, otherwise dropped). |
 | `kafka.appender.send.duration`             | Timer   | `topic.class`, `outcome`  | Wall-clock from `send()` invocation to callback. |
+| `kafka.appender.event.size`                | Summary | `topic.class`             | Encoded payload size (bytes) of every event the send worker takes up. |
 | `kafka.appender.fallback.dropped`          | Counter | —                         | Events lost by the fallback dispatcher: queue full, `doAppend` threw, worker died, or shutdown remainder. |
 | `kafka.appender.fallback.queue.size`       | Gauge   | —                         | Current dispatcher queue depth (live per scrape); only with a fallback appender. |
 | `kafka.appender.fallback.queue.capacity`   | Gauge   | —                         | Fixed queue capacity; only with a fallback appender. |
@@ -742,7 +743,7 @@ See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalog
 Tag values: `topic.class` ∈ {`audit`, `functional`, `technical`,
 `performance`}; `reason` ∈ {`breaker.open`, `throttle`, `send.error`,
 `encoder.error`, `queue.full`, `shutdown`}; `outcome` ∈ {`success`,
-`error`}. Worst case ≈ 52 series per appender instance plus one per
+`error`}. Worst case ≈ 56 series per appender instance plus one per
 configured topic.
 
 ### Additional bindings

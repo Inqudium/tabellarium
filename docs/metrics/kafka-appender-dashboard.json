@@ -454,8 +454,75 @@
       "type": "timeseries"
     },
     {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Encoded payload size of the events the send worker takes up, per topic class: average (rate of _sum over rate of _count) and the max of the registry's window. Key and headers are excluded. Compare the max against the producer's max.request.size (default 1 MiB); the Kafka client's record.size.max, which includes key and headers, is the value it actually checks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": "^max .*"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 23},
+      "id": 16,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "sum by (topic_class) (rate(kafka_appender_event_size_bytes_sum{application=~\"$application\",appender=~\"$appender\"}[5m])) / sum by (topic_class) (rate(kafka_appender_event_size_bytes_count{application=~\"$application\",appender=~\"$appender\"}[5m]))",
+          "legendFormat": "avg {{topic_class}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max by (topic_class) (kafka_appender_event_size_bytes_max{application=~\"$application\",appender=~\"$appender\"})",
+          "legendFormat": "max {{topic_class}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Event size per topic class",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
       "id": 103,
       "panels": [],
       "title": "Fallback pipeline",
@@ -500,7 +567,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
       "id": 9,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -554,7 +621,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
       "id": 10,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -614,7 +681,7 @@
           }
         ]
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
       "id": 13,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -634,7 +701,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
       "id": 104,
       "panels": [],
       "title": "Circuit breaker",
@@ -679,7 +746,7 @@
           {"matcher": {"id": "byRegexp", "options": ".*open.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
         ]
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 49},
       "id": 11,
       "options": {
         "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -736,7 +803,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 49},
       "id": 12,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
@@ -756,7 +823,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 49},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 57},
       "id": 105,
       "panels": [],
       "title": "Configuration",
@@ -797,7 +864,7 @@
           }
         ]
       },
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 50},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 58},
       "id": 14,
       "options": {
         "cellHeight": "sm",
@@ -842,7 +909,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 56},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 64},
       "id": 15,
       "options": {
         "cellHeight": "sm",
