@@ -40,7 +40,10 @@ import io.micrometer.core.instrument.Tags
  * a registry that already holds the meters of another appender
  * with the same name (the `appender` tag) and common tags is
  * refused with a status warning: the two would share meter objects
- * (see [MetricsBindings]); give each appender a distinct name.
+ * (see [MetricsBindings]); give each appender a distinct name. A
+ * refused or failing bind leaves an existing binding to another
+ * registry in place; a binding is replaced only by one that took
+ * effect.
  *
  * **Why an extension, not a member:** `micrometer-core` is an optional
  * dependency, and Joran resolves the parameter types of every public

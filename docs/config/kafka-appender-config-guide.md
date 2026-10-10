@@ -309,8 +309,13 @@ The `client.id` default makes the producer attributable on the broker
 auto-generated `producer-N`. The `<component>` part is the appender's
 `<component>` value with characters outside `[a-zA-Z0-9._-]` replaced by
 `-` (they would break JMX registration). Each active class gets its own
-suffix (`…-audit`, `…-functional`, …), so
-producers never collide on JMX names. An explicit `client.id` in
+suffix (`…-audit`, `…-functional`, …), so the producers of one appender
+never collide on JMX names. Two appenders with the same `<component>` in one
+JVM do derive identical ids: Kafka keys its JMX MBeans by `client.id`, so
+their producer JMX metrics collide and the first to stop removes them for
+both, and the broker sees one client. The appender warns at start-up when
+another running appender holds one of its client ids; give each appender its
+own `<component>` or an explicit `client.id`. An explicit `client.id` in
 `<kafkaProducerProperties>` wins — note that it is then shared by every
 active class.
 
@@ -663,11 +668,18 @@ A record in mid-retry at close time is aborted. Kafka's default
 `delivery.timeout.ms` is 120 s — longer than the 10 s close timeout — so on a
 flaky network a record could be abandoned at shutdown. Operators who need
 stronger guarantees (especially for AUDIT topics) should cap the retry window
-below the close timeout via `<kafkaProducerProperties>`:
+below the close timeout via `<kafkaProducerProperties>` — together with
+`request.timeout.ms`, because the Kafka producer refuses an explicit
+`delivery.timeout.ms` below `linger.ms + request.timeout.ms` (default
+`request.timeout.ms`: 30 s):
 
 ```
+request.timeout.ms=5000
 delivery.timeout.ms=10000
 ```
+
+The appender checks this constraint at start-up and refuses an inconsistent
+pair with a named error instead of the withheld producer-construction failure.
 
 ---
 

@@ -374,6 +374,7 @@ class KafkaAppender :
             addWarn(StartupDiagnostics.mandatoryOverrideWarning(violation))
         }
         StartupDiagnostics.cleartextTransportWarning(transport.producerRegistry)?.let(::addWarn)
+        StartupDiagnostics.sharedClientIdWarning(transport.producerRegistry)?.let(::addWarn)
         fallbackAppender?.takeUnless { it.isStarted }?.let {
             // Its doAppend would return without appending; the fallback
             // dispatcher refuses such deliveries and counts them as drops
@@ -675,12 +676,13 @@ class KafkaAppender :
      * `kotlin.jvm.functions.Function*`; [MetricsBindings] itself is
      * created here on the first bind only.
      *
-     * @return `true` if a binding is in place afterwards; `false` when
-     *         the appender is not started or [MetricsBindings.bind]
+     * @return `true` if the new binding is in place afterwards; `false`
+     *         when the appender is not started or [MetricsBindings.bind]
      *         refused a duplicate meter identity (reported as a status
-     *         warning).
+     *         warning) - a previous binding to another registry then
+     *         stays in place.
      */
-    internal fun installMetrics(bind: (MetricsBindings, KafkaTransport, AppenderInfo) -> KafkaAppenderMetrics): Boolean {
+    internal fun installMetrics(bind: (MetricsBindings, KafkaTransport, AppenderInfo) -> KafkaAppenderMetrics?): Boolean {
         bindLock.withLock {
             // Safety: re-checked under the lock - stop() flips isStarted
             // before it takes the lock for the unbind, so a bind that
@@ -696,19 +698,35 @@ class KafkaAppender :
             val plan = checkNotNull(plan) { "a started appender always has a plan" }
             val bindings = metricsBindings ?: MetricsBindings(this).also { metricsBindings = it }
             val impl =
-                bind(
-                    bindings,
-                    transport,
-                    AppenderInfo.of(
-                        fallbackAppender = fallbackAppender,
-                        debug = debug,
-                        topics = plan.topics,
-                        effectiveProperties = transport.producerRegistry.effectiveProperties,
-                    ),
-                )
+                try {
+                    bind(
+                        bindings,
+                        transport,
+                        AppenderInfo.of(
+                            fallbackAppender = fallbackAppender,
+                            debug = debug,
+                            topics = plan.topics,
+                            effectiveProperties = transport.producerRegistry.effectiveProperties,
+                        ),
+                    )
+                } catch (e: Throwable) {
+                    // A failed re-bind to the same registry has already
+                    // removed the previous meters: stop recording into
+                    // them. A binding to another registry is still intact.
+                    if (!bindings.isBound) {
+                        metrics = KafkaAppenderMetrics.NO_OP
+                        transport.setMetrics(KafkaAppenderMetrics.NO_OP)
+                    }
+                    throw e
+                }
+            // Refused (duplicate meter identity): a binding to another
+            // registry, if any, stays in place - and so do its recorders.
+            if (impl == null) {
+                return false
+            }
             metrics = impl
             transport.setMetrics(impl)
-            return bindings.isBound
+            return true
         }
     }
 

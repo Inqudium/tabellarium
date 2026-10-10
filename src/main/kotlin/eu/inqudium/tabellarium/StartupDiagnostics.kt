@@ -55,6 +55,24 @@ internal object StartupDiagnostics {
     }
 
     /**
+     * Warning for client ids this appender shares with another live
+     * instance (`DEFECT_ANALYSIS-2026-10-10T15-19-31`, finding 7): Kafka
+     * keys its JMX MBeans by `client.id`, so the second producer's
+     * `app-info` registration fails, either instance's close unregisters
+     * the other's producer MBeans, and the broker attributes and throttles
+     * both as one client. `null` when nothing is shared.
+     */
+    fun sharedClientIdWarning(registry: ProducerRegistry): String? {
+        val shared = ClientIdSelfLoggingGuard.clientIdsHeldByOtherInstances(registry.clientIds)
+        if (shared.isEmpty()) return null
+        return "client.id ${shared.joinToString()} is also used by another running KafkaAppender " +
+            "(same <component>, or the same explicit client.id): Kafka registers its JMX MBeans per " +
+            "client.id, so the producers' JMX metrics collide and the first appender to stop removes " +
+            "them for both, and the broker attributes and throttles both as one client. Give each " +
+            "appender its own <component> or an explicit, distinct client.id in <kafkaProducerProperties>."
+    }
+
+    /**
      * The `<debug>true</debug>` start-up diagnostics, in emission order:
      * the reminder that the flag has no per-event effect, the active
      * classes, the fallback configuration, and per active class the

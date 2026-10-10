@@ -162,9 +162,14 @@ internal class ProducerRegistry private constructor(
          * close time will be aborted. Operators who need stronger
          * guarantees for AUDIT topics should set
          * `delivery.timeout.ms` to a value ≤ this close timeout via the
-         * `<kafkaProducerProperties>` element, e.g.:
+         * `<kafkaProducerProperties>` element - together with a lower
+         * `request.timeout.ms`, since Kafka refuses an explicit
+         * `delivery.timeout.ms` below `linger.ms + request.timeout.ms`
+         * (default 30 s; [ProducerPropertiesBuilder] rejects such a
+         * pair with a named error), e.g.:
          *
          * ```
+         * request.timeout.ms=5000
          * delivery.timeout.ms=10000
          * ```
          *

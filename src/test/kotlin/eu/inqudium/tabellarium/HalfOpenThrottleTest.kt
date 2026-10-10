@@ -8,8 +8,10 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -298,6 +300,54 @@ class HalfOpenThrottleTest {
 
             // Then: only one thread won the slot
             assertThat(admitted.get()).isEqualTo(1)
+        }
+
+        @Test
+        fun `should admit only one of two callers that both read the free slot`() {
+            // What is to be tested? The interleaving the CAS exists for:
+            //   two callers that BOTH read the free probe slot before
+            //   either claims it. The latch race above cannot force it -
+            //   the read-to-claim window is nanoseconds wide - so here
+            //   both callers are parked inside the clock read, which
+            //   follows the slot read, until both have arrived.
+            // How will the test case be deemed successful and why? Successful
+            //   if exactly one of the two callers is admitted. A
+            //   non-atomic claim (set instead of compareAndSet) admits
+            //   both, deterministically
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 2).
+            // Why is it important to test this test case? Two admissions
+            //   per gap is exactly the probe burst the throttle exists to
+            //   prevent, and it only shows under load.
+
+            // Given: HALF_OPEN, and a clock that holds each caller until
+            //   both are inside it (armed after construction, which reads
+            //   the clock once)
+            val breaker = newBreaker()
+            breaker.transitionToOpenState()
+            breaker.transitionToHalfOpenState()
+            val bothInsideClock = CyclicBarrier(2)
+            val armed = AtomicBoolean(false)
+            val throttle =
+                HalfOpenThrottle(breaker, Duration.ofMillis(5)) {
+                    if (armed.get()) bothInsideClock.await(5, TimeUnit.SECONDS)
+                    0L
+                }
+            armed.set(true)
+
+            // When: two callers race
+            val executor = Executors.newFixedThreadPool(2)
+            val results =
+                try {
+                    (1..2)
+                        .map { executor.submit<Boolean> { throttle.mayAttemptProbe() } }
+                        .map { it.get(5, TimeUnit.SECONDS) }
+                } finally {
+                    executor.shutdownNow()
+                }
+
+            // Then: exactly one won the slot
+            assertThat(results).containsExactlyInAnyOrder(true, false)
         }
     }
 

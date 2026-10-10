@@ -168,5 +168,18 @@ internal class ClientIdSelfLoggingGuard(
          * a client upgrade that changes it turns the build red.
          */
         internal const val PRODUCER_NETWORK_THREAD_PREFIX: String = KafkaProducer.NETWORK_THREAD_PREFIX + " | "
+
+        /**
+         * Those of [clientIds] that more than one live instance holds -
+         * asked by a started appender about its own client ids, so a
+         * hit is another live appender (two instances sharing a
+         * `<component>` derive identical ids). Within one instance the
+         * names are a set, so its own shared explicit `client.id` counts
+         * once. Read for the start-up diagnostic only.
+         */
+        internal fun clientIdsHeldByOtherInstances(clientIds: Set<String>): Set<String> =
+            clientIds.filterTo(sortedSetOf()) { id ->
+                id.isNotBlank() && (liveEchoThreadNames[PRODUCER_NETWORK_THREAD_PREFIX + id] ?: 0) > 1
+            }
     }
 }

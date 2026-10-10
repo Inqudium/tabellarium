@@ -590,6 +590,113 @@ class ProducerPropertiesBuilderTest {
     }
 
     @Nested
+    inner class `Delivery timeout validation` {
+        @Test
+        fun `should reject an explicit delivery timeout below linger plus request timeout`() {
+            // What is to be tested? Whether the combination the Kafka
+            //   producer constructor refuses - an explicit
+            //   delivery.timeout.ms below linger.ms + request.timeout.ms -
+            //   is rejected here with a named message. The guide used to
+            //   recommend exactly delivery.timeout.ms=10000 alone, which with
+            //   the 30 s request.timeout.ms default stopped every producer
+            //   from being built
+            //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 1).
+            // How will the test case be deemed successful and why? Successful
+            //   if AUDIT with only delivery.timeout.ms=10000 throws an
+            //   IllegalArgumentException naming the value and both summands
+            //   (linger.ms=50 from the class default, request.timeout.ms=30000
+            //   from Kafka's default).
+            // Why is it important to test this test case? Kafka's own
+            //   ConfigException is withheld by the appender unless <debug> is
+            //   on; the operator would only see "could not be constructed".
+
+            // Given
+            val builder = ProducerPropertiesBuilder(mapOf(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG to "10000"))
+
+            // When / Then
+            assertThatThrownBy { builder.buildFor(TopicClass.AUDIT) }
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("delivery.timeout.ms=10000")
+                .hasMessageContaining("50 + 30000")
+        }
+
+        @Test
+        fun `should accept the documented pair and let the Kafka producer construct with it`() {
+            // What is to be tested? Whether the pair the guide recommends
+            //   (request.timeout.ms=5000, delivery.timeout.ms=10000) passes
+            //   the validation AND the real Kafka producer constructor - the
+            //   validation must not be stricter than Kafka, and the guide
+            //   must not recommend something Kafka refuses.
+            // How will the test case be deemed successful and why? Successful
+            //   if buildFor accepts the pair for every class and a real
+            //   KafkaProducer is constructed from the AUDIT result and closed
+            //   (no broker is contacted during construction).
+            // Why is it important to test this test case? The recommendation
+            //   is configuration operators copy verbatim.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(
+                        ProducerConfig.BOOTSTRAP_SERVERS_CONFIG to "localhost:1",
+                        ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG to "5000",
+                        ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG to "10000",
+                    ),
+                )
+
+            // When
+            val audit = TopicClass.entries.map { builder.buildFor(it) }.first { it.topicClass == TopicClass.AUDIT }
+
+            // Then: Kafka constructs a producer from it
+            ProducerFactory.default().create(audit.properties).close(java.time.Duration.ZERO)
+        }
+
+        @Test
+        fun `should mirror the Kafka constructor on the refused combination`() {
+            // What is to be tested? That the refused combination is refused
+            //   by Kafka itself - the reason this validation exists.
+            // How will the test case be deemed successful and why? Successful
+            //   if the real producer constructor fails for the same
+            //   properties, bypassing the builder, with Kafka's message.
+            // Why is it important to test this test case? If a client upgrade
+            //   relaxed the constraint, the validation would refuse a working
+            //   configuration; this turns the build red instead.
+
+            // Given: the AUDIT properties without the builder's validation
+            val properties =
+                mapOf(
+                    ProducerConfig.BOOTSTRAP_SERVERS_CONFIG to "localhost:1",
+                    ProducerConfig.LINGER_MS_CONFIG to "50",
+                    ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG to "10000",
+                )
+
+            // When / Then
+            assertThatThrownBy { ProducerFactory.default().create(properties).close(java.time.Duration.ZERO) }
+                .hasStackTraceContaining("delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms")
+        }
+
+        @Test
+        fun `should not check a delivery timeout the operator did not set`() {
+            // What is to be tested? Kafka raises an unset delivery.timeout.ms
+            //   itself; only an explicit value is refused, so the check must
+            //   not fire for a large request.timeout.ms alone.
+            // How will the test case be deemed successful and why? Successful
+            //   if request.timeout.ms=200000 without delivery.timeout.ms
+            //   builds.
+            // Why is it important to test this test case? A check stricter
+            //   than Kafka refuses working configurations.
+
+            // Given
+            val builder = ProducerPropertiesBuilder(mapOf(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG to "200000"))
+
+            // When / Then
+            assertThat(builder.buildFor(TopicClass.TECHNICAL).properties)
+                .doesNotContainKey(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG)
+        }
+    }
+
+    @Nested
     inner class `Max block cap` {
         @Test
         fun `should keep an operator value at or below the class cap`() {

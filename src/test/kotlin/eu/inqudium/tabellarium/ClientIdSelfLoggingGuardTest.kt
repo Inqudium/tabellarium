@@ -278,10 +278,13 @@ class ClientIdSelfLoggingGuardTest {
             // When: the last holder closes
             second.close()
 
-            // Then: the shared client id is gone (the worker names are not
-            //   asserted here: every appender alive anywhere in the test JVM
-            //   holds them too, so their absence is not this test's to claim)
+            // Then: the shared client id is gone, and so are the worker
+            //   names - no guard outlives its test in this suite (the two
+            //   dispatcher tests that leaked one close it now;
+            //   docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
+            //   finding 8), so the last close here must have released them
             assertThat(second.shouldDrop(eventFrom(networkThreadOf("shared-id")))).isFalse()
+            assertThat(second.shouldDrop(eventFrom(workerThread))).isFalse()
         }
     }
 }
