@@ -13,8 +13,11 @@ import org.junit.jupiter.api.Test
 /**
  * Contract test for the appender's own circuit-breaker binder: it
  * promises to mirror `resilience4j-micrometer`'s
- * `TaggedCircuitBreakerMetrics` 1:1 in meter names, meter types and
- * tags (plus the `appender` tag), so existing dashboards keep working.
+ * `TaggedCircuitBreakerMetrics` 1:1 in meter types, tags (plus the
+ * `appender` tag) and names below the prefix - the official
+ * `resilience4j.circuitbreaker.` becomes `kafka.appender.circuitbreaker.`
+ * (the appender's one namespace, see [MetricsBindings]) - so a
+ * dashboard built for the official binder needs only the prefix changed.
  * The official binder is on the test classpath only, as the reference;
  * the shipped code keeps not depending on it (see the rationale in
  * [MetricsBindings]).
@@ -35,13 +38,20 @@ class CircuitBreakerMetricsMirrorTest {
         createdAppenders.clear()
     }
 
-    /** The meter identities of the breaker meters in [registry], without the tag only the mirror adds. */
-    private fun breakerMeterIds(registry: MeterRegistry): Set<Triple<String, Meter.Type, Set<Pair<String, String>>>> =
+    /**
+     * The meter identities of the breaker meters under [prefix] in
+     * [registry] - the name below the prefix, the type, the tags without
+     * the one only the mirror adds.
+     */
+    private fun breakerMeterIds(
+        registry: MeterRegistry,
+        prefix: String,
+    ): Set<Triple<String, Meter.Type, Set<Pair<String, String>>>> =
         registry.meters
-            .filter { it.id.name.startsWith("resilience4j.circuitbreaker") }
+            .filter { it.id.name.startsWith("$prefix.") }
             .map { meter ->
                 Triple(
-                    meter.id.name,
+                    meter.id.name.removePrefix("$prefix."),
                     meter.id.type,
                     meter.id.tags
                         .filter { it.key != MicrometerKafkaAppenderMetrics.TAG_APPENDER }
@@ -55,13 +65,13 @@ class CircuitBreakerMetricsMirrorTest {
     @Test
     fun `should mirror the meter ids of the official resilience4j-micrometer binder`() {
         // What is to be tested? Whether the appender's own breaker binder
-        //   registers exactly the meters (names, types, tags) that
-        //   resilience4j-micrometer's TaggedCircuitBreakerMetrics
+        //   registers exactly the meters (names below the prefix, types,
+        //   tags) that resilience4j-micrometer's TaggedCircuitBreakerMetrics
         //   registers for the same breaker - the 1:1 mirror the binder
-        //   promises so that dashboards built for the official binder
-        //   keep working.
+        //   promises so that a dashboard built for the official binder
+        //   needs only the prefix changed.
         // How will the test case be deemed successful and why? Successful
-        //   if the set of (name, type, tags-without-appender) of the
+        //   if the set of (name-below-prefix, type, tags-without-appender) of the
         //   appender's breaker meters equals the official binder's set for
         //   the same CircuitBreakerRegistry. Both binders see the one
         //   breaker the minimal configuration activates
@@ -99,13 +109,13 @@ class CircuitBreakerMetricsMirrorTest {
         appender.bindMeterRegistry(ownRegistry)
         TaggedCircuitBreakerMetrics.ofCircuitBreakerRegistry(breakerRegistry).bindTo(referenceRegistry)
 
-        // Then: identical meter identities once the appender tag is stripped
-        val own = breakerMeterIds(ownRegistry)
-        val reference = breakerMeterIds(referenceRegistry)
+        // Then: identical meter identities below the prefix once the appender tag is stripped
+        val own = breakerMeterIds(ownRegistry, MetricsBindings.CIRCUIT_BREAKER_PREFIX)
+        val reference = breakerMeterIds(referenceRegistry, "resilience4j.circuitbreaker")
         assertThat(reference).isNotEmpty()
         assertThat(own).isEqualTo(reference)
         // ... and the appender's meters really carry the tag that was stripped
-        assertThat(ownRegistry.meters.filter { it.id.name.startsWith("resilience4j.circuitbreaker") })
+        assertThat(ownRegistry.meters.filter { it.id.name.startsWith(MetricsBindings.CIRCUIT_BREAKER_PREFIX) })
             .allSatisfy { assertThat(it.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isEqualTo("KAFKA_MIRROR") }
     }
 }

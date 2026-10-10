@@ -43,7 +43,7 @@ see the README, "Wiring up: Spring applications").
 | Metrics                                   | Present only when                                                  |
 | ----------------------------------------- | ------------------------------------------------------------------ |
 | The two fallback queue gauges             | a fallback appender is configured (`<appender-ref>`)               |
-| Kafka-producer bridge (`kafka.producer.*`) | Micrometer's `KafkaClientMetrics` binder is on the classpath (part of `micrometer-core` 1.x); skipped silently otherwise |
+| Kafka-producer bridge (`kafka.appender.producer.*`) | Micrometer's `KafkaClientMetrics` binder is on the classpath (part of `micrometer-core` 1.x); skipped silently otherwise |
 | Percentile histograms (`_bucket` series) of the send timer and the size summary | a `MeterFilter` or `management.metrics.distribution.percentiles-histogram.*` enables them |
 
 **Checking it.** With the Spring binding, the application log shows
@@ -157,7 +157,7 @@ topics, real producers without a reachable broker:
 | Scrape time (mean of 5,000)    | 546-607 µs     | 593-601 µs         | within run-to-run noise |
 | Retained heap                  | -              | -                  | ~390 bytes per info gauge |
 
-Of the 505 lines, 340 come from `kafka.producer.*`, 88 from the
+Of the 505 lines, 340 come from the Kafka-producer bridge, 88 from the
 circuit-breaker binder and 67 from the appender's other meters. With a
 reachable broker the producer adds per-node and per-topic series, so the
 info gauges' share drops further.
@@ -287,14 +287,14 @@ management.metrics.enable.kafka.appender.event.size=false
 management.metrics.enable.kafka.appender.info=false
 management.metrics.enable.kafka.appender.topic.info=false
 # the Kafka-producer bridge
-management.metrics.enable.kafka.producer=false
+management.metrics.enable.kafka.appender.producer=false
 # the circuit-breaker metrics
-management.metrics.enable.resilience4j.circuitbreaker=false
+management.metrics.enable.kafka.appender.circuitbreaker=false
 ```
 
-The last two prefixes are not specific to the appender: they also switch
-off the metrics of the application's own Kafka producers and Resilience4j
-breakers. To hit only the appender's, filter on the tags instead.
+All of the appender's meters, the circuit-breaker and producer metrics
+included, live under `kafka.appender.`, so these prefixes never touch the
+application's own breakers or Kafka clients.
 
 **Plain Micrometer** (and Spring Boot, as a `MeterFilter` bean):
 
@@ -302,15 +302,8 @@ breakers. To hit only the appender's, filter on the tags instead.
 registry.config()
     // single meters or groups by name
     .meterFilter(MeterFilter.denyNameStartsWith("kafka.appender.event.size"))
-    // only the appender's breakers (named kafka-appender-<class>)
-    .meterFilter(
-        MeterFilter.deny { id ->
-            id.name.startsWith("resilience4j.circuitbreaker") &&
-                id.getTag("name")?.startsWith("kafka-appender-") == true
-        },
-    )
-    // only the appender's producers (they carry the appender tag)
-    .meterFilter(MeterFilter.deny { id -> id.name.startsWith("kafka.producer") && id.getTag("appender") != null })
+    .meterFilter(MeterFilter.denyNameStartsWith("kafka.appender.circuitbreaker"))
+    .meterFilter(MeterFilter.denyNameStartsWith("kafka.appender.producer"))
 ```
 
 Configure the filters **before** the appender binds. Micrometer does not
@@ -326,7 +319,7 @@ scrape_configs:
   - job_name: payment-service
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: kafka_appender_event_size_bytes_.*|kafka_appender_(topic_)?info
+        regex: kafka_appender_event_size_bytes_.*|kafka_appender_(topic_)?info|kafka_appender_producer_.*
         action: drop
 ```
 
@@ -424,7 +417,7 @@ sum by (topic_class) (rate(kafka_appender_event_size_bytes_sum[5m]))
 max by (topic_class) (kafka_appender_event_size_bytes_max) / 1048576
 ```
 
-**Relation to the Kafka client's `record.size`.** `kafka.producer.record.size.avg`
+**Relation to the Kafka client's `record.size`.** `kafka.appender.producer.record.size.avg`
 and `.max` (Kafka binder) measure the whole serialized record - payload
 plus key and headers, before compression - only for records that
 reached `producer.send`, averaged over the client's own sample window.
@@ -443,17 +436,17 @@ envelope; a real `producer.send` costs microseconds.
 
 ## Circuit breaker metrics
 
-Registered by the appender's own binder (no `resilience4j-micrometer` needed; `micrometer-core` suffices). The metric names and tags match those of `TaggedCircuitBreakerMetrics` 1:1, extended by the `appender` tag and the common tags — so multiple KafkaAppender instances no longer collide on the same registry:
+Registered by the appender's own binder (no `resilience4j-micrometer` needed; `micrometer-core` suffices). Meters, types and tags match those of `TaggedCircuitBreakerMetrics` 1:1, extended by the `appender` tag and the common tags; the names carry the appender's prefix `kafka.appender.circuitbreaker.` instead of `resilience4j.circuitbreaker.`, so they never mix with the application's own breakers and a dashboard built for the official binder needs only the prefix changed:
 
-| Metric                                       | Tags                        | Type                                                         |
-| -------------------------------------------- | --------------------------- | ------------------------------------------------------------ |
-| `resilience4j.circuitbreaker.state`          | `appender`, `name`, `state` | Gauge: 1 if the breaker is in this state, otherwise 0        |
-| `resilience4j.circuitbreaker.calls`          | `appender`, `name`, `kind`  | Timer per call outcome (`successful`, `failed`, `ignored`)   |
-| `resilience4j.circuitbreaker.not.permitted.calls` | `appender`, `name`, `kind` | Counter (`kind=not_permitted`): calls rejected by the open breaker |
-| `resilience4j.circuitbreaker.buffered.calls` | `appender`, `name`, `kind`  | Gauge: currently in the sliding window                       |
-| `resilience4j.circuitbreaker.slow.calls`     | `appender`, `name`, `kind`  | Gauge: slow calls in the sliding window                      |
-| `resilience4j.circuitbreaker.failure.rate`   | `appender`, `name`          | Gauge: current failure rate in percent                       |
-| `resilience4j.circuitbreaker.slow.call.rate` | `appender`, `name`          | Gauge: current slow-call share in percent                    |
+| Metric                                         | Tags                        | Type                                                         |
+| ---------------------------------------------- | --------------------------- | ------------------------------------------------------------ |
+| `kafka.appender.circuitbreaker.state`          | `appender`, `name`, `state` | Gauge: 1 if the breaker is in this state, otherwise 0        |
+| `kafka.appender.circuitbreaker.calls`          | `appender`, `name`, `kind`  | Timer per call outcome (`successful`, `failed`, `ignored`)   |
+| `kafka.appender.circuitbreaker.not.permitted.calls` | `appender`, `name`, `kind` | Counter (`kind=not_permitted`): calls rejected by the open breaker |
+| `kafka.appender.circuitbreaker.buffered.calls` | `appender`, `name`, `kind`  | Gauge: currently in the sliding window                       |
+| `kafka.appender.circuitbreaker.slow.calls`     | `appender`, `name`, `kind`  | Gauge: slow calls in the sliding window                      |
+| `kafka.appender.circuitbreaker.failure.rate`   | `appender`, `name`          | Gauge: current failure rate in percent                       |
+| `kafka.appender.circuitbreaker.slow.call.rate` | `appender`, `name`          | Gauge: current slow-call share in percent                    |
 
 **`name` values** correspond to the active topic classes:
 
@@ -464,20 +457,29 @@ Registered by the appender's own binder (no `resilience4j-micrometer` needed; `m
 
 ## Kafka producer bridge (when `KafkaClientMetrics` is on the classpath)
 
-Activated automatically via reflection when `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` is available. One binding per active TopicClass:
+Activated automatically via reflection when `io.micrometer.core.instrument.binder.kafka.KafkaClientMetrics` is available. One binding per active TopicClass. The binder's own names (`kafka.producer.*`, `kafka.producer.node.*`, `kafka.producer.topic.*`) are published under the appender's prefix - `kafka.X` becomes `kafka.appender.X` - so they never mix with the application's own Kafka clients:
 
-| Metric prefix                           | Examples                                  |
-| --------------------------------------- | ----------------------------------------- |
-| `kafka.producer.record.send.total`      | Records the producer accepted             |
-| `kafka.producer.record.error.total`     | Records that failed                       |
-| `kafka.producer.record.size.avg`        | Average record size                       |
-| `kafka.producer.batch.size.avg`         | Average batch size                        |
-| `kafka.producer.request.latency.avg`    | Average request latency to brokers        |
-| `kafka.producer.outgoing.byte.rate`     | Bytes/second to the cluster               |
-| `kafka.producer.buffer.available.bytes` | Free buffer bytes                         |
-| …                                       | (~40 producer-internal metrics in total)  |
+| Metric                                           | Examples                                  |
+| ------------------------------------------------ | ----------------------------------------- |
+| `kafka.appender.producer.record.send.total`      | Records the producer accepted             |
+| `kafka.appender.producer.record.error.total`     | Records that failed                       |
+| `kafka.appender.producer.record.size.avg`        | Average record size                       |
+| `kafka.appender.producer.batch.size.avg`         | Average batch size                        |
+| `kafka.appender.producer.request.latency.avg`    | Average request latency to brokers        |
+| `kafka.appender.producer.outgoing.byte.rate`     | Bytes/second to the cluster               |
+| `kafka.appender.producer.buffer.available.bytes` | Free buffer bytes                         |
+| …                                                | (~40 producer-internal metrics in total)  |
 
-All carry the `topic.class` tag to disambiguate between the per-class producers, plus the `appender` tag and the common tags.
+All carry the `topic.class` tag to disambiguate between the per-class producers, plus the `appender` tag, the binder's own tags (`client.id`, `kafka.version`, ...) and the common tags.
+
+**How the renaming works.** The binder registers into a private registry
+that nothing exports; for every meter it adds there, the appender
+registers a reading counterpart under the new name in your registry, and
+removes it when the binder removes the original or the appender stops.
+The counterparts are ordinary meters of your registry, so composite
+registries (Spring Boot's included), your `MeterFilter`s and common tags
+apply to them as to any other meter - filter on the new names. No filter
+is added to your registry.
 
 ## Key Prometheus queries for a dashboard
 
@@ -502,7 +504,7 @@ kafka_appender_fallback_queue_size
 rate(kafka_appender_fallback_dropped_total[5m])
 
 # Circuit breaker state
-resilience4j_circuitbreaker_state{name=~"kafka-appender-.*"}
+kafka_appender_circuitbreaker_state
 ```
 
 ## Key alert thresholds
@@ -511,7 +513,7 @@ resilience4j_circuitbreaker_state{name=~"kafka-appender-.*"}
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | `kafka_appender_fallback_dropped_total > 0`                  | Actual data loss in the fallback path (queue overflow, failing fallback appender, dead worker, shutdown remainder) | Critical                        |
 | `kafka_appender_fallback_queue_size / capacity > 0.8` for 5 min | Fallback appender is slower than the event rate              | Warning                         |
-| `resilience4j_circuitbreaker_state{state="open"} == 1`       | Cluster loss for this topic class                            | Critical (for AUDIT/FUNCTIONAL) |
+| `kafka_appender_circuitbreaker_state{state="open"} == 1`     | Cluster loss for this topic class                            | Critical (for AUDIT/FUNCTIONAL) |
 | `rate(kafka_appender_events_fallback{reason="send.error"}[1m]) > 0` for 10 min | Persistent send errors that were not filtered out as client errors | Warning                         |
 | `rate(kafka_appender_events_fallback{reason="encoder.error"}[5m]) > 0` | Hot-path exceptions in the encoder/routing                   | Warning (code bug)              |
 

@@ -752,13 +752,14 @@ configured topic.
 
 - **Resilience4j circuit-breaker metrics** — registered by the appender's
   own binder (no `resilience4j-micrometer` needed); mirrors
-  `TaggedCircuitBreakerMetrics`' metric names for the per-class breakers
-  and adds the `appender` tag, so several appender instances on one
-  registry never collide.
+  `TaggedCircuitBreakerMetrics`' meters for the per-class breakers under
+  `kafka.appender.circuitbreaker.*` and adds the `appender` tag, so several
+  appender instances on one registry never collide.
 - **Kafka client metrics** — needs `micrometer-core`'s `KafkaClientMetrics`
-  (binds each active producer's native client metrics, tagged with
-  `topic.class` and `appender`); gated by a `Class.forName` probe and
-  silently skipped when the class is absent.
+  (binds each active producer's native client metrics, published as
+  `kafka.appender.producer.*` and tagged with `topic.class` and
+  `appender`); gated by a `Class.forName` probe and silently skipped when
+  the class is absent.
 
 ---
 

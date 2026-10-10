@@ -14,6 +14,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
+import io.micrometer.core.instrument.composite.CompositeMeterRegistry
 import io.micrometer.core.instrument.config.MeterFilter
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.CommonClientConfigs
@@ -2737,7 +2738,7 @@ class KafkaAppenderTest {
             val appender = newAppender(fallback = RecordingAppender())
             appender.start()
             appender.bindMeterRegistry(first)
-            val ownMeter: (Meter) -> Boolean = { it.id.name.startsWith("kafka.appender.") || it.id.name.startsWith("resilience4j.") }
+            val ownMeter: (Meter) -> Boolean = { it.id.name.startsWith("kafka.appender.") }
             val boundToFirst = first.meters.filter(ownMeter).map { it.id }
             assertThat(boundToFirst).isNotEmpty
 
@@ -2826,18 +2827,18 @@ class KafkaAppenderTest {
             // Then: state gauge, call timers and not-permitted counter
             //   exist, all tagged with the appender name
             val breakerMeters =
-                registry.meters.filter { it.id.name.startsWith("resilience4j.circuitbreaker") }
+                registry.meters.filter { it.id.name.startsWith("kafka.appender.circuitbreaker") }
             assertThat(breakerMeters).isNotEmpty()
             assertThat(breakerMeters).allSatisfy { meter ->
                 assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_A")
                 assertThat(meter.id.getTag("name")).isEqualTo("kafka-appender-technical")
             }
             assertThat(breakerMeters.map { it.id.name }).contains(
-                "resilience4j.circuitbreaker.state",
-                "resilience4j.circuitbreaker.calls",
-                "resilience4j.circuitbreaker.not.permitted.calls",
-                "resilience4j.circuitbreaker.buffered.calls",
-                "resilience4j.circuitbreaker.failure.rate",
+                "kafka.appender.circuitbreaker.state",
+                "kafka.appender.circuitbreaker.calls",
+                "kafka.appender.circuitbreaker.not.permitted.calls",
+                "kafka.appender.circuitbreaker.buffered.calls",
+                "kafka.appender.circuitbreaker.failure.rate",
             )
             appender.stop()
         }
@@ -2872,7 +2873,7 @@ class KafkaAppenderTest {
             //   the dispatcher worker, hence the bounded poll)
             val successTimer =
                 registry
-                    .find("resilience4j.circuitbreaker.calls")
+                    .find("kafka.appender.circuitbreaker.calls")
                     .tags("kind", "successful", "appender", "KAFKA_A")
                     .timer()
             val timer = checkNotNull(successTimer) { "successful-calls timer not registered" }
@@ -2911,7 +2912,7 @@ class KafkaAppenderTest {
             // Then: both instances' breaker meters coexist, distinct by tag
             val stateGauges =
                 registry
-                    .find("resilience4j.circuitbreaker.state")
+                    .find("kafka.appender.circuitbreaker.state")
                     .gauges()
             assertThat(stateGauges.map { it.id.getTag("appender") }.toSet())
                 .containsExactlyInAnyOrder("KAFKA_A", "KAFKA_B")
@@ -2925,14 +2926,14 @@ class KafkaAppenderTest {
 
             // Then: its meters are gone, the second appender's remain
             val remaining =
-                registry.meters.filter { it.id.name.startsWith("resilience4j.circuitbreaker") }
+                registry.meters.filter { it.id.name.startsWith("kafka.appender.circuitbreaker") }
             assertThat(remaining).isNotEmpty()
             assertThat(remaining).allSatisfy { meter ->
                 assertThat(meter.id.getTag("appender")).isEqualTo("KAFKA_B")
             }
             appenderB.stop()
             assertThat(registry.meters)
-                .noneMatch { it.id.name.startsWith("resilience4j.circuitbreaker") }
+                .noneMatch { it.id.name.startsWith("kafka.appender.circuitbreaker") }
         }
 
         @Test
@@ -2996,9 +2997,125 @@ class KafkaAppenderTest {
             assertThat(registry.meters).hasSize(metersAfterFirstBind)
             appenderA.doAppend(newTestLoggingEvent(message = "still counted by A"))
             assertThat(accepted?.count()).isEqualTo(2.0)
-            assertThat(registry.find("resilience4j.circuitbreaker.state").gauges()).isNotEmpty()
+            assertThat(registry.find("kafka.appender.circuitbreaker.state").gauges()).isNotEmpty()
             appenderA.stop()
             assertThat(registry.meters).isEmpty()
+        }
+
+        /** An appender with real Kafka producers (no broker needed), whose client metrics the binder publishes. */
+        private fun appenderWithRealProducers(): KafkaAppender =
+            newAppender(
+                producerFactory = ProducerFactory.default(),
+                kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=localhost:1",
+            )
+
+        @Test
+        fun `should publish the Kafka client metrics under kafka-appender-producer and remove them on stop`() {
+            // What is to be tested? Whether the Kafka client binder's meters
+            //   reach the operator's registry renamed into the appender's
+            //   namespace (kafka.producer.* -> kafka.appender.producer.*),
+            //   tagged with topic.class and appender, and whether stop()
+            //   removes them without closing the operator's registry.
+            // How will the test case be deemed successful and why? Successful
+            //   if after the bind the registry holds kafka.appender.producer.*
+            //   meters, every one carrying both tags, and not a single raw
+            //   kafka.producer.* meter; and if after stop() none of them is
+            //   left and the registry is still open. Real producers are used
+            //   because a MockProducer exposes no client metrics - with it a
+            //   rename that never fires would pass unnoticed.
+            // Why is it important to test this test case? A rename filter that
+            //   silently does nothing is indistinguishable from one that works
+            //   until a dashboard keyed on the new names reads empty; and the
+            //   renaming composite must be detached, never closed - closing a
+            //   composite closes its children, here the application's registry.
+
+            // Given
+            val registry = SimpleMeterRegistry()
+            val appender = appenderWithRealProducers()
+            appender.start()
+            assertThat(appender.isStarted).isTrue()
+
+            // When
+            appender.bindMeterRegistry(registry)
+
+            // Then: renamed, tagged, no raw name left
+            val producerMeters = registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.") }
+            assertThat(producerMeters).isNotEmpty
+            assertThat(producerMeters).allSatisfy { meter ->
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("technical")
+                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
+            }
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+            appender.stop()
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
+            assertThat(registry.isClosed).isFalse()
+        }
+
+        @Test
+        fun `should rename the Kafka client metrics on a composite registry and leave it and its children open`() {
+            // What is to be tested? Whether the rename also holds when the
+            //   operator's registry is itself a composite - Spring Boot injects
+            //   its auto-configured CompositeMeterRegistry - on the composite
+            //   and on its child, and whether stop() leaves both open.
+            // How will the test case be deemed successful and why? Successful
+            //   if the composite and its child both hold kafka.appender.producer.*
+            //   and no kafka.producer.* meters after the bind, and after stop()
+            //   neither holds any appender meter and neither is closed.
+            // Why is it important to test this test case? Composite registries
+            //   are where rename filters have failed before: a filter installed
+            //   the wrong way reaches the children but not the composite that
+            //   in-process readers see. Here the renaming happens before the
+            //   operator's composite, so both levels must show the new names.
+
+            // Given
+            val child = SimpleMeterRegistry()
+            val composite = CompositeMeterRegistry().add(child)
+            val appender = appenderWithRealProducers()
+            appender.start()
+
+            // When
+            appender.bindMeterRegistry(composite)
+
+            // Then
+            for (registry in listOf(composite, child)) {
+                assertThat(registry.meters).anyMatch { it.id.name.startsWith("kafka.appender.producer.") }
+                assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+            }
+            appender.stop()
+            assertThat(composite.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
+            assertThat(child.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
+            assertThat(composite.isClosed).isFalse()
+            assertThat(child.isClosed).isFalse()
+        }
+
+        @Test
+        fun `should let an operator filter on the renamed name switch the Kafka client metrics off`() {
+            // What is to be tested? Whether the operator's own MeterFilter sees
+            //   the renamed names, so the documented way to switch the client
+            //   metrics off (deny kafka.appender.producer) works.
+            // How will the test case be deemed successful and why? Successful
+            //   if with that deny filter on the operator's registry no
+            //   kafka.appender.producer.* meter is registered while the
+            //   appender's other meters are.
+            // Why is it important to test this test case? The rename happens in
+            //   a composite in front of the operator's registry; if the
+            //   operator's filters saw the raw names instead, every documented
+            //   filter on the new namespace would silently miss.
+
+            // Given
+            val registry = SimpleMeterRegistry()
+            registry.config().meterFilter(MeterFilter.denyNameStartsWith("kafka.appender.producer"))
+            val appender = appenderWithRealProducers()
+            appender.start()
+
+            // When
+            appender.bindMeterRegistry(registry)
+
+            // Then
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.producer") }
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+            assertThat(registry.meters).anyMatch { it.id.name == MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED }
+            appender.stop()
         }
 
         @Test

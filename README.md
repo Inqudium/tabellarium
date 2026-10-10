@@ -1020,16 +1020,22 @@ payload is caller path plus queue wait.
 When `bindMeterRegistry()` is called, two additional metric sources
 are bound:
 
-- **Circuit-breaker metrics** (`resilience4j.circuitbreaker.*`) are
+- **Circuit-breaker metrics** (`kafka.appender.circuitbreaker.*`) are
   published by the appender's own binder — no `resilience4j-micrometer`
-  needed. Metric names and tags mirror `TaggedCircuitBreakerMetrics`,
-  plus the same `appender` tag the appender's own meters carry, so
-  multiple appender instances on one registry never collide.
+  needed. Meters and tags mirror `TaggedCircuitBreakerMetrics` under the
+  appender's prefix instead of `resilience4j.circuitbreaker.*`, plus the
+  same `appender` tag the appender's own meters carry, so multiple
+  appender instances on one registry never collide.
 - **Micrometer Kafka binder** (part of `micrometer-core` for older
   versions, `micrometer-binders-kafka` for newer) publishes the
-  underlying Kafka producer's internal metrics (`kafka.producer.*`)
-  if it is on the classpath. One binding per active topic class,
+  underlying Kafka producer's internal metrics if it is on the
+  classpath, renamed from `kafka.producer.*` to
+  `kafka.appender.producer.*`. One binding per active topic class,
   tagged with `topic.class` and `appender`.
+
+Every meter the appender publishes therefore starts with
+`kafka.appender.` - one prefix selects or switches off all of them, and
+none mixes with the application's own breakers or Kafka clients.
 
 A missing Kafka binder is silently skipped — that binding is
 best-effort, not fail-fast.

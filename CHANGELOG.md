@@ -52,6 +52,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Metric names (dashboards and alerts must be updated):** the
+  circuit-breaker and Kafka-producer metrics now share the appender's
+  prefix, so every meter the appender publishes starts with
+  `kafka.appender.`:
+  `resilience4j.circuitbreaker.*` → `kafka.appender.circuitbreaker.*`
+  (Prometheus `resilience4j_circuitbreaker_*` →
+  `kafka_appender_circuitbreaker_*`) and `kafka.producer.*` →
+  `kafka.appender.producer.*` (`kafka_producer_*` →
+  `kafka_appender_producer_*`); meters, types and tags are unchanged.
+  One prefix now selects or switches off all of them, and they no longer
+  mix with the application's own breakers and Kafka clients. The breaker
+  binder names its meters directly; the Kafka client binder registers
+  into a private registry from which a mirror publishes the renamed
+  meters - no `MeterFilter` is added to the operator's registry, and
+  composite registries (Spring Boot's) see the new names on the
+  composite itself. The shipped dashboards, the metrics guide and the
+  README use the new names.
+
 - Reproducible builds: the POM sets `project.build.outputTimestamp`
   (bumped in every release commit), the jar and sources manifests no
   longer carry `Created-By`/`Build-Jdk-Spec` (the build-JDK line was the

@@ -115,9 +115,16 @@ class DocumentationContractTest {
         private val overview: List<String> =
             Files.readAllLines(Path.of("docs", "metrics", "metrics-guide.md"))
 
-        /** Metric name to its documented tag list, from the counters/timers/gauges tables. */
+        /**
+         * Metric name to its documented tag list, from the tables of the
+         * "Metric inventory" section - the appender's own meters, not the
+         * circuit-breaker and producer bridges documented further down.
+         */
         private fun documentedTags(): Map<String, List<String>> =
             overview
+                .dropWhile { it != "## Metric inventory" }
+                .drop(1)
+                .takeWhile { !it.startsWith("## ") }
                 .filter { it.startsWith("| `kafka.appender.") }
                 .associate { row ->
                     val cells = row.split("|").map { it.trim() }
