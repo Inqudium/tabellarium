@@ -222,7 +222,10 @@ internal class MetricsBindings(
         // Transactional: a failure halfway removes the meters registered
         // so far, so nothing is left for the identity probe to mistake
         // for a live appender on the retry.
-        val impl = MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info)
+        val impl =
+            MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info) { message, cause ->
+                status.addWarn(message, cause)
+            }
         // The new binding stands; only now replace the previous one.
         unbind()
         boundMetrics = impl

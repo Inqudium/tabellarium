@@ -75,6 +75,9 @@ import java.util.concurrent.atomic.AtomicReference
  * @param registeredMeters Receives every meter as it is registered;
  *             handed in by [register] so the meters of a construction
  *             that aborts halfway stay reachable for its rollback.
+ * @param warn Operator-facing sink for a queue-gauge registration
+ *             that failed (the Logback status manager via
+ *             [MetricsBindings]); defaults to silence.
  */
 internal class MicrometerKafkaAppenderMetrics(
     private val registry: MeterRegistry,
@@ -82,6 +85,7 @@ internal class MicrometerKafkaAppenderMetrics(
     appenderName: String? = null,
     info: AppenderInfo? = null,
     private val registeredMeters: MutableList<Meter> = mutableListOf(),
+    private val warn: (String, Throwable) -> Unit = { _, _ -> },
 ) : KafkaAppenderMetrics {
     /**
      * The full set of tags applied to every metric this instance
@@ -328,23 +332,29 @@ internal class MicrometerKafkaAppenderMetrics(
             // dispatcher's queue between a repeated call and its return.
             queueSizeSupplier.set(queueSize)
             if (!fallbackGaugesRegistered.compareAndSet(false, true)) return@safe
-            track(
-                Gauge
-                    .builder(METRIC_FALLBACK_QUEUE_SIZE) {
-                        queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
-                    }.tags(fullTags)
-                    .description("Current number of events waiting in the FallbackDispatcher queue")
-                    .register(registry),
-            )
-            // The capacity is fixed for the dispatcher's lifetime,
-            // so it can be a constant-valued gauge.
-            track(
-                Gauge
-                    .builder(METRIC_FALLBACK_QUEUE_CAPACITY) { capacity.toDouble() }
-                    .tags(fullTags)
-                    .description("Maximum number of events the FallbackDispatcher queue can hold")
-                    .register(registry),
-            )
+            val registered =
+                registerGaugePair("fallback queue") {
+                    track(
+                        Gauge
+                            .builder(METRIC_FALLBACK_QUEUE_SIZE) {
+                                queueSizeSupplier.get()?.invoke()?.toDouble() ?: 0.0
+                            }.tags(fullTags)
+                            .description("Current number of events waiting in the FallbackDispatcher queue")
+                            .register(registry),
+                    )
+                    // The capacity is fixed for the dispatcher's lifetime,
+                    // so it can be a constant-valued gauge.
+                    track(
+                        Gauge
+                            .builder(METRIC_FALLBACK_QUEUE_CAPACITY) { capacity.toDouble() }
+                            .tags(fullTags)
+                            .description("Maximum number of events the FallbackDispatcher queue can hold")
+                            .register(registry),
+                    )
+                }
+            // Marked complete only once both exist, so a repeated call
+            // retries a failed pair instead of returning on the flag.
+            if (!registered) fallbackGaugesRegistered.set(false)
         }
     }
 
@@ -357,20 +367,57 @@ internal class MicrometerKafkaAppenderMetrics(
             // One dispatcher per class exists for the appender's lifetime
             // and calls this once per bind, so both gauges are registered
             // directly (a repeated bind deregisters first).
-            track(
-                Gauge
-                    .builder(METRIC_SEND_QUEUE_SIZE) { queueSize().toDouble() }
-                    .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
-                    .description("Current number of events waiting in the SendDispatcher queue")
-                    .register(registry),
-            )
-            track(
-                Gauge
-                    .builder(METRIC_SEND_QUEUE_CAPACITY) { capacity.toDouble() }
-                    .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
-                    .description("Maximum number of events the SendDispatcher queue can hold")
-                    .register(registry),
-            )
+            registerGaugePair("send queue (topic.class=${topicClass.tag})") {
+                track(
+                    Gauge
+                        .builder(METRIC_SEND_QUEUE_SIZE) { queueSize().toDouble() }
+                        .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
+                        .description("Current number of events waiting in the SendDispatcher queue")
+                        .register(registry),
+                )
+                track(
+                    Gauge
+                        .builder(METRIC_SEND_QUEUE_CAPACITY) { capacity.toDouble() }
+                        .tags(tagsWith(TAG_TOPIC_CLASS, topicClass.tag))
+                        .description("Maximum number of events the SendDispatcher queue can hold")
+                        .register(registry),
+                )
+            }
+        }
+    }
+
+    /**
+     * Registers a size/capacity gauge pair as one transaction: if
+     * [block] throws, the gauges it already registered are removed
+     * again and [warn] reports the failure, so the registry never shows
+     * a size series without its capacity (or vice versa) and the
+     * operator learns that the queue is unobserved - a failure the
+     * non-throwing hook contract would otherwise hide
+     * (`DEFECT_ANALYSIS-2026-10-10T15-52-19`, finding 2).
+     *
+     * @return `true` if both gauges were registered.
+     */
+    private inline fun registerGaugePair(
+        what: String,
+        block: () -> Unit,
+    ): Boolean {
+        val before = synchronized(registeredMeters) { registeredMeters.size }
+        try {
+            block()
+            return true
+        } catch (e: Exception) {
+            val partial = synchronized(registeredMeters) { registeredMeters.drop(before) }
+            partial.forEach { meter ->
+                try {
+                    registry.remove(meter)
+                    synchronized(registeredMeters) { registeredMeters.remove(meter) }
+                } catch (rollbackFailure: Exception) {
+                    // Stays tracked, so deregisterFrom still tries again.
+                    e.addSuppressed(rollbackFailure)
+                }
+            }
+            warn("Failed to register the $what gauges (queue saturation will be unobserved): ${e.message}", e)
+            return false
         }
     }
 
@@ -409,10 +456,11 @@ internal class MicrometerKafkaAppenderMetrics(
             commonTags: Iterable<Tag>,
             appenderName: String?,
             info: AppenderInfo?,
+            warn: (String, Throwable) -> Unit = { _, _ -> },
         ): MicrometerKafkaAppenderMetrics {
             val registered = mutableListOf<Meter>()
             try {
-                return MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName, info, registered)
+                return MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName, info, registered, warn)
             } catch (e: Throwable) {
                 registered.forEach { meter ->
                     try {
