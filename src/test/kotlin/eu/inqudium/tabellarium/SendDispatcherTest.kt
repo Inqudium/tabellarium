@@ -801,6 +801,10 @@ class SendDispatcherTest {
             // Given: a send action that hands off, then pins uninterruptibly
             val release = CountDownLatch(1)
             val handedOff = CountDownLatch(1)
+            // Recorded, not asserted, on the worker: an AssertionError there
+            //   would be a worker death that surfaces only as a latch
+            //   timeout (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 13).
+            val handOffAccepted = AtomicBoolean(false)
             val recorder = RecordingAppender(testContext)
             val metrics = RecordingMetrics()
             val fallbackDispatcher = newFallback(recorder)
@@ -809,7 +813,7 @@ class SendDispatcherTest {
                     topicClass = TopicClass.TECHNICAL,
                     sendAction = { item ->
                         // producer.send returned without a synchronous failure:
-                        assertThat(item.ownership.tryHandOff()).isTrue()
+                        handOffAccepted.set(item.ownership.tryHandOff())
                         handedOff.countDown()
                         awaitUninterruptibly(release)
                     },
@@ -819,6 +823,7 @@ class SendDispatcherTest {
             dispatcher.setMetrics(metrics)
             dispatcher.dispatchEvent("handed-off")
             assertThat(handedOff.await(2, TimeUnit.SECONDS)).isTrue()
+            assertThat(handOffAccepted.get()).isTrue()
             (1..2).forEach { i ->
                 dispatcher.dispatchEvent("queued-$i")
             }

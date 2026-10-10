@@ -15,6 +15,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
+import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry
 import io.micrometer.core.instrument.config.MeterFilter
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
@@ -25,6 +26,7 @@ import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.clients.producer.RecordMetadata
+import org.apache.kafka.common.errors.RecordTooLargeException
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -32,7 +34,9 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.slf4j.Logger
+import org.slf4j.Marker
 import org.slf4j.MarkerFactory
+import java.time.Duration
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -1532,6 +1536,40 @@ class KafkaAppenderTest {
             assertThat(diverted.callerData).isNotEmpty
             assertThat(diverted.callerData[0].className).isEqualTo(javaClass.name)
         }
+
+        @Test
+        fun `should not compute caller data on the caller thread when includeCallerData is off`() {
+            // What is to be tested? The negative control of the flag: with
+            //   includeCallerData false (the default), append() leaves the
+            //   event's caller data uncomputed - the stack walk is the
+            //   expensive part of the hot path and is paid only on opt-in.
+            // How will the test case be deemed successful and why? Successful
+            //   if the event that reached the fallback reports
+            //   hasCallerData() == false after the draining stop(): nothing
+            //   on the hot path or on the workers asked for it. The positive
+            //   test above alone lets a regression that always walks the
+            //   stack pass (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 19).
+            // Why is it important to test this test case? The default is
+            //   the configuration every deployment without %caller runs;
+            //   an unconditional stack walk per event there is a silent
+            //   hot-path regression no other test would notice.
+
+            // Given: the same diverting pipeline with the flag off
+            val loggerContext = LoggerContext().apply { mdcAdapter = LogbackMDCAdapter() }
+            val fallback = RecordingAppender()
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = fallback)
+            assertThat(appender.includeCallerData).isFalse()
+            appender.start()
+            loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(appender)
+
+            // When: logged through the real logger on this thread, then drained
+            loggerContext.getLogger("caller-data-test").info("diverted without caller data")
+            appender.stop()
+
+            // Then: nobody computed the caller data
+            val diverted = fallback.events.single()
+            assertThat(diverted.hasCallerData()).isFalse()
+        }
     }
 
     @Nested
@@ -1706,14 +1744,20 @@ class KafkaAppenderTest {
         @Test
         fun `should keep accepted and fallback counters conserved when the encoder throws`() {
             // What is to be tested? The eventAccepted contract on the
-            //   failure path: an event that enters append but fails
-            //   before routing resolves a class must still count as
-            //   accepted (under the TECHNICAL default), so that
-            //   accepted = dispatched + fallback holds.
+            //   materialize failure path: an event whose routing resolved
+            //   a class but whose encoding then fails is counted as
+            //   accepted exactly once (at routing time, not again in the
+            //   catch) and as one encoder.error fallback under that class,
+            //   so that accepted = dispatched + fallback holds. The
+            //   pre-routing branch (no class resolved yet) is the subject
+            //   of the next test (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 1).
             // How will the test case be deemed successful and why? Successful
             //   if one encoder-failing append increments both the
             //   accepted counter and the fallback counter (reason
-            //   encoder.error) exactly once, both tagged technical.
+            //   encoder.error) exactly once, both tagged technical - the
+            //   default topic's class, which routing resolved before the
+            //   encoder threw.
             // Why is it important to test this test case? Before the fix,
             //   encoder failures produced fallbacks without accepted
             //   events - operational ratios showed more diversions than
@@ -1751,6 +1795,133 @@ class KafkaAppenderTest {
                 )
             assertThat(diverted.count()).isEqualTo(1.0)
             appender.stop()
+        }
+
+        @Test
+        fun `should count an event as accepted under the technical default when routing itself fails`() {
+            // What is to be tested? The pre-routing branch of append()'s
+            //   catch: when the failure hits before routing resolved a class
+            //   - here a marker whose getName() throws, so the router never
+            //   returns - the event was not yet counted as accepted, and the
+            //   catch must record it under the TECHNICAL default together
+            //   with the encoder.error fallback, so that
+            //   accepted = dispatched + fallback holds on this path too.
+            // How will the test case be deemed successful and why? Successful
+            //   if one such append increments the accepted counter and the
+            //   encoder.error fallback counter exactly once, both tagged
+            //   technical, and the event reaches the fallback recorder.
+            //   Mutation checked: deleting the late eventAccepted in the
+            //   catch (the null-class branch) leaves accepted at zero and
+            //   turns the test red; the encoder-throwing test above cannot
+            //   see that, because routing has already counted the event
+            //   there (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 1).
+            // Why is it important to test this test case? A third-party
+            //   marker is the one input the router cannot validate at
+            //   start-up; a failure there must not break the conservation
+            //   invariant operators use to spot silent loss.
+
+            // Given: a diverting fallback, a bound registry, and an event
+            //   carrying a marker the router cannot read
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender()
+            val appender = newAppender(fallback = fallback)
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            val unreadableMarker =
+                object : Marker {
+                    override fun getName(): String = throw IllegalStateException("marker name unavailable")
+
+                    override fun add(reference: Marker) = Unit
+
+                    override fun remove(reference: Marker): Boolean = false
+
+                    // Compatibility: SLF4J deprecates hasChildren in favor of
+                    // hasReferences; marked so the override emits no warning.
+                    @Deprecated("SLF4J deprecated Marker.hasChildren; use hasReferences", ReplaceWith("hasReferences()"))
+                    override fun hasChildren(): Boolean = false
+
+                    override fun hasReferences(): Boolean = false
+
+                    override fun iterator(): MutableIterator<Marker> = mutableListOf<Marker>().iterator()
+
+                    override fun contains(other: Marker): Boolean = false
+
+                    override fun contains(name: String): Boolean = false
+                }
+            val event = (newTestLoggingEvent(message = "routing will throw") as LoggingEvent).apply { addMarker(unreadableMarker) }
+
+            // When
+            appender.doAppend(event)
+
+            // Then: the event reached the fallback, and both counters moved
+            //   once under the technical default (read before stop() unbinds)
+            pollUntil { fallback.events.size == 1 }
+            assertThat(fallback.events.single().message).isEqualTo("routing will throw")
+            val accepted =
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+            assertThat(accepted.count()).isEqualTo(1.0)
+            val diverted =
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to "encoder.error",
+                )
+            assertThat(diverted.count()).isEqualTo(1.0)
+            appender.stop()
+        }
+
+        @Test
+        fun `should let an Error escape doAppend and count the event as accepted but neither dispatched nor diverted`() {
+            // What is to be tested? The documented Error contract of the hot
+            //   path: an Error thrown on the caller's thread (a LinkageError
+            //   from a mismatched optional encoder dependency, an OOM) is
+            //   not caught by append() - it propagates to the logging call
+            //   like in Logback's own doAppend - and the event is then
+            //   counted as accepted without being dispatched or diverted.
+            // How will the test case be deemed successful and why? Successful
+            //   if doAppend throws the Error, the accepted counter reads 1
+            //   and the dispatched counter, every fallback counter and the
+            //   fallback recorder stay at zero. The catch in append() takes
+            //   Exception only; widening it to Throwable would swallow the
+            //   Error and divert the event, which turns the throw assertion
+            //   red (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 19).
+            // Why is it important to test this test case? The accepted
+            //   counter's "every event entering append" contract and the
+            //   Error pass-through are both documented; neither had a test,
+            //   so a change to either would have passed silently.
+
+            // Given: an encoder that fails with an Error, a fallback that
+            //   must stay empty, a bound registry
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender()
+            val erroringEncoder =
+                object : EncoderBase<ILoggingEvent>() {
+                    override fun encode(event: ILoggingEvent): ByteArray = throw LinkageError("simulated optional dependency mismatch")
+
+                    override fun headerBytes(): ByteArray = ByteArray(0)
+
+                    override fun footerBytes(): ByteArray = ByteArray(0)
+                }
+            val appender = newAppender(encoder = erroringEncoder, fallback = fallback)
+            appender.start()
+            appender.bindMeterRegistry(registry)
+
+            // When: the Error escapes to the caller
+            assertThatThrownBy { appender.doAppend(newTestLoggingEvent(message = "error on the hot path")) }
+                .isInstanceOf(LinkageError::class.java)
+                .hasMessage("simulated optional dependency mismatch")
+
+            // Then: accepted once, nothing else moved (read before stop() unbinds)
+            val technical = MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag
+            assertThat(registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED, technical).count()).isEqualTo(1.0)
+            assertThat(registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED, technical).count()).isEqualTo(0.0)
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK).counters())
+                .allSatisfy { counter -> assertThat(counter.count()).`as`("%s", counter.id).isEqualTo(0.0) }
+            appender.stop()
+            assertThat(fallback.events).isEmpty()
         }
     }
 
@@ -2087,6 +2258,296 @@ class KafkaAppenderTest {
             // Then
             assertThat(appender.isStarted).isFalse()
             assertThat(appender.statusMessages()).noneMatch { it.contains("already stopped") }
+        }
+
+        /**
+         * A producer whose send parks interruptibly until [release] - or
+         * until the dispatcher's phase-2 interrupt wakes it with an
+         * InterruptedException, which the sender's error path routes to
+         * the fallback with reason send.error. Models a send parked in
+         * `max.block.ms` at shutdown. [sendEntered] tells the test when
+         * the worker is inside the send.
+         */
+        private inner class InterruptiblyParkedProducerFactory : ProducerFactory {
+            val release = CountDownLatch(1)
+            val sendEntered = CountDownLatch(1)
+
+            override fun create(properties: Map<String, String>): Producer<ByteArray, ByteArray> {
+                val mock = MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                return object : Producer<ByteArray, ByteArray> by mock {
+                    override fun send(
+                        record: ProducerRecord<ByteArray, ByteArray>,
+                        callback: Callback?,
+                    ): Future<RecordMetadata> {
+                        sendEntered.countDown()
+                        release.await()
+                        return synchronized(mock) { mock.send(record, callback) }
+                    }
+                }
+            }
+        }
+
+        @Test
+        fun `should drop a teardown diversion when a context reset stopped the shared fallback first`() {
+            // What is to be tested? The consequence the stop-time warning
+            //   describes, exercised through the real reset: with the shared
+            //   fallback attached to root ahead of the KafkaAppender and one
+            //   send parked when the reset arrives, the dispatcher's
+            //   interrupt unblocks the send with an InterruptedException,
+            //   the sender diverts the event (send.error), and the fallback
+            //   dispatcher refuses the already-stopped appender - the event
+            //   is counted as dropped, not written.
+            // How will the test case be deemed successful and why? Successful
+            //   if after LoggerContext.reset() the status carries the
+            //   "Fallback dispatcher dropped 1 event(s)" warning and the
+            //   shared recorder holds nothing. The warning pair of tests
+            //   above proves only the diagnostic; this one proves the loss
+            //   it warns about (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 11).
+            // Why is it important to test this test case? This is the
+            //   shutdown-during-outage case the fallback exists for; the
+            //   guide's remedy rests on the claim that the order decides
+            //   between drop and write.
+
+            // Given: the hazardous order, and a send parked in the producer
+            val factory = InterruptiblyParkedProducerFactory()
+            val appender = newAppender(encoder = MessageBytesEncoder(), producerFactory = factory, fallback = null)
+            val context = appender.context as LoggerContext
+            val sharedFallback = RecordingAppender(context).apply { name = "CONSOLE" }
+            appender.addAppender(sharedFallback)
+            appender.name = "KAFKA"
+            appender.start()
+            val root = context.getLogger(Logger.ROOT_LOGGER_NAME)
+            root.addAppender(sharedFallback)
+            root.addAppender(appender)
+            try {
+                appender.doAppend(newTestLoggingEvent(message = "parked at reset"))
+                assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // When: the full-context shutdown path
+                context.reset()
+
+                // Then: the diversion found the fallback stopped and was dropped
+                assertThat(appender.isStarted).isFalse()
+                assertThat(appender.statusMessages()).anyMatch { it.contains("Fallback dispatcher dropped 1 event(s)") }
+                assertThat(sharedFallback.events).isEmpty()
+            } finally {
+                factory.release.countDown()
+            }
+        }
+
+        @Test
+        fun `should write a teardown diversion to the shared fallback when the KafkaAppender stops ahead of it`() {
+            // What is to be tested? The remedied order with an event in
+            //   flight: the reset stops the KafkaAppender while the shared
+            //   fallback still runs, so the send.error diversion of the
+            //   parked send is written to it before the KafkaAppender's own
+            //   stop() stops the fallback.
+            // How will the test case be deemed successful and why? Successful
+            //   if after the reset the shared recorder holds exactly the
+            //   parked event and no drop warning exists. Together with the
+            //   previous test this pins that the attach order alone decides
+            //   between write and drop (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 11).
+            // Why is it important to test this test case? It is the
+            //   documented remedy; a remedy that lost the event anyway
+            //   would leave operators with no safe shared-fallback setup.
+
+            // Given: the remedied order, and a send parked in the producer
+            val factory = InterruptiblyParkedProducerFactory()
+            val appender = newAppender(encoder = MessageBytesEncoder(), producerFactory = factory, fallback = null)
+            val context = appender.context as LoggerContext
+            val sharedFallback = RecordingAppender(context).apply { name = "CONSOLE" }
+            appender.addAppender(sharedFallback)
+            appender.start()
+            val root = context.getLogger(Logger.ROOT_LOGGER_NAME)
+            root.addAppender(appender)
+            root.addAppender(sharedFallback)
+            try {
+                appender.doAppend(newTestLoggingEvent(message = "parked at reset"))
+                assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // When
+                context.reset()
+
+                // Then: written, not dropped
+                assertThat(appender.isStarted).isFalse()
+                assertThat(sharedFallback.events.map { it.formattedMessage }).containsExactly("parked at reset")
+                assertThat(appender.statusMessages()).noneMatch { it.contains("Fallback dispatcher dropped") }
+            } finally {
+                factory.release.countDown()
+            }
+        }
+
+        @Test
+        fun `should report a dead fallback worker through the status manager`() {
+            // What is to be tested? The appender-level wiring of the fallback
+            //   dispatcher's worker-death hook: an Error escaping the fallback
+            //   appender's doAppend ends the worker, and the transport's hook
+            //   must surface that as a status warning naming the cause - the
+            //   dispatcher-level tests pin the hook itself, nothing pinned
+            //   that the appender routes it to the status manager.
+            // How will the test case be deemed successful and why? Successful
+            //   if after one diverted event the status manager carries a
+            //   warning containing "Fallback dispatcher worker died from" and
+            //   the Error's class name. Mutation checked: a no-op hook body in
+            //   KafkaTransport leaves the suite green without this test
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 5).
+            // Why is it important to test this test case? A dead worker
+            //   otherwise masquerades as a slow fallback: every further
+            //   diversion is dropped and counted, and nothing says why.
+
+            // Given: a fallback whose doAppend dies with an Error
+            val dyingFallback =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = LoggerContext()
+                        start()
+                    }
+
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw AssertionError("simulated fallback death")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = dyingFallback)
+            appender.start()
+
+            // When: one event diverts to the fallback, whose worker dies
+            appender.doAppend(newTestLoggingEvent())
+            pollUntil { appender.statusMessages().any { it.contains("Fallback dispatcher worker died from") } }
+
+            // Then: the cause is named
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Fallback dispatcher worker died from java.lang.AssertionError") }
+            appender.stop()
+        }
+
+        @Test
+        fun `should report a dead send worker through the status manager`() {
+            // What is to be tested? The send-side counterpart: an Error
+            //   escaping producer.send (the sender catches Exception only)
+            //   ends the class's send worker, and the transport's hook must
+            //   surface it as a status warning naming the class and the cause.
+            // How will the test case be deemed successful and why? Successful
+            //   if after one append the status manager carries a warning
+            //   containing "Send dispatcher worker for TECHNICAL died from"
+            //   and the Error's class name, and the event reached the fallback
+            //   (the death accounting diverts it with reason send.error).
+            //   Mutation checked: a no-op hook body stays green otherwise
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 5).
+            // Why is it important to test this test case? Without the report
+            //   every further TECHNICAL event silently diverts to the
+            //   fallback while Kafka is healthy, and operators would suspect
+            //   the broker.
+
+            // Given: a producer whose send dies with an Error
+            val dyingSends =
+                RecordingProducerFactory(
+                    wrap = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun send(
+                                record: ProducerRecord<ByteArray, ByteArray>,
+                                callback: Callback?,
+                            ): Future<RecordMetadata> = throw AssertionError("simulated send worker death")
+                        }
+                    },
+                )
+            val fallback = RecordingAppender()
+            val appender = newAppender(producerFactory = dyingSends, fallback = fallback)
+            appender.start()
+
+            // When
+            appender.doAppend(newTestLoggingEvent(message = "worker dies on this"))
+            pollUntil { appender.statusMessages().any { it.contains("Send dispatcher worker for TECHNICAL died from") } }
+
+            // Then: the cause is named and the event was not lost
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Send dispatcher worker for TECHNICAL died from java.lang.AssertionError") }
+            appender.stop()
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("worker dies on this")
+        }
+
+        @Test
+        fun `should report a producer that fails to close through the status manager`() {
+            // What is to be tested? The appender-level surfacing of a close
+            //   failure: the registry aggregates per-producer close failures
+            //   into one exception after every close was attempted, and the
+            //   transport's close must turn that into a status warning
+            //   instead of losing it - the registry test proves the throw,
+            //   nothing pinned the report.
+            // How will the test case be deemed successful and why? Successful
+            //   if after stop() the status manager carries a warning
+            //   containing "Error closing producer registry" and the
+            //   aggregate's "failed to close cleanly" text, and stop()
+            //   itself returns normally. Mutation checked: swallowing the
+            //   exception silently in closeAll stays green otherwise
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 5).
+            // Why is it important to test this test case? A producer that
+            //   cannot close keeps its network thread and buffers; the
+            //   warning is the only hint at shutdown that something stayed
+            //   behind.
+
+            // Given: a producer whose close throws
+            val unclosableProducers =
+                RecordingProducerFactory(
+                    wrap = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun close(timeout: Duration): Unit = throw IllegalStateException("simulated close failure")
+                        }
+                    },
+                )
+            val appender = newAppender(producerFactory = unclosableProducers)
+            appender.start()
+
+            // When: stop() must still complete
+            appender.stop()
+
+            // Then: the failure is reported with the aggregate's summary
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Error closing producer registry") && it.contains("failed to close cleanly") }
+        }
+
+        @Test
+        fun `should run the teardown and its drop warning only once when stopped twice`() {
+            // What is to be tested? The appender-level stop guard: Logback
+            //   may call stop() more than once during a context teardown,
+            //   and the second call must not re-run the close sequence -
+            //   the dispatcher-level idempotence is pinned elsewhere, but
+            //   nothing pinned that the appender itself does not re-enter
+            //   closeAll and re-emit the lifetime drop warning.
+            // How will the test case be deemed successful and why? Successful
+            //   if after two stop() calls on an appender that dropped one
+            //   event exactly one "Fallback dispatcher dropped" status entry
+            //   exists. Mutation checked: removing the early return behind
+            //   stopExecuted re-runs closeAll and emits the warning twice
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 14).
+            // Why is it important to test this test case? A duplicated
+            //   drop report overstates the loss in shutdown forensics, the
+            //   very number operators rely on.
+
+            // Given: a fallback whose doAppend throws, so one diversion is dropped
+            val throwingFallback =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = LoggerContext()
+                        start()
+                    }
+
+                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("fallback also broken")
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }
+            val appender = newAppender(encoder = ThrowingEncoder(), fallback = throwingFallback)
+            appender.start()
+            appender.doAppend(newTestLoggingEvent())
+
+            // When: stopped twice
+            appender.stop()
+            appender.stop()
+
+            // Then: one drop warning, not two
+            assertThat(appender.statusMessages().filter { it.contains("Fallback dispatcher dropped") }).hasSize(1)
         }
     }
 
@@ -2479,27 +2940,40 @@ class KafkaAppenderTest {
                     producerFactory = factory,
                 )
             appender.start()
+            // Both appends run on helper threads: a regression that sends
+            //   on the caller would park the CALLER in release.await(), and
+            //   on the test thread that would be a red only after the suite
+            //   timeout instead of a bounded one here
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 12).
+            val firstAppendReturned = CountDownLatch(1)
             val secondAppendReturned = CountDownLatch(1)
-            val helper =
+            val firstCaller =
+                Thread {
+                    appender.doAppend(newTestLoggingEvent(message = "first"))
+                    firstAppendReturned.countDown()
+                }
+            val secondCaller =
                 Thread {
                     appender.doAppend(newTestLoggingEvent(message = "second"))
                     secondAppendReturned.countDown()
                 }
             try {
                 // When: the first event parks the worker in the send
-                appender.doAppend(newTestLoggingEvent(message = "first"))
+                firstCaller.start()
                 assertThat(factory.sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+                assertThat(firstAppendReturned.await(2, TimeUnit.SECONDS)).isTrue()
 
                 // And: a second append on a helper thread while the send is
                 //   still parked (release has not been counted down)
-                helper.start()
+                secondCaller.start()
 
                 // Then: the caller returned although the send is parked
                 assertThat(secondAppendReturned.await(2, TimeUnit.SECONDS)).isTrue()
                 assertThat(factory.release.count).isEqualTo(1)
             } finally {
                 factory.release.countDown()
-                helper.join(2000)
+                firstCaller.join(2000)
+                secondCaller.join(2000)
                 appender.stop()
             }
         }
@@ -2650,10 +3124,14 @@ class KafkaAppenderTest {
             // The metrics are the observable for the late path: by then
             // stop() has closed the fallback dispatcher and stopped the
             // recorder, so a duplicate could never reach the recorder
-            // even with a broken claim. The sender still holds its
-            // Micrometer implementation, whose meter objects keep counting
-            // after stop() removed them from the registry - so the meters
-            // are captured before stop() and read afterwards.
+            // even with a broken claim. stop() deliberately leaves the
+            // transport's recorders on the bound Micrometer implementation
+            // (only the hot path's own reference is reset - see the
+            // rationale at KafkaAppender.stop(),
+            // DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 10), so its meter
+            // objects keep counting after stop() removed them from the
+            // registry: the meters are captured before stop() and read
+            // afterwards.
             val registry = SimpleMeterRegistry()
             appender.bindMeterRegistry(registry)
             val sendErrorFallbacks =
@@ -3335,6 +3813,199 @@ class KafkaAppenderTest {
                 )
             pollUntil { timer.count() == 1L }
             appender.stop()
+        }
+
+        /** The breaker call meter of [kind] for the appender named [appenderName]. */
+        private fun MeterRegistry.breakerCallTimer(
+            appenderName: String,
+            kind: String,
+        ) = requireTimer(
+            "${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.calls",
+            "kind" to kind,
+            MicrometerKafkaAppenderMetrics.TAG_APPENDER to appenderName,
+        )
+
+        @Test
+        fun `should record a failed send on the failed-calls timer and not on the ignored one`() {
+            // What is to be tested? The failed-kind wiring of the hand-made
+            //   breaker consumers: a send that fails with an exception the
+            //   breaker counts (a synchronous IllegalStateException) must
+            //   land on the kind=failed timer and nowhere else - the
+            //   successful-kind test above cannot tell the failed and
+            //   ignored consumers apart.
+            // How will the test case be deemed successful and why? Successful
+            //   if after one failing send the failed timer counts 1 while
+            //   the ignored and successful timers stay at 0. Mutation
+            //   checked: swapping the failedCalls/ignoredCalls holders in
+            //   MetricsBindings turns it red
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 4).
+            // Why is it important to test this test case? "failed calls"
+            //   is the series operators read during an outage; a swapped
+            //   wiring would show a healthy breaker while Kafka is down.
+
+            // Given: a bound appender whose every send fails synchronously
+            val registry = SimpleMeterRegistry()
+            val failingSends =
+                RecordingProducerFactory(
+                    wrap = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun send(
+                                record: ProducerRecord<ByteArray, ByteArray>,
+                                callback: Callback?,
+                            ): Future<RecordMetadata> = throw IllegalStateException("simulated broker outage")
+                        }
+                    },
+                )
+            val appender = newAppender(producerFactory = failingSends)
+            appender.name = "KAFKA_F"
+            appender.start()
+            appender.bindMeterRegistry(registry)
+
+            // When
+            appender.doAppend(newTestLoggingEvent(message = "fails"))
+
+            // Then: counted as failed only
+            val failed = registry.breakerCallTimer("KAFKA_F", "failed")
+            pollUntil { failed.count() == 1L }
+            assertThat(registry.breakerCallTimer("KAFKA_F", "ignored").count()).isEqualTo(0L)
+            assertThat(registry.breakerCallTimer("KAFKA_F", "successful").count()).isEqualTo(0L)
+            appender.stop()
+        }
+
+        @Test
+        fun `should record an ignored exception on the ignored-calls timer and not on the failed one`() {
+            // What is to be tested? The ignored-kind wiring: a send that
+            //   fails with an exception the breaker configuration ignores
+            //   (RecordTooLargeException - a payload problem, not a broker
+            //   problem) must land on the kind=ignored timer, not on the
+            //   failed one, and must not count toward the failure rate.
+            // How will the test case be deemed successful and why? Successful
+            //   if after one such send the ignored timer counts 1 and the
+            //   failed timer 0. Mutation checked: swapping the two holders
+            //   turns it red (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 4).
+            // Why is it important to test this test case? The ignore list
+            //   exists so that oversized events do not open the breaker;
+            //   a mis-wired timer would hide exactly those events from the
+            //   dashboard that explains why the breaker stayed closed.
+
+            // Given: a bound appender whose sends fail with an ignored exception
+            val registry = SimpleMeterRegistry()
+            val oversizedSends =
+                RecordingProducerFactory(
+                    wrap = { mock ->
+                        object : Producer<ByteArray, ByteArray> by mock {
+                            override fun send(
+                                record: ProducerRecord<ByteArray, ByteArray>,
+                                callback: Callback?,
+                            ): Future<RecordMetadata> = throw RecordTooLargeException("simulated oversized record")
+                        }
+                    },
+                )
+            val appender = newAppender(producerFactory = oversizedSends)
+            appender.name = "KAFKA_I"
+            appender.start()
+            appender.bindMeterRegistry(registry)
+
+            // When
+            appender.doAppend(newTestLoggingEvent(message = "too large"))
+
+            // Then: counted as ignored only
+            val ignored = registry.breakerCallTimer("KAFKA_I", "ignored")
+            pollUntil { ignored.count() == 1L }
+            assertThat(registry.breakerCallTimer("KAFKA_I", "failed").count()).isEqualTo(0L)
+            appender.stop()
+        }
+
+        @Test
+        fun `should count a send refused by an open breaker on the not-permitted counter`() {
+            // What is to be tested? The not-permitted wiring: with the class's
+            //   breaker OPEN, the sender is refused a permission and the
+            //   breaker publishes a call-not-permitted event, which must
+            //   increment kafka.appender.circuitbreaker.not.permitted.calls.
+            // How will the test case be deemed successful and why? Successful
+            //   if after one append against an open breaker the counter of
+            //   this appender's breaker reads 1 and the event was diverted
+            //   with reason breaker.open. Mutation checked: dropping the
+            //   onCallNotPermitted consumer turns it red
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 4).
+            // Why is it important to test this test case? The not-permitted
+            //   count is how operators size the loss an open breaker causes;
+            //   an unwired counter would read zero during the whole outage.
+
+            // Given: a bound appender whose TECHNICAL breaker is forced open
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender()
+            val appender = newAppender(fallback = fallback)
+            appender.name = "KAFKA_O"
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            appender.circuitBreakerRegistry
+                .circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.TECHNICAL))
+                .transitionToOpenState()
+
+            // When
+            appender.doAppend(newTestLoggingEvent(message = "refused"))
+
+            // Then: one not-permitted call, the event in the fallback
+            val notPermitted =
+                registry.requireCounter(
+                    "${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.not.permitted.calls",
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA_O",
+                )
+            pollUntil { notPermitted.count() == 1.0 }
+            appender.stop()
+            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("refused")
+        }
+
+        @Test
+        fun `should count a breaker outcome exactly once after a re-bind and nowhere after an unbind`() {
+            // What is to be tested? The lifecycle of the breaker event
+            //   consumers, which Resilience4j cannot deregister: a re-bind
+            //   must reuse the per-breaker holder (fresh meters, no second
+            //   set of consumers), and an unbind must clear the holder so
+            //   later events record into nothing.
+            // How will the test case be deemed successful and why? Successful
+            //   if after a re-bind to the same registry one successful send
+            //   counts exactly once on the new successful-calls timer, and
+            //   if after unbindMeterRegistry a further successful send leaves
+            //   that timer object (captured before the unbind) at its count.
+            //   Mutation checked: attaching the consumers unconditionally
+            //   makes the re-bound timer count 2; deleting the clear() in
+            //   unbind makes the captured timer count 2
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 4).
+            // Why is it important to test this test case? Spring's test
+            //   context cache and manual re-wiring re-bind in production;
+            //   stacked consumers would double every breaker series after
+            //   each cycle, and a missing clear would keep recording into
+            //   removed meters.
+
+            // Given: a bound appender with one counted success
+            val registry = SimpleMeterRegistry()
+            val appender = newAppender()
+            appender.name = "KAFKA_R"
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            appender.doAppend(newTestLoggingEvent(message = "first"))
+            pollUntil { registry.breakerCallTimer("KAFKA_R", "successful").count() == 1L }
+
+            // When: re-bound to the same registry, one more success
+            assertThat(appender.bindMeterRegistry(registry)).isTrue()
+            val rebound = registry.breakerCallTimer("KAFKA_R", "successful")
+            appender.doAppend(newTestLoggingEvent(message = "second"))
+
+            // Then: the new timer counts it exactly once
+            pollUntil { rebound.count() >= 1L }
+            assertThat(rebound.count()).isEqualTo(1L)
+
+            // When: unbound, one more success (drained by stop)
+            assertThat(appender.unbindMeterRegistry(registry)).isTrue()
+            appender.doAppend(newTestLoggingEvent(message = "third"))
+            appender.stop()
+
+            // Then: recorded nowhere - the captured timer did not move
+            assertThat(rebound.count()).isEqualTo(1L)
+            assertThat(registry.find("${MetricsBindings.CIRCUIT_BREAKER_PREFIX}.calls").timers()).isEmpty()
         }
 
         @Test

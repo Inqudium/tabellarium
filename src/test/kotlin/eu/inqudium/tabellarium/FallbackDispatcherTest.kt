@@ -453,16 +453,20 @@ class FallbackDispatcherTest {
             //   in droppedEventCount - the loss metric lied precisely in
             //   the scenario it exists for.
 
-            // Given: an appender whose doAppend always throws. It overrides
-            //   doAppend directly because AppenderBase.doAppend would
-            //   swallow exceptions from append() before the dispatcher
-            //   could see them.
+            // Given: a STARTED appender whose doAppend always throws. It
+            //   overrides doAppend directly because AppenderBase.doAppend
+            //   would swallow exceptions from append() before the
+            //   dispatcher could see them. Started, because the dispatcher
+            //   refuses a not-started appender before calling doAppend -
+            //   an unstarted one would produce the asserted drop through
+            //   that refusal and never reach the throw
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 23).
             val throwingAppender =
                 object : AppenderBase<ILoggingEvent>() {
                     override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("simulated fallback failure")
 
                     override fun append(event: ILoggingEvent) = error("unreachable")
-                }
+                }.apply { start() }
             val dispatcher = FallbackDispatcher(throwingAppender)
             try {
                 // When
@@ -474,6 +478,70 @@ class FallbackDispatcherTest {
                 dispatcher.close()
             }
             assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+        }
+
+        @Test
+        fun `should not count a delivery that throws after a forced close claimed it a second time`() {
+            // What is to be tested? The catch path of the worker's delivery
+            //   against the forced close: when the in-flight doAppend throws
+            //   AFTER close() has already claimed the item as a shutdown
+            //   remainder, the worker's own failure accounting must stand
+            //   down - the item is counted once, by the close, not twice.
+            // How will the test case be deemed successful and why? Successful
+            //   if the dropped count is exactly 1 after close() and still
+            //   exactly 1 after the pinned doAppend has thrown and the worker
+            //   has exited. The appender parks uninterruptibly (surviving the
+            //   close's interrupt) and throws only when released, so the
+            //   order "claim first, failure second" is forced, not timed. An
+            //   unconditional rejection in the catch path counts 2
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 19c).
+            // Why is it important to test this test case? The in-flight event
+            //   of a forced shutdown is the one a slow or failing disk hits;
+            //   double-counting it inflates the loss warning operators act on.
+
+            // Given: an appender pinned in doAppend that throws once released
+            val release = CountDownLatch(1)
+            val entered = CountDownLatch(1)
+            val workerThread = AtomicReference<Thread>()
+            val throwingAfterPin =
+                object : AppenderBase<ILoggingEvent>() {
+                    // doAppend directly: AppenderBase.doAppend would swallow the throw.
+                    override fun doAppend(eventObject: ILoggingEvent) {
+                        workerThread.set(Thread.currentThread())
+                        entered.countDown()
+                        awaitUninterruptibly(release)
+                        throw RuntimeException("simulated fallback failure after the claim")
+                    }
+
+                    override fun append(event: ILoggingEvent) = error("unreachable")
+                }.apply {
+                    // Started: the dispatcher refuses a not-started appender
+                    //   before doAppend and would count that refusal instead.
+                    context = testContext
+                    start()
+                }
+            val dispatcher =
+                FallbackDispatcher(
+                    fallbackAppender = throwingAfterPin,
+                    drainTimeoutMs = 100,
+                )
+            try {
+                dispatcher.enqueue(newTestLoggingEvent(message = "pinned"))
+                assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // When: the forced close claims the in-flight item
+                dispatcher.close()
+                assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+
+                // And: the pinned delivery now fails and the worker exits
+                release.countDown()
+                pollUntil { !checkNotNull(workerThread.get()).isAlive }
+
+                // Then: the failure did not account the item a second time
+                assertThat(dispatcher.droppedEventCount).isEqualTo(1L)
+            } finally {
+                release.countDown()
+            }
         }
 
         @Test

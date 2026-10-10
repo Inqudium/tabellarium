@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.function.ThrowingSupplier
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -148,6 +149,61 @@ class ParallelCloseTest {
 
             // Then
             assertThat(elapsedMs).isLessThan(1_000)
+        }
+    }
+
+    @Nested
+    inner class `Degraded thread creation` {
+        @Test
+        fun `should run a task on the calling thread when its closer thread cannot be created`() {
+            // What is to be tested? The degraded mode of closeInParallel: when
+            //   starting a closer thread fails with the OutOfMemoryError of
+            //   thread exhaustion, the task is not lost and the Error does
+            //   not escape - the task runs on the calling thread after the
+            //   closers that did start, and the call still returns within
+            //   the budget (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 8).
+            // How will the test case be deemed successful and why? Successful
+            //   if all three tasks ran, the one whose thread creation failed
+            //   ran on the calling thread, and the call returned well inside
+            //   the budget. Before the fix the Error propagated out of the
+            //   helper and with it out of the whole teardown, skipping every
+            //   close that follows.
+            // Why is it important to test this test case? Thread exhaustion
+            //   happens exactly at a busy shutdown; a teardown that aborts
+            //   there leaks producers, workers and registry entries, the
+            //   symmetric case of the rollback KafkaTransport.open promises
+            //   for the same Error.
+
+            // Given: three tasks; the second one's closer thread cannot be started
+            val callingThread = Thread.currentThread()
+            val ranOn = ConcurrentHashMap<String, Thread>()
+            val tasks =
+                (1..3).map { i ->
+                    "closer-$i" to {
+                        ranOn["closer-$i"] = Thread.currentThread()
+                        Unit
+                    }
+                }
+            val startCloser: (String, () -> Unit) -> Thread = { name, task ->
+                if (name == "closer-2") {
+                    throw OutOfMemoryError("unable to create native thread: simulated")
+                }
+                Thread(task, name).apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+
+            // When
+            val elapsedMs =
+                measureTime { closeInParallel(budgetMs = 5_000, tasks = tasks, startCloser = startCloser) }.inWholeMilliseconds
+
+            // Then: every task ran, the thread-less one on the caller, and the budget was not waited out
+            assertThat(ranOn).containsKeys("closer-1", "closer-2", "closer-3")
+            assertThat(ranOn.getValue("closer-2")).isSameAs(callingThread)
+            assertThat(ranOn.getValue("closer-1")).isNotSameAs(callingThread)
+            assertThat(ranOn.getValue("closer-3")).isNotSameAs(callingThread)
+            assertThat(elapsedMs).isLessThan(2_000)
         }
     }
 

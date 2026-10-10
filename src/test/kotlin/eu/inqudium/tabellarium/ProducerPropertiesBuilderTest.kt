@@ -588,6 +588,72 @@ class ProducerPropertiesBuilderTest {
                 .containsEntry(ProducerConfig.RETRIES_CONFIG, "0")
                 .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "6")
         }
+
+        @Test
+        fun `should accept acks minus one as the alias of all under idempotence`() {
+            // What is to be tested? Whether the acks precondition accepts
+            //   Kafka's numeric spelling of "all": the client treats
+            //   acks=-1 and acks=all as the same value, so the named check
+            //   must not refuse what the constructor accepts.
+            // How will the test case be deemed successful and why? Successful
+            //   if explicit enable.idempotence=true with acks=-1 builds and
+            //   keeps the operator's spelling. A check reduced to the
+            //   literal "all" passes every other acks test
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 21).
+            // Why is it important to test this test case? Operators copy
+            //   producer settings from existing Kafka configurations, where
+            //   -1 is common; refusing it would block a valid configuration
+            //   with a message claiming the opposite of what Kafka does.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(
+                        ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG to "true",
+                        ProducerConfig.ACKS_CONFIG to "-1",
+                    ),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then
+            assertThat(result.properties).containsEntry(ProducerConfig.ACKS_CONFIG, "-1")
+        }
+
+        @Test
+        fun `should leave unparseable retries and in-flight values to the Kafka client`() {
+            // What is to be tested? Whether the idempotence checks skip a
+            //   retries or max.in.flight value that is not a number instead
+            //   of refusing or crashing on it - the Kafka client's own
+            //   validation names such a value, and the builder must not
+            //   pre-empt it with a misleading idempotence message.
+            // How will the test case be deemed successful and why? Successful
+            //   if AUDIT (mandated idempotence) builds with both values
+            //   unparseable and keeps them verbatim
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 21).
+            // Why is it important to test this test case? A templated
+            //   configuration can render a placeholder into either value; the
+            //   operator must then see Kafka's "not a number" error for that
+            //   key, not a claim that the value violates idempotence.
+
+            // Given
+            val builder =
+                ProducerPropertiesBuilder(
+                    mapOf(
+                        ProducerConfig.RETRIES_CONFIG to "many",
+                        ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION to "lots",
+                    ),
+                )
+
+            // When
+            val result = builder.buildFor(TopicClass.AUDIT)
+
+            // Then: kept for Kafka to reject
+            assertThat(result.properties)
+                .containsEntry(ProducerConfig.RETRIES_CONFIG, "many")
+                .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "lots")
+        }
     }
 
     @Nested
@@ -694,6 +760,47 @@ class ProducerPropertiesBuilderTest {
             // When / Then
             assertThat(builder.buildFor(TopicClass.TECHNICAL).properties)
                 .doesNotContainKey(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG)
+        }
+
+        @ParameterizedTest(name = "{0}={1} is left to Kafka")
+        @CsvSource(
+            "delivery.timeout.ms, soon",
+            "linger.ms, abc",
+            "request.timeout.ms, abc",
+        )
+        fun `should leave an unparseable timeout to the Kafka client instead of checking the sum`(
+            key: String,
+            value: String,
+        ) {
+            // What is to be tested? Whether the delivery-timeout rule skips
+            //   when one of its three inputs is not a number: an unparseable
+            //   delivery.timeout.ms, linger.ms or request.timeout.ms is left
+            //   to the Kafka client's own validation rather than compared.
+            // How will the test case be deemed successful and why? Successful
+            //   if a configuration that the rule WOULD refuse were the value
+            //   numeric (delivery.timeout.ms=1000 against the default
+            //   request.timeout.ms of 30 s) builds and keeps the value
+            //   verbatim when that one key is unparseable
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 21).
+            // Why is it important to test this test case? A rule that threw
+            //   a NumberFormatException on a templated placeholder would
+            //   replace Kafka's named error with a stack trace from the
+            //   appender's own validation.
+
+            // Given: a pair the rule refuses when numeric, with [key] unparseable
+            val base =
+                mutableMapOf(
+                    ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG to "1000",
+                    ProducerConfig.LINGER_MS_CONFIG to "0",
+                )
+            base[key] = value
+            val builder = ProducerPropertiesBuilder(base)
+
+            // When
+            val result = builder.buildFor(TopicClass.TECHNICAL)
+
+            // Then: built, value kept for Kafka to judge
+            assertThat(result.properties).containsEntry(key, value)
         }
     }
 

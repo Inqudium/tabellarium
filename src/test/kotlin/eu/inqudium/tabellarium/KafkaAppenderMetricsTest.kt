@@ -30,16 +30,21 @@ class KafkaAppenderMetricsTest {
             // Given
             val noOp = KafkaAppenderMetrics.NO_OP
 
-            // When / Then: every combination must be silently accepted
+            // When / Then: every combination must be silently accepted -
+            //   every method of the interface, the per-class size summary
+            //   and the send-queue gauge registration included
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 16)
             for (tc in TopicClass.entries) {
                 noOp.eventAccepted(tc)
                 noOp.eventDispatched(tc)
+                noOp.eventSize(tc, 512)
                 for (reason in KafkaAppenderMetrics.FallbackReason.entries) {
                     noOp.eventFallback(tc, reason)
                 }
                 for (outcome in KafkaAppenderMetrics.SendOutcome.entries) {
                     noOp.sendCompleted(tc, outcome, Duration.ofMillis(7))
                 }
+                noOp.registerSendQueueGauges(tc, queueSize = { 0 }, capacity = 100)
             }
             noOp.fallbackDispatcherDropped()
             noOp.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 100)

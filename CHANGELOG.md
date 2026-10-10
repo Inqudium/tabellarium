@@ -148,6 +148,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   info set left behind.
 - `stop()` on a thread without a happens-before edge to `start()` can no
   longer miss the running pipeline and skip the teardown.
+- The parallel teardown (send dispatchers, producers) no longer aborts
+  the whole shutdown when a closer thread cannot be created (thread
+  exhaustion, `OutOfMemoryError: unable to create native thread`): the
+  task without a thread runs on the closing thread instead, and the
+  closes that follow still happen. The start-up transaction already
+  rolled back for the same `Error`; the teardown now matches it.
+- The dispatcher skeleton refuses a non-positive drain budget at
+  construction. `0` would have turned the bounded worker join into
+  `Thread.join(0)` - wait forever - and a negative value would have
+  aborted the close before the queued remainder was accounted. No
+  production caller passed such a value; the guard pins the contract.
 
 ## [1.1.2] - 2026-09-16
 

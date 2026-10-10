@@ -639,6 +639,15 @@ class KafkaAppender :
         // closes are where the shutdown diversions and drops are
         // counted, and a scrape during the (multi-second) teardown
         // should still see them. Under the bind lock - see bindLock.
+        // Only the hot path's own reference is reset; the transport's
+        // recorders deliberately keep the bound implementation (unlike
+        // withdrawMetrics, which serves a still-running appender): the
+        // closed components record nothing a scrape can see any more -
+        // the meters are removed, detached objects - and a send that
+        // completes after the teardown still accounts into them, which
+        // is what KafkaAppenderTest observes for the exactly-once proof
+        // of a pinned send (`DEFECT_ANALYSIS-2026-10-10T19-11-11`,
+        // finding 10).
         bindLock.withLock {
             metricsBindings?.unbind()
             metrics = KafkaAppenderMetrics.NO_OP

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.slf4j.MarkerFactory
 import org.testcontainers.kafka.KafkaContainer
 import java.time.Duration
@@ -37,8 +38,17 @@ import java.util.concurrent.TimeUnit
  * `surefire.excludedGroups` property in the pom): it needs a Docker
  * daemon and a broker container, which the fast offline loop must not
  * depend on. Run deliberately with `mvn -Pintegration test`.
+ *
+ * The class-level timeout overrides the suite's 2-minute default
+ * (`junit-platform.properties`): each test starts the broker container
+ * inside its method - with the image pull on a cold runner - and the
+ * metrics test additionally waits for KafkaClientMetrics' 60-second
+ * refresh, so the default bound could expire without any defect
+ * (`DEFECT_ANALYSIS-2026-10-10T19-11-11`, finding 7). Five minutes still
+ * fails a hung broker long before the CI job's 30-minute limit.
  */
 @Tag("integration")
+@Timeout(value = 5, unit = TimeUnit.MINUTES)
 class KafkaBrokerIntegrationTest {
     /**
      * Every appender a test built; stopped after the test (stop() is

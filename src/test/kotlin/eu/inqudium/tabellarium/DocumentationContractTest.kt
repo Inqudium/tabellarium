@@ -27,6 +27,14 @@ class DocumentationContractTest {
     private val guide: List<String> =
         Files.readAllLines(Path.of("docs", "config", "kafka-appender-config-guide.md"))
 
+    /**
+     * A millisecond constant as the guide writes seconds: `1000` is
+     * `1`, `500` is `0.5`, `2500` is `2.5`. Rationale: an integer
+     * division would still match a stale "2 s" for a constant changed to
+     * 2500 ms (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 20).
+     */
+    private fun seconds(millis: Long): String = (millis / 1000.0).toString().removeSuffix(".0")
+
     /** The "Default" cell of the defaults-table row whose "Setting" cell starts with [setting]. */
     private fun defaultOf(setting: String): String = defaultCell(rowStart = "| $setting", table = "defaults table")
 
@@ -64,12 +72,13 @@ class DocumentationContractTest {
             assertThat(defaultOf("Send dispatcher queue capacity (per class)"))
                 .contains("`${SendDispatcher.DEFAULT_QUEUE_CAPACITY}`")
             assertThat(defaultOf("Send dispatcher drain on stop (parallel)"))
-                .contains("`${SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS / 1000} s` drain")
+                .contains("`${seconds(SendDispatcher.DEFAULT_DRAIN_TIMEOUT_MS)} s` drain")
+                .contains("`${seconds(BoundedWorkerDispatcher.INTERRUPT_GRACE_MS)} s` interrupt grace")
             assertThat(defaultOf("Fallback dispatcher queue capacity"))
                 .contains("`${FallbackDispatcher.DEFAULT_QUEUE_CAPACITY}`")
             assertThat(defaultOf("Fallback dispatcher shutdown timeout"))
-                .contains("`${FallbackDispatcher.DEFAULT_DRAIN_TIMEOUT_MS / 1000} s` drain")
-                .contains("`${BoundedWorkerDispatcher.INTERRUPT_GRACE_MS / 1000.0} s` interrupt grace")
+                .contains("`${seconds(FallbackDispatcher.DEFAULT_DRAIN_TIMEOUT_MS)} s` drain")
+                .contains("`${seconds(BoundedWorkerDispatcher.INTERRUPT_GRACE_MS)} s` interrupt grace")
             assertThat(defaultOf("Producer close timeout"))
                 .contains("`${ProducerRegistry.DEFAULT_CLOSE_TIMEOUT.toSeconds()} s`")
         }
@@ -97,7 +106,7 @@ class DocumentationContractTest {
             assertThat(breakerDefaultOf("slidingWindowSize")).isEqualTo("`${config.slidingWindowSize}` calls")
             assertThat(breakerDefaultOf("minimumNumberOfCalls")).isEqualTo("`${config.minimumNumberOfCalls}`")
             assertThat(breakerDefaultOf("waitDurationInOpenState"))
-                .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
+                .isEqualTo("`${seconds(config.waitIntervalFunctionInOpenState.apply(1))}s`")
             assertThat(breakerDefaultOf("permittedNumberOfCallsInHalfOpenState"))
                 .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
 
@@ -105,7 +114,7 @@ class DocumentationContractTest {
             assertThat(defaultOf("Circuit breaker: sliding window / min calls"))
                 .isEqualTo("`${config.slidingWindowSize}` / `${config.minimumNumberOfCalls}`")
             assertThat(defaultOf("Circuit breaker: open-state wait"))
-                .isEqualTo("`${config.waitIntervalFunctionInOpenState.apply(1) / 1000}s`")
+                .isEqualTo("`${seconds(config.waitIntervalFunctionInOpenState.apply(1))}s`")
             assertThat(defaultOf("Circuit breaker: half-open permitted calls"))
                 .isEqualTo("`${config.permittedNumberOfCallsInHalfOpenState}`")
             assertThat(defaultOf("Half-open probe gap"))
@@ -195,6 +204,66 @@ class DocumentationContractTest {
 
             // When / Then: the overview's inventory equals it, row by row
             assertThat(documentedTags()).containsExactlyInAnyOrderEntriesOf(expected)
+        }
+
+        /**
+         * The documented values of the tag named [tag], from the
+         * `### \`tag\`` subsection of "Tag values": the first cell of each
+         * table row, plus the "N possible values" count of the heading.
+         */
+        private fun documentedTagValues(tag: String): Pair<Int, Set<String>> {
+            val heading = "### `$tag`"
+            val subsection =
+                section(overview, "## Tag values")
+                    .dropWhile { !it.startsWith(heading) }
+                    .also { require(it.isNotEmpty()) { "subsection '$heading' not found in the metrics guide" } }
+            val count =
+                Regex("(\\d+) possible values")
+                    .find(subsection.first())
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toInt()
+                    ?: error("no 'N possible values' count in heading '${subsection.first()}'")
+            val values =
+                subsection
+                    .drop(1)
+                    .takeWhile { !it.startsWith("### ") }
+                    .filter { it.startsWith("| `") }
+                    .map { it.split("|")[1].trim().trim('`') }
+                    .toSet()
+            return count to values
+        }
+
+        @Test
+        fun `should list exactly the tag values the enums define`() {
+            // What is to be tested? Whether the guide's "Tag values" tables for
+            //   topic.class, reason and outcome enumerate exactly the tag
+            //   strings of TopicClass, FallbackReason and SendOutcome, and
+            //   whether each heading's "N possible values" is the enum size.
+            // How will the test case be deemed successful and why? Successful
+            //   if each documented value set equals the enum's tag set and
+            //   each count equals the enum size. The inventory check pins
+            //   names and tag keys only, so a renamed or added tag VALUE left
+            //   the table stale with the build green
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 20).
+            // Why is it important to test this test case? Alert rules and
+            //   dashboard filters select on these literal values; a value the
+            //   guide spells differently from the code selects nothing.
+
+            // Given: the tag values the code emits
+            val expected =
+                mapOf(
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.entries.map { it.tag },
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to KafkaAppenderMetrics.FallbackReason.entries.map { it.tag },
+                    MicrometerKafkaAppenderMetrics.TAG_OUTCOME to KafkaAppenderMetrics.SendOutcome.entries.map { it.tag },
+                )
+
+            // When / Then: every subsection lists exactly them, and counts them right
+            expected.forEach { (tag, values) ->
+                val (count, documented) = documentedTagValues(tag)
+                assertThat(documented).`as`("values of %s", tag).containsExactlyInAnyOrderElementsOf(values)
+                assertThat(count).`as`("count of %s", tag).isEqualTo(values.size)
+            }
         }
 
         @Test

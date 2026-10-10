@@ -119,6 +119,17 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         DELIVERY_FAILED,
     }
 
+    // Validate BEFORE the worker below starts: a non-positive budget
+    // would reach close() unchecked, and `Thread.join(0)` there means
+    // "wait forever" while a negative value makes join throw and skip
+    // the remainder accounting (`DEFECT_ANALYSIS-2026-10-10T19-11-11`,
+    // finding 9).
+    init {
+        require(drainTimeoutMs > 0) {
+            "drainTimeoutMs must be positive (Thread.join(0) waits forever), got $drainTimeoutMs"
+        }
+    }
+
     private val queue: BlockingQueue<T> = queueFactory(queueCapacity)
 
     /** The item the worker has taken off the queue but not yet finished delivering; see the class KDoc. */
