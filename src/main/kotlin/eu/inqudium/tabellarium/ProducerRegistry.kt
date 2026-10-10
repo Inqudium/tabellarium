@@ -196,9 +196,9 @@ internal class ProducerRegistry private constructor(
          *
          * If [producerFactory] throws while creating any producer, all
          * already-created producers are closed (with a short rollback
-         * timeout) before the failure is rethrown as a
-         * [ProducerConstructionException]. The registry is never
-         * partially initialized.
+         * timeout) before the failure is rethrown - an [Exception] as a
+         * [ProducerConstructionException], an [Error] unchanged. The
+         * registry is never partially initialized.
          *
          * @throws IllegalArgumentException if [activeTopicClasses] is
          *         empty, or when [ProducerPropertiesBuilder.buildFor]
@@ -238,14 +238,19 @@ internal class ProducerRegistry private constructor(
                             throw ProducerConstructionException(topicClass, e)
                         }
                 }
-            } catch (e: Exception) {
-                // Roll back: close producers that were already created.
-                // Suppress rollback failures so the original cause is preserved.
+            } catch (e: Throwable) {
+                // Roll back: close producers that were already created -
+                // for an Error (linkage, initializer, resource exhaustion)
+                // as well, which the factory call above deliberately does
+                // not wrap: KafkaTransport.open promises rollback for any
+                // construction failure, and the registry is built before
+                // its own catch region. Rollback failures are attached as
+                // suppressed so the original cause is preserved.
                 createdProducers.values.forEach { producer ->
                     try {
                         producer.close(ROLLBACK_CLOSE_TIMEOUT)
-                    } catch (_: Exception) {
-                        // Swallow during rollback.
+                    } catch (rollbackFailure: Throwable) {
+                        e.addSuppressed(rollbackFailure)
                     }
                 }
                 throw e

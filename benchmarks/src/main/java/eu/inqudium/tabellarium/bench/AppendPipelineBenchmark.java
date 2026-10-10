@@ -6,6 +6,7 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.classic.spi.LoggingEvent;
 import eu.inqudium.tabellarium.KafkaAppender;
+import eu.inqudium.tabellarium.KafkaAppenderMeterRegistry;
 import eu.inqudium.tabellarium.TopicMappingConfig;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -101,7 +102,7 @@ public class AppendPipelineBenchmark {
         }
         if (Boolean.parseBoolean(metricsBound)) {
             registry = new SimpleMeterRegistry();
-            appender.bindMeterRegistry(registry, Tags.empty());
+            KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry, Tags.empty());
         }
 
         logger = context.getLogger("bench.logger");

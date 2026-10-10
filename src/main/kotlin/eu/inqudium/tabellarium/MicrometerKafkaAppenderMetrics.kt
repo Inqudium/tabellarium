@@ -72,12 +72,16 @@ import java.util.concurrent.atomic.AtomicReference
  *                   carry one.
  * @param info Configuration metadata for the info gauges; `null`
  *             registers none.
+ * @param registeredMeters Receives every meter as it is registered;
+ *             handed in by [register] so the meters of a construction
+ *             that aborts halfway stay reachable for its rollback.
  */
 internal class MicrometerKafkaAppenderMetrics(
     private val registry: MeterRegistry,
     commonTags: Iterable<Tag> = Tags.empty(),
     appenderName: String? = null,
     info: AppenderInfo? = null,
+    private val registeredMeters: MutableList<Meter> = mutableListOf(),
 ) : KafkaAppenderMetrics {
     /**
      * The full set of tags applied to every metric this instance
@@ -107,14 +111,11 @@ internal class MicrometerKafkaAppenderMetrics(
             .of(commonTags)
             .and(TAG_APPENDER, appenderName?.takeIf { it.isNotBlank() } ?: "unnamed")
 
-    /**
-     * Every meter this instance registered, so [deregisterFrom] can
-     * remove them from the registry when the appender stops or
-     * re-binds. Guarded by its own monitor: registration happens on
-     * the bind thread, deregistration possibly on a different
-     * shutdown thread.
-     */
-    private val registeredMeters = mutableListOf<Meter>()
+    // registeredMeters: every meter this instance registered, so
+    // deregisterFrom can remove them from the registry when the appender
+    // stops or re-binds. Guarded by its own monitor: registration happens
+    // on the bind thread, deregistration possibly on a different shutdown
+    // thread.
 
     private fun <M : Meter> track(meter: M): M {
         synchronized(registeredMeters) { registeredMeters += meter }
@@ -391,6 +392,39 @@ internal class MicrometerKafkaAppenderMetrics(
     ): Tags = fullTags.and(key, value)
 
     companion object {
+        /**
+         * Constructs an instance as one transaction: the base meters are
+         * registered one by one in the property initializers, so a
+         * registry (or a meter filter) that throws halfway would leave
+         * the meters registered so far orphaned - unreachable for
+         * [deregisterFrom], and the first of them, `events.accepted`,
+         * would make [MetricsBindings]' identity probe mistake the
+         * aborted attempt for a live second appender and refuse every
+         * retry (`DEFECT_ANALYSIS-2026-10-10T13-46-50`, finding 2). On
+         * any failure the meters registered so far are removed again
+         * before the failure is rethrown.
+         */
+        fun register(
+            registry: MeterRegistry,
+            commonTags: Iterable<Tag>,
+            appenderName: String?,
+            info: AppenderInfo?,
+        ): MicrometerKafkaAppenderMetrics {
+            val registered = mutableListOf<Meter>()
+            try {
+                return MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName, info, registered)
+            } catch (e: Throwable) {
+                registered.forEach { meter ->
+                    try {
+                        registry.remove(meter)
+                    } catch (rollbackFailure: Throwable) {
+                        e.addSuppressed(rollbackFailure)
+                    }
+                }
+                throw e
+            }
+        }
+
         const val METRIC_EVENTS_ACCEPTED: String = "kafka.appender.events.accepted"
         const val METRIC_EVENTS_DISPATCHED: String = "kafka.appender.events.dispatched"
         const val METRIC_EVENTS_FALLBACK: String = "kafka.appender.events.fallback"

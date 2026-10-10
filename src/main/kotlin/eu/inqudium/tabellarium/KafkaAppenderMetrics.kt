@@ -14,7 +14,7 @@ import java.time.Duration
  * ## Wiring up Micrometer
  *
  * Production callers typically wire an instance backed by Micrometer
- * via [KafkaAppender.bindMeterRegistry]. Doing so is **optional**:
+ * via [bindMeterRegistry]. Doing so is **optional**:
  * if `bindMeterRegistry` is never called, the appender stays on the
  * [NO_OP] implementation and emits no metrics.
  *
@@ -112,7 +112,7 @@ internal interface KafkaAppenderMetrics {
 
     /**
      * Called when the [FallbackDispatcher] is wired to this metrics
-     * instance - at [KafkaAppender.bindMeterRegistry] time, and again
+     * instance - at [bindMeterRegistry] time, and again
      * on every re-bind - to register gauges that report the
      * dispatcher's current queue depth and capacity. Not called at all
      * when no fallback appender is configured: the gauges then do not
@@ -189,7 +189,7 @@ internal interface KafkaAppenderMetrics {
     companion object {
         /**
          * Singleton no-op implementation. Used by [KafkaAppender] until
-         * an operator calls [KafkaAppender.bindMeterRegistry] (or
+         * an operator calls [bindMeterRegistry] (or
          * equivalent setter). Allocates nothing on any call.
          */
         val NO_OP: KafkaAppenderMetrics = NoOpKafkaAppenderMetrics

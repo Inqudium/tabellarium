@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bindMeterRegistry` is now an extension function (Java callers and
+  binary compatibility):** it moved from a `KafkaAppender` member to a
+  top-level extension in `KafkaAppenderMeterRegistry.kt`. Kotlin source
+  is unchanged (`appender.bindMeterRegistry(registry)`); Java callers
+  write `KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry)`.
+  Code compiled against 1.1.x must be recompiled. It now returns
+  whether the appender is bound afterwards (`false` on a stopped
+  appender or a refused duplicate meter identity). See "Fixed" for why.
+
 - **Metric names (dashboards and alerts must be updated):** the
   circuit-breaker and Kafka-producer metrics now share the appender's
   prefix, so every meter the appender publishes starts with
@@ -87,6 +96,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("Installation", "Reproducible builds") describes it; the Installation
   text no longer claims an SBOM on Maven Central - the CycloneDX SBOM
   and the provenance are GitHub-release assets.
+
+### Fixed
+
+- Logback configuration no longer fails without Micrometer on the
+  classpath. `micrometer-core` is optional, but the `KafkaAppender`
+  class exposed `MeterRegistry`/`Tag` in a public method signature, and
+  Joran's bean introspection resolves those types while configuring the
+  appender - a consumer without Micrometer got `NoClassDefFoundError`
+  before the appender existed. The Micrometer-typed API now lives
+  outside the appender class (see "Changed"); a test re-runs a Joran
+  configuration in a class loader that hides Micrometer and Spring.
+- A metrics bind that failed after registering some of the appender's
+  meters left them behind, and the leftover `events.accepted` counter
+  made every retry look like a second, same-named appender, so the bind
+  was refused for good. The base meters are now registered as one
+  transaction and removed again on failure.
+- Removing the circuit-breaker meters on stop or unbind continues past
+  a meter whose removal fails, instead of leaving all later ones
+  registered.
+- An `Error` (linkage, initializer, resource exhaustion) while building
+  the producers now closes the producers already created and releases
+  the started encoder before it propagates; only `Exception` was
+  rolled back before.
+- `KafkaAppenderMetricsBinding` no longer logs "Bound KafkaAppender ..."
+  for a bind that was refused for a duplicate meter identity.
 
 ## [1.1.2] - 2026-09-16
 

@@ -175,7 +175,7 @@ internal class ResilientMessageSender(
 
     /**
      * Replaces the [KafkaAppenderMetrics] implementation. Called by
-     * [KafkaAppender.bindMeterRegistry] after the Logback context has
+     * [bindMeterRegistry] after the Logback context has
      * been wired up. Idempotent - multiple calls simply replace the
      * previous instance.
      */

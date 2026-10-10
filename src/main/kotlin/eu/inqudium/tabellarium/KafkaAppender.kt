@@ -7,9 +7,6 @@ import ch.qos.logback.core.UnsynchronizedAppenderBase
 import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.spi.AppenderAttachable
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
-import io.micrometer.core.instrument.MeterRegistry
-import io.micrometer.core.instrument.Tag
-import io.micrometer.core.instrument.Tags
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -243,7 +240,7 @@ class KafkaAppender :
 
     /**
      * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP].
-     * Replaced by [bindMeterRegistry] when an operator wires the
+     * Replaced by [installMetrics] when an operator wires the
      * appender to a Micrometer registry - typically from a Spring
      * `@PostConstruct` after the application context is ready.
      * Volatile because the setter may be called from a different
@@ -257,11 +254,17 @@ class KafkaAppender :
      * per-producer Kafka client metrics, circuit-breaker metrics).
      * See [MetricsBindings] for the probe pattern and the teardown
      * rationale.
+     *
+     * Created by the first bind and kept for the appender's lifetime
+     * (it owns the breakers' once-attached event consumers). Null until
+     * then, so an appender that is never bound never links the class -
+     * see "Micrometer stays optional" on [installMetrics]. Guarded by
+     * [bindLock].
      */
-    private val metricsBindings = MetricsBindings(this)
+    private var metricsBindings: MetricsBindings? = null
 
     /**
-     * Serializes [bindMeterRegistry] against the unbind in [stop]: a
+     * Serializes [installMetrics] against the unbind in [stop]: a
      * bind that passed the `isStarted` gate just before a stop must
      * either complete before the unbind (which then removes its meters)
      * or observe the stopped state and do nothing - never register
@@ -337,6 +340,8 @@ class KafkaAppender :
             } catch (e: Exception) {
                 failStartup(e)
                 return
+            } catch (e: Error) {
+                releaseEncoderAndRethrow(e)
             }
         // Stage two, stateful: the transport for the plan's active classes.
         // KafkaTransport.open rolls its own resources back on failure.
@@ -359,6 +364,8 @@ class KafkaAppender :
             } catch (e: Exception) {
                 failStartup(e)
                 return
+            } catch (e: Error) {
+                releaseEncoderAndRethrow(e)
             }
         this.plan = plan
         this.transport = transport
@@ -419,6 +426,23 @@ class KafkaAppender :
         } else {
             addError("Failed to build KafkaAppender pipeline: ${e.message}", e)
         }
+    }
+
+    /**
+     * The [Error] counterpart of [failStartup]: a VM-level failure
+     * (linkage, initializer, resource exhaustion) during either startup
+     * stage is not reported as a configuration problem but propagated
+     * unchanged - after releasing the encoder started above, the same
+     * rollback contract KafkaTransport.open and ProducerRegistry.create
+     * keep for their own resources.
+     */
+    private fun releaseEncoderAndRethrow(e: Error): Nothing {
+        try {
+            encoder?.stop()
+        } catch (cleanupFailure: Throwable) {
+            e.addSuppressed(cleanupFailure)
+        }
+        throw e
     }
 
     private fun validateConfiguration(): Boolean {
@@ -592,7 +616,7 @@ class KafkaAppender :
         // scrape during the (multi-second) teardown should still see
         // them. Under the bind lock - see bindLock.
         bindLock.withLock {
-            metricsBindings.unbind()
+            metricsBindings?.unbind()
             metrics = KafkaAppenderMetrics.NO_OP
         }
         stopFallbackAppenderAndEncoder()
@@ -620,7 +644,7 @@ class KafkaAppender :
         }
     }
 
-    // -- Public API: metrics integration --------------------------------
+    // -- Metrics integration (Micrometer-free seam) ---------------------
 
     /**
      * Whether a [bindMeterRegistry] binding is currently in place. The
@@ -630,54 +654,33 @@ class KafkaAppender :
      * twice.
      */
     internal val isMeterRegistryBound: Boolean
-        get() = bindLock.withLock { metricsBindings.isBound }
+        get() = bindLock.withLock { metricsBindings?.isBound == true }
 
     /**
-     * Wires the appender to a Micrometer [MeterRegistry].
+     * The appender side of [bindMeterRegistry]: runs [bind] under
+     * [bindLock] on a started appender and installs the metrics it
+     * returns on the hot path and the dispatchers.
      *
-     * After this call, the appender publishes counters, timers and
-     * gauges for hot-path events; the [ResilientMessageSender] reports
-     * dispatch outcomes; the [FallbackDispatcher] reports queue depth
-     * and dropped events. See [MicrometerKafkaAppenderMetrics] for the
-     * complete metric inventory.
+     * **Micrometer stays optional:** this class must not mention a
+     * Micrometer type in any method signature - Joran's bean
+     * introspection enumerates every public method of the appender
+     * class and resolves its parameter types, so a single
+     * `MeterRegistry` parameter (an `internal` member is public in
+     * bytecode) fails the whole Logback configuration with
+     * `NoClassDefFoundError` when the optional `micrometer-core` is
+     * absent (`DEFECT_ANALYSIS-2026-10-10T13-46-50`, finding 1). The
+     * Micrometer-typed API therefore lives in the
+     * `KafkaAppenderMeterRegistry` file and reaches the appender only
+     * through this seam, whose lambda types erase to
+     * `kotlin.jvm.functions.Function*`; [MetricsBindings] itself is
+     * created here on the first bind only.
      *
-     * **Additional bindings:** the circuit-breaker state and
-     * call-outcome metrics are bound by the appender's own binder
-     * (the meters, types and tags of `resilience4j-micrometer`'s
-     * `TaggedCircuitBreakerMetrics`, named `kafka.appender.circuitbreaker.*`
-     * instead of `resilience4j.circuitbreaker.*`, with an additional
-     * `appender` tag so multiple appender instances on one registry
-     * never collide). If the Micrometer Kafka binder is on the
-     * classpath, the underlying Kafka producers' internal metrics are
-     * bound as well, published as `kafka.appender.producer.*` instead
-     * of `kafka.producer.*` and carrying the same `appender` tag. Every
-     * meter of a bind therefore lives under `kafka.appender.`. A binding
-     * failing (missing classpath, registry error) is non-fatal and
-     * reported via Logback's status manager.
-     *
-     * **When to call:** typically from a Spring `@PostConstruct` or
-     * an `ApplicationReadyEvent` handler, after the application's
-     * [MeterRegistry] bean is available.
-     * Pre-Spring log events are not captured (they happen before
-     * the registry exists), which is acceptable for almost all
-     * monitoring needs.
-     *
-     * Calling this method on a stopped appender is a no-op. A bind to
-     * a registry that already holds the meters of another appender
-     * with the same name (the `appender` tag) and common tags is
-     * refused with a status warning: the two would share meter objects
-     * (see [MetricsBindings]); give each appender a distinct name.
-     *
-     * @param registry The Micrometer registry to publish to.
-     * @param commonTags Tags attached to every metric. Use sparingly.
-     *                   The registry's own common tags are typically
-     *                   enough; pass [Tags.empty]
-     *                   for the no-extra-tags case.
+     * @return `true` if a binding is in place afterwards; `false` when
+     *         the appender is not started or [MetricsBindings.bind]
+     *         refused a duplicate meter identity (reported as a status
+     *         warning).
      */
-    fun bindMeterRegistry(
-        registry: MeterRegistry,
-        commonTags: Iterable<Tag> = Tags.empty(),
-    ) {
+    internal fun installMetrics(bind: (MetricsBindings, KafkaTransport, AppenderInfo) -> KafkaAppenderMetrics): Boolean {
         bindLock.withLock {
             // Safety: re-checked under the lock - stop() flips isStarted
             // before it takes the lock for the unbind, so a bind that
@@ -685,53 +688,49 @@ class KafkaAppender :
             // of registering meters nothing would remove.
             if (!isStarted) {
                 addWarn("bindMeterRegistry called on a stopped/uninitialized appender; ignored.")
-                return
+                return false
             }
             // A repeated bind (context refresh, manual re-wiring) replaces the
             // previous registration - MetricsBindings tears it down first.
             val transport = checkNotNull(transport) { "a started appender always has a transport" }
             val plan = checkNotNull(plan) { "a started appender always has a plan" }
+            val bindings = metricsBindings ?: MetricsBindings(this).also { metricsBindings = it }
             val impl =
-                metricsBindings.bind(
-                    registry = registry,
-                    commonTags = commonTags,
-                    appenderName = this.name,
-                    circuitBreakerRegistry = transport.circuitBreakerRegistry,
-                    producerRegistry = transport.producerRegistry,
-                    info =
-                        AppenderInfo.of(
-                            fallbackAppender = fallbackAppender,
-                            debug = debug,
-                            topics = plan.topics,
-                            effectiveProperties = transport.producerRegistry.effectiveProperties,
-                        ),
+                bind(
+                    bindings,
+                    transport,
+                    AppenderInfo.of(
+                        fallbackAppender = fallbackAppender,
+                        debug = debug,
+                        topics = plan.topics,
+                        effectiveProperties = transport.producerRegistry.effectiveProperties,
+                    ),
                 )
             metrics = impl
             transport.setMetrics(impl)
+            return bindings.isBound
         }
     }
 
     /**
-     * Reverses a [bindMeterRegistry] binding to [registry] while the
-     * appender keeps running: the hot path and the dispatchers switch
-     * back to no-op metrics, then every meter of the binding is removed.
-     * A binding to any other registry is left untouched, so an owner
-     * of a registry can withdraw from it without knowing who else bound
-     * the appender. Used by [KafkaAppenderMetricsBinding] when its
-     * Spring context closes.
+     * The appender side of `unbindMeterRegistry`: reverses the current
+     * binding while the appender keeps running, if [isOwnedBy] accepts
+     * it. The hot path and the dispatchers switch back to no-op metrics
+     * first, then every meter of the binding is removed.
      *
-     * @return `true` if a binding to [registry] was removed.
+     * @return `true` if a binding was removed.
      */
-    internal fun unbindMeterRegistry(registry: MeterRegistry): Boolean {
+    internal fun withdrawMetrics(isOwnedBy: (MetricsBindings) -> Boolean): Boolean {
         bindLock.withLock {
-            if (!metricsBindings.isBoundTo(registry)) {
+            val bindings = metricsBindings
+            if (bindings == null || !isOwnedBy(bindings)) {
                 return false
             }
             // Detach the recorders first, so no event records into a
             // meter that the unbind below has already removed.
             metrics = KafkaAppenderMetrics.NO_OP
             transport?.setMetrics(KafkaAppenderMetrics.NO_OP)
-            metricsBindings.unbind()
+            bindings.unbind()
             return true
         }
     }

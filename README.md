@@ -1116,7 +1116,14 @@ loggerContext.loggerList.asSequence()
 (Descend into `AsyncAppender` wrappers yourself if you use them; the
 Spring binding does.) A repeated `bindMeterRegistry` call replaces the
 previous binding, and a call on a stopped appender is ignored with a
-status warning.
+status warning; the call returns whether the appender is bound
+afterwards.
+
+`bindMeterRegistry` is a Kotlin extension function rather than a member
+of `KafkaAppender`, so that the appender class itself never mentions a
+Micrometer type and Logback can configure it without Micrometer on the
+classpath. From Java, call it as
+`KafkaAppenderMeterRegistry.bindMeterRegistry(appender, meterRegistry)`.
 
 Pre-Spring log events (Logback initialization, Spring bootstrap
 logging) are not counted in either setup — this is a deliberate
