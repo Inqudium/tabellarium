@@ -60,7 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Prometheus `resilience4j_circuitbreaker_*` →
   `kafka_appender_circuitbreaker_*`) and `kafka.producer.*` →
   `kafka.appender.producer.*` (`kafka_producer_*` →
-  `kafka_appender_producer_*`); meters, types and tags are unchanged.
+  `kafka_appender_producer_*`), the client's `kafka.app.info.*` →
+  `kafka.appender.producer.app.info.*`; meters, types and tags are
+  unchanged. The Kafka client's own JMX MBeans keep their names.
   One prefix now selects or switches off all of them, and they no longer
   mix with the application's own breakers and Kafka clients. The breaker
   binder names its meters directly; the Kafka client binder registers
