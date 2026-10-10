@@ -6,7 +6,7 @@ circuit breakers, with an optional fallback appender for delivery failures.
 
 A working example lives in
 [`example-logback-spring.xml`](./example-logback-spring.xml); the emitted
-metrics are catalogued in [`metrics-overview.md`](../metrics/metrics-overview.md).
+metrics are catalogued in [`metrics-guide.md`](../metrics/metrics-guide.md).
 
 - [1. Minimal configuration](#1-minimal-configuration)
 - [2. XML element reference](#2-xml-element-reference)
@@ -723,7 +723,7 @@ counted.
 ### Metric inventory
 
 All metrics carry an `appender` tag (the Logback appender name, or `unnamed`).
-See [`metrics-overview.md`](../metrics/metrics-overview.md) for the full catalogue.
+See [`metrics-guide.md`](../metrics/metrics-guide.md) for the full catalogue.
 
 | Metric                                     | Type    | Extra tags                | Meaning |
 | ------------------------------------------ | ------- | ------------------------- | ------- |

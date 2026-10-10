@@ -26,7 +26,7 @@ be shipped. Delivery is best-effort transport with visible loss - see
 [Delivery guarantees](#delivery-guarantees) for the exact scope.
 
 **Documentation:** [inqudium.github.io/tabellarium](https://inqudium.github.io/tabellarium/) —
-configuration guide, metrics overview, and Grafana dashboards.
+configuration guide, metrics guide, and Grafana dashboards.
 
 ## Features
 
@@ -946,7 +946,7 @@ series with `* on(job, instance, appender) group_left(fallback) kafka_appender_i
 for example to see whether `events.fallback` goes to a file
 (`fallback_type="RollingFileAppender"`) or is dropped (`fallback="none"`).
 Labels and join patterns are described in the
-[metrics overview](docs/metrics/metrics-overview.md#info-gauges).
+[metrics guide](docs/metrics/metrics-guide.md#info-gauges).
 
 Cardinality budget per appender instance: ~56 time series plus one per
 configured topic.
@@ -975,7 +975,7 @@ delay, not a slow broker; at high volume batches fill first and the
 duration drops towards the round trip. Aggregate and alert per
 `topic_class`: a quantile over all classes mixes the floors and moves
 with the class mix. The per-class table and the query patterns live in
-the [metrics overview](docs/metrics/metrics-overview.md#reading-kafkaappendersendduration).
+the [metrics guide](docs/metrics/metrics-guide.md#reading-kafkaappendersendduration).
 
 The timer therefore says nothing about the delay the **application**
 experiences when it logs. That delay is the synchronous part of

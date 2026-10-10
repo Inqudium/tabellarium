@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overview, README and configuration guide describe labels and queries.
   Measured cost: +1.2 % series and +1.3 % scrape size for one appender
   with five topics, nothing on the logging path; a Micrometer
-  `MeterFilter.deny` switches them off (metrics overview, "Cost").
+  `MeterFilter.deny` switches them off (metrics guide, "Cost").
 - Grafana dashboards use the info gauges: the appender dashboard gains
   a "Fallback events by destination" panel (diversions joined with the
   fallback appender; `none` marks dropped events the "Drop rate" panel

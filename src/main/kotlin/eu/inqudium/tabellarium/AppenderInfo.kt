@@ -82,7 +82,7 @@ internal class AppenderInfo(
 
 /**
  * One configured topic with its class and the latency-relevant producer
- * settings of that class (see the metrics overview, "Each class has its
+ * settings of that class (see the metrics guide, "Each class has its
  * own floor").
  */
 internal class TopicInfo(

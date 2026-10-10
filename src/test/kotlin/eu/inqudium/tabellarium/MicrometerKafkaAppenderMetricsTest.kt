@@ -741,7 +741,7 @@ class MicrometerKafkaAppenderMetricsTest {
             //   registration without the tag would not match this lookup.
             // Why is it important to test this test case? A tag that is sometimes
             //   present and sometimes absent splits one metric into two incompatible
-            //   series shapes across deployments; the metrics overview documents
+            //   series shapes across deployments; the metrics guide documents
             //   `appender` on every metric with "unnamed" as the fallback value.
 
             // Given
