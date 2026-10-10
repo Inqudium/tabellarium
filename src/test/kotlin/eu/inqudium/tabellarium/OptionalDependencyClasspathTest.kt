@@ -46,7 +46,7 @@ class OptionalDependencyClasspathTest {
                         // JDK classes come from the platform loader (parent).
                         runCatching { parent.loadClass(name) }.getOrNull()
                             ?: source
-                                .getResourceAsStream(name.replace('.', '/') + ".class")
+                                .getResourceAsStream("${name.replace('.', '/')}.class")
                                 ?.use { it.readBytes() }
                                 ?.let { defineClass(name, it, 0, it.size) }
                             ?: throw ClassNotFoundException(name)
@@ -101,10 +101,7 @@ class OptionalDependencyClasspathTest {
                 context.statusManager.copyOfStatusList
                     .filter { it.level >= Status.WARN }
                     .joinToString(" | ") { "${it.message} ${it.throwable ?: ""}" }
-            return "micrometerVisible=$micrometerVisible " +
-                "started=$started " +
-                "fallbackEvents=$fallbackEvents " +
-                "problems=[$problems]"
+            return "micrometerVisible=$micrometerVisible started=$started fallbackEvents=$fallbackEvents problems=[$problems]"
         }
     }
 

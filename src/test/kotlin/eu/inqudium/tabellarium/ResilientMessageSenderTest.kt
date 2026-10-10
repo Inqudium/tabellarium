@@ -1216,7 +1216,13 @@ class ResilientMessageSenderTest {
                     breaker.transitionToOpenState()
                     breaker.transitionToHalfOpenState()
                     // The probe slot goes to a first send; the second is gated.
-                    ctx.sender.send(TopicClass.AUDIT, "audit-events", "probe".toByteArray(), basicEnrichment, newTestLoggingEvent())
+                    ctx.sender.send(
+                        topicClass = TopicClass.AUDIT,
+                        topicName = "audit-events",
+                        payload = "probe".toByteArray(),
+                        enrichment = basicEnrichment,
+                        originalEvent = newTestLoggingEvent(),
+                    )
                     metrics.events.clear()
                 }
 
@@ -1257,12 +1263,7 @@ class ResilientMessageSenderTest {
                     assertThat(metrics.kinds()).isEmpty()
                 }
 
-                DiversionGate.SYNCHRONOUS_THROW -> {
-                    assertThat(metrics.kinds()).containsExactly("send.completed")
-                    assertThat(metrics.events.single().detail).isEqualTo("error")
-                }
-
-                DiversionGate.CALLBACK_ERROR -> {
+                DiversionGate.SYNCHRONOUS_THROW, DiversionGate.CALLBACK_ERROR -> {
                     assertThat(metrics.kinds()).containsExactly("send.completed")
                     assertThat(metrics.events.single().detail).isEqualTo("error")
                 }

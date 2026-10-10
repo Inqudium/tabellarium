@@ -242,9 +242,8 @@ open class KafkaAppenderMetricsBinding(
                 IdentityHashMap<Appender<ILoggingEvent>, Boolean>(),
             )
         for (logger in loggerContext.loggerList) {
-            val iterator = logger.iteratorForAppenders()
-            while (iterator.hasNext()) {
-                visit(iterator.next(), result, visited)
+            for (appender in logger.iteratorForAppenders()) {
+                visit(appender, result, visited)
             }
         }
         return result.toList()
@@ -274,9 +273,8 @@ open class KafkaAppenderMetricsBinding(
         if (appender is AppenderAttachable<*>) {
             @Suppress("UNCHECKED_CAST")
             val attachable = appender as AppenderAttachable<ILoggingEvent>
-            val iterator = attachable.iteratorForAppenders()
-            while (iterator.hasNext()) {
-                visit(iterator.next(), sink, visited)
+            for (child in attachable.iteratorForAppenders()) {
+                visit(child, sink, visited)
             }
         }
     }

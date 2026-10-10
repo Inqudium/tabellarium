@@ -103,7 +103,7 @@ class TopicRouterFuzzTest {
                 throw new IllegalStateException("Kafka-invalid topic accepted: '" + topic + "'");
             }
         }
-        if (!mappings.isEmpty() && kotlinBlank(marker)) {
+        if (!mappings.isEmpty() && FuzzOracles.kotlinBlank(marker)) {
             throw new IllegalStateException("blank marker name accepted");
         }
     }
@@ -122,14 +122,5 @@ class TopicRouterFuzzTest {
         }
         String topic = sb.toString();
         return topic.equals(".") || topic.equals("..") ? topic + "a" : topic;
-    }
-
-    /**
-     * Kotlin's isBlank(), which the library uses: a char is whitespace per
-     * Character.isWhitespace OR isSpaceChar - NBSP counts, unlike in Java's
-     * String.isBlank(). The oracle must speak the library's dialect.
-     */
-    private static boolean kotlinBlank(String s) {
-        return s.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c));
     }
 }

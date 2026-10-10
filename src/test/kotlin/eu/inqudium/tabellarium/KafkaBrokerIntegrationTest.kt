@@ -1,6 +1,5 @@
 package eu.inqudium.tabellarium
 
-import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
@@ -13,6 +12,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.slf4j.MarkerFactory
@@ -39,172 +39,179 @@ import java.util.concurrent.TimeUnit
  */
 @Tag("integration")
 class KafkaBrokerIntegrationTest {
-    @Test
-    fun `should deliver a TECHNICAL and an AUDIT record through a real broker`() {
-        // What is to be tested? The central external system boundary
-        //   with a real broker: whether the appender's production
-        //   wiring - real KafkaProducer, forced ByteArraySerializers,
-        //   LZ4 default compression, enrichment headers, MDC-derived
-        //   partitioning key, and the AUDIT class's mandatory
-        //   acks=all/idempotence configuration - produces records a
-        //   broker actually accepts and a consumer can read back.
-        // How will the test case be deemed successful and why? Successful
-        //   if, after stop() drains and flushes, a fresh consumer reads
-        //   exactly the TECHNICAL and the AUDIT record from their
-        //   topics with byte-exact payloads, the traceId key, and the
-        //   meta.* headers intact. Broker acceptance is the part no
-        //   MockProducer test can prove.
-        // Why is it important to test this test case? The offline suite
-        //   verifies the producer API contract, not the wire: an
-        //   API-compatible but broker-incompatible configuration (e.g.
-        //   an idempotence setting the broker rejects) would otherwise
-        //   surface first in a consuming service's production logs.
+    @Nested
+    inner class `Delivery through a real broker` {
+        @Test
+        fun `should deliver a TECHNICAL and an AUDIT record through a real broker`() {
+            // What is to be tested? The central external system boundary
+            //   with a real broker: whether the appender's production
+            //   wiring - real KafkaProducer, forced ByteArraySerializers,
+            //   LZ4 default compression, enrichment headers, MDC-derived
+            //   partitioning key, and the AUDIT class's mandatory
+            //   acks=all/idempotence configuration - produces records a
+            //   broker actually accepts and a consumer can read back.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after stop() drains and flushes, a fresh consumer reads
+            //   exactly the TECHNICAL and the AUDIT record from their
+            //   topics with byte-exact payloads, the traceId key, and the
+            //   meta.* headers intact. Broker acceptance is the part no
+            //   MockProducer test can prove.
+            // Why is it important to test this test case? The offline suite
+            //   verifies the producer API contract, not the wire: an
+            //   API-compatible but broker-incompatible configuration (e.g.
+            //   an idempotence setting the broker rejects) would otherwise
+            //   surface first in a consuming service's production logs.
 
-        KafkaContainer(KAFKA_IMAGE).use { kafka ->
-            kafka.start()
+            KafkaContainer(KAFKA_IMAGE).use { kafka ->
+                kafka.start()
 
-            // Safety: pre-create the topics instead of relying on
-            // auto-creation. The appender caps max.block.ms at 500 ms
-            // (a production guarantee the test must not weaken), and on
-            // a cold CI broker the auto-creation/metadata round trip
-            // can exceed that - the first send then times out and the
-            // record diverts (no fallback configured -> dropped), which
-            // surfaced as a flaky empty consume in CI. Pre-creation
-            // takes topic bootstrap off the capped path.
-            createTopics(kafka.bootstrapServers)
+                // Safety: pre-create the topics instead of relying on
+                // auto-creation. The appender caps max.block.ms at 500 ms
+                // (a production guarantee the test must not weaken), and on
+                // a cold CI broker the auto-creation/metadata round trip
+                // can exceed that - the first send then times out and the
+                // record diverts (no fallback configured -> dropped), which
+                // surfaced as a flaky empty consume in CI. Pre-creation
+                // takes topic bootstrap off the capped path.
+                createTopics(kafka.bootstrapServers)
 
-            // Given: the production wiring - real KafkaProducer via the
-            // default ProducerFactory, one TECHNICAL (default topic) and
-            // one AUDIT class (marker mapping)
-            val appender =
-                KafkaAppender().apply {
-                    context = LoggerContext()
-                    encoder = MessageBytesEncoder()
-                    component = "integration-test"
-                    cmdbId = "CMDB-IT"
-                    environment = "it"
-                    kafkaProducerProperties = "bootstrap.servers=${kafka.bootstrapServers}"
-                    topicMapping =
-                        TopicMappingConfig().apply {
-                            defaultTopic = TECHNICAL_TOPIC
-                            addMapping(
-                                TopicMappingEntry().apply {
-                                    marker = "SECURITY"
-                                    topic = AUDIT_TOPIC
-                                    topicClass = "AUDIT"
-                                },
-                            )
+                // Given: the production wiring - real KafkaProducer via the
+                // default ProducerFactory, one TECHNICAL (default topic) and
+                // one AUDIT class (marker mapping)
+                val appender =
+                    newBrokerAppender(
+                        bootstrapServers = kafka.bootstrapServers,
+                        topicMapping =
+                            TopicMappingConfig().apply {
+                                defaultTopic = TECHNICAL_TOPIC
+                                addMapping(
+                                    TopicMappingEntry().apply {
+                                        marker = "SECURITY"
+                                        topic = AUDIT_TOPIC
+                                        topicClass = "AUDIT"
+                                    },
+                                )
+                            },
+                    )
+                appender.start()
+                assertThat(appender.isStarted).isTrue()
+
+                // When: one marker-less event (TECHNICAL, keyed by MDC traceId)
+                // and one SECURITY-marked event (AUDIT)
+                appender.doAppend(
+                    newTestLoggingEvent(
+                        message = "technical over the wire",
+                        mdc = mapOf("traceId" to "trace-42"),
+                    ),
+                )
+                appender.doAppend(
+                    (newTestLoggingEvent(message = "audit over the wire") as LoggingEvent)
+                        .apply { addMarker(MarkerFactory.getDetachedMarker("SECURITY")) },
+                )
+                // stop() drains the send queues through the open producers and
+                // closes them with a flush - after this, both records are
+                // either broker-acknowledged or the consumer below times out.
+                appender.stop()
+
+                // Then: both records are readable from the broker
+                val records = consume(kafka.bootstrapServers, expectedCount = 2)
+                assertThat(records).hasSize(2)
+
+                val technical = records.single { it.topic() == TECHNICAL_TOPIC }
+                assertThat(technical.value()).isEqualTo("technical over the wire".toByteArray(Charsets.UTF_8))
+                assertThat(technical.key()).isEqualTo("trace-42".toByteArray(Charsets.UTF_8))
+
+                val audit = records.single { it.topic() == AUDIT_TOPIC }
+                assertThat(audit.value()).isEqualTo("audit over the wire".toByteArray(Charsets.UTF_8))
+
+                // And: the enrichment headers survived the wire round-trip
+                for (record in records) {
+                    val headers =
+                        record.headers().toArray().associate { header ->
+                            header.key() to String(header.value(), Charsets.UTF_8)
                         }
+                    assertThat(headers)
+                        .containsEntry("meta.component", "integration-test")
+                        .containsEntry("meta.cmdbId", "CMDB-IT")
+                        .containsEntry("meta.environment", "it")
                 }
-            appender.start()
-            assertThat(appender.isStarted).isTrue()
+            }
+        }
 
-            // When: one marker-less event (TECHNICAL, keyed by MDC traceId)
-            // and one SECURITY-marked event (AUDIT)
-            appender.doAppend(
-                newTestLoggingEvent(
-                    message = "technical over the wire",
-                    mdc = mapOf("traceId" to "trace-42"),
-                ),
-            )
-            appender.doAppend(
-                (newTestLoggingEvent(message = "audit over the wire") as LoggingEvent)
-                    .apply { addMarker(MarkerFactory.getDetachedMarker("SECURITY")) },
-            )
-            // stop() drains the send queues through the open producers and
-            // closes them with a flush - after this, both records are
-            // either broker-acknowledged or the consumer below times out.
-            appender.stop()
+        @Test
+        fun `should mirror the producer's broker-dependent meters and remove them on stop`() {
+            // What is to be tested? The dynamic path of the producer-metrics
+            //   mirror against a real broker: the per-topic and per-node meters
+            //   the Kafka client creates only once it has connected and sent,
+            //   which Micrometer's KafkaClientMetrics picks up on its refresh
+            //   schedule and the RenamingMeterMirror republishes under
+            //   kafka.appender.producer.* - and their removal on stop().
+            // How will the test case be deemed successful and why? Successful
+            //   if, after one delivered TECHNICAL record, the operator's
+            //   registry holds kafka.appender.producer.topic.* meters for the
+            //   record's topic and kafka.appender.producer.node.* meters, all
+            //   tagged with topic.class and appender, and no raw kafka.producer.*
+            //   meter; and if after stop() no kafka.appender.* meter is left.
+            //   The offline suite never connects (unreachable broker) and so
+            //   only sees the meters the client registers at construction.
+            // Why is it important to test this test case? The topic and node
+            //   meters are the ones operators chart for per-topic throughput
+            //   and per-broker latency; a gap in mirroring later additions, or
+            //   an orphan left behind after stop, would show only under real
+            //   conditions.
 
-            // Then: both records are readable from the broker
-            val records = consume(kafka.bootstrapServers, expectedCount = 2)
-            assertThat(records).hasSize(2)
+            KafkaContainer(KAFKA_IMAGE).use { kafka ->
+                kafka.start()
+                createTopics(kafka.bootstrapServers)
 
-            val technical = records.single { it.topic() == TECHNICAL_TOPIC }
-            assertThat(technical.value()).isEqualTo("technical over the wire".toByteArray(Charsets.UTF_8))
-            assertThat(technical.key()).isEqualTo("trace-42".toByteArray(Charsets.UTF_8))
+                // Given: a started appender against the broker, bound to a registry
+                val registry = SimpleMeterRegistry()
+                val appender =
+                    newBrokerAppender(
+                        bootstrapServers = kafka.bootstrapServers,
+                        topicMapping = TopicMappingConfig().apply { defaultTopic = TECHNICAL_TOPIC },
+                    )
+                appender.start()
+                assertThat(appender.isStarted).isTrue()
+                appender.bindMeterRegistry(registry)
 
-            val audit = records.single { it.topic() == AUDIT_TOPIC }
-            assertThat(audit.value()).isEqualTo("audit over the wire".toByteArray(Charsets.UTF_8))
+                // When: one record is delivered
+                appender.doAppend(newTestLoggingEvent(message = "metrics over the wire"))
 
-            // And: the enrichment headers survived the wire round-trip
-            for (record in records) {
-                val headers =
-                    record.headers().toArray().associate { header ->
-                        header.key() to String(header.value(), Charsets.UTF_8)
-                    }
-                assertThat(headers)
-                    .containsEntry("meta.component", "integration-test")
-                    .containsEntry("meta.cmdbId", "CMDB-IT")
-                    .containsEntry("meta.environment", "it")
+                // Then: the broker-dependent meters appear in the appender's
+                //   namespace - KafkaClientMetrics adds them on its refresh
+                //   schedule (60 s by default), hence the generous bound
+                val topicMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.topic.") } }
+                val nodeMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.node.") } }
+                pollUntil(timeoutMs = METER_REFRESH_TIMEOUT.toMillis(), intervalMs = 250) {
+                    topicMeters().any { it.id.getTag("topic") == TECHNICAL_TOPIC } && nodeMeters().isNotEmpty()
+                }
+                assertThat(topicMeters() + nodeMeters()).allSatisfy { meter ->
+                    assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("technical")
+                    assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
+                }
+                assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
+
+                // And: stop() removes every appender meter, the dynamic ones included
+                appender.stop()
+                assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
             }
         }
     }
 
-    @Test
-    fun `should mirror the producer's broker-dependent meters and remove them on stop`() {
-        // What is to be tested? The dynamic path of the producer-metrics
-        //   mirror against a real broker: the per-topic and per-node meters
-        //   the Kafka client creates only once it has connected and sent,
-        //   which Micrometer's KafkaClientMetrics picks up on its refresh
-        //   schedule and the RenamingMeterMirror republishes under
-        //   kafka.appender.producer.* - and their removal on stop().
-        // How will the test case be deemed successful and why? Successful
-        //   if, after one delivered TECHNICAL record, the operator's
-        //   registry holds kafka.appender.producer.topic.* meters for the
-        //   record's topic and kafka.appender.producer.node.* meters, all
-        //   tagged with topic.class and appender, and no raw kafka.producer.*
-        //   meter; and if after stop() no kafka.appender.* meter is left.
-        //   The offline suite never connects (unreachable broker) and so
-        //   only sees the meters the client registers at construction.
-        // Why is it important to test this test case? The topic and node
-        //   meters are the ones operators chart for per-topic throughput
-        //   and per-broker latency; a gap in mirroring later additions, or
-        //   an orphan left behind after stop, would show only under real
-        //   conditions.
-
-        KafkaContainer(KAFKA_IMAGE).use { kafka ->
-            kafka.start()
-            createTopics(kafka.bootstrapServers)
-
-            // Given: a started appender against the broker, bound to a registry
-            val registry = SimpleMeterRegistry()
-            val appender =
-                KafkaAppender().apply {
-                    context = LoggerContext()
-                    encoder = MessageBytesEncoder()
-                    component = "integration-test"
-                    cmdbId = "CMDB-IT"
-                    environment = "it"
-                    kafkaProducerProperties = "bootstrap.servers=${kafka.bootstrapServers}"
-                    topicMapping = TopicMappingConfig().apply { defaultTopic = TECHNICAL_TOPIC }
-                }
-            appender.start()
-            assertThat(appender.isStarted).isTrue()
-            appender.bindMeterRegistry(registry)
-
-            // When: one record is delivered
-            appender.doAppend(newTestLoggingEvent(message = "metrics over the wire"))
-
-            // Then: the broker-dependent meters appear in the appender's
-            //   namespace - KafkaClientMetrics adds them on its refresh
-            //   schedule (60 s by default), hence the generous bound
-            val topicMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.topic.") } }
-            val nodeMeters = { registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.node.") } }
-            pollUntil(timeoutMs = METER_REFRESH_TIMEOUT.toMillis(), intervalMs = 250) {
-                topicMeters().any { it.id.getTag("topic") == TECHNICAL_TOPIC } && nodeMeters().isNotEmpty()
-            }
-            assertThat(topicMeters() + nodeMeters()).allSatisfy { meter ->
-                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("technical")
-                assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
-            }
-            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
-
-            // And: stop() removes every appender meter, the dynamic ones included
-            appender.stop()
-            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
-        }
-    }
+    /** The production wiring against the container: real producers via the default factory. */
+    private fun newBrokerAppender(
+        bootstrapServers: String,
+        topicMapping: TopicMappingConfig,
+    ): KafkaAppender =
+        newTestAppender(
+            component = "integration-test",
+            cmdbId = "CMDB-IT",
+            environment = "it",
+            kafkaProducerProperties = "bootstrap.servers=$bootstrapServers",
+            topicMapping = topicMapping,
+            producerFactory = ProducerFactory.default(),
+        )
 
     private fun createTopics(bootstrapServers: String) {
         Admin.create(mapOf<String, Any>(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG to bootstrapServers)).use { admin ->

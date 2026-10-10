@@ -188,7 +188,7 @@ internal class SendDispatcher(
                     }
                 }
             }
-        // Exactly-once across ALL diversion paths, the sender's
+        // Invariant: exactly-once across ALL diversion paths, the sender's
         // included, and a stand-down for an event already handed to
         // the producer - see PendingSend.ownership.
         if (!item.ownership.tryDivert()) {

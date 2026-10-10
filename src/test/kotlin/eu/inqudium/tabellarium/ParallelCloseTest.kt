@@ -11,6 +11,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.system.measureTimeMillis
 
 /**
  * Pins the shared parallel-close helper on its own: the budget is one
@@ -74,9 +75,7 @@ class ParallelCloseTest {
                 }
 
             // When
-            val startNanos = System.nanoTime()
-            closeInParallel(budgetMs = 5_000, tasks = tasks)
-            val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+            val elapsedMs = measureTimeMillis { closeInParallel(budgetMs = 5_000, tasks = tasks) }
 
             // Then: everything ran, and the call did not sit on the budget
             assertThat(ran.get()).isEqualTo(3)
@@ -122,11 +121,7 @@ class ParallelCloseTest {
             val elapsedMs: Long =
                 assertTimeoutPreemptively(
                     Duration.ofSeconds(5),
-                    ThrowingSupplier {
-                        val startNanos = System.nanoTime()
-                        closeInParallel(budgetMs = budgetMs, tasks = tasks)
-                        (System.nanoTime() - startNanos) / 1_000_000
-                    },
+                    ThrowingSupplier { measureTimeMillis { closeInParallel(budgetMs = budgetMs, tasks = tasks) } },
                 )
 
             // Then: every task started, the caller waited the budget and no more
@@ -149,9 +144,7 @@ class ParallelCloseTest {
             //   there would be a silent shutdown delay.
 
             // When
-            val startNanos = System.nanoTime()
-            closeInParallel(budgetMs = 5_000, tasks = emptyList())
-            val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+            val elapsedMs = measureTimeMillis { closeInParallel(budgetMs = 5_000, tasks = emptyList()) }
 
             // Then
             assertThat(elapsedMs).isLessThan(1_000)
@@ -189,9 +182,10 @@ class ParallelCloseTest {
                     closeInParallel(budgetMs = 10_000, tasks = tasks)
                     interruptedAfterReturn.set(Thread.currentThread().isInterrupted)
                     returned.countDown()
+                }.apply {
+                    isDaemon = true
+                    start()
                 }
-            caller.isDaemon = true
-            caller.start()
             pollUntil { blockedRan.get() }
 
             // When: the caller is interrupted while waiting on the closer

@@ -20,10 +20,10 @@ import java.util.concurrent.atomic.AtomicReference
  * Rationale: the two dispatchers used to be near-copies whose KDoc
  * cross-referenced each other ("mirrors", "the canonical description
  * lives there") - and they diverged in exactly one close-budget detail
- * (`docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.md`, finding 3).
+ * (`CODE_ANALYSIS-2026-09-07T19-09-00`, finding 3).
  * A prose promise that two pieces of code stay identical does not
  * survive change; one class does
- * (`docs/assessment/ARCHITECTURE_REVIEW-2026-09-07T20-23-00.md`, finding 1).
+ * (`ARCHITECTURE_REVIEW-2026-09-07T20-23-00`, finding 1).
  *
  * ## The protocol, once
  *
@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   item itself and make [reject] stand down for a handed-off item
  *   ([SendDispatcher] does, via [DeliveryOwnership]); otherwise the
  *   close's claim would divert a record already on its way
- *   (`docs/assessment/DEFECT_ANALYSIS-2026-09-15T22-05-50.md`, M-2).
+ *   (`DEFECT_ANALYSIS-2026-09-15T22-05-50`, M-2).
  *   For a delivery whose hand-off *is* its return (`doAppend` in the
  *   [FallbackDispatcher]), the release follows within the same
  *   statement; a close that claims in that gap over-counts one drop
@@ -150,11 +150,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
             setUncaughtExceptionHandler { _, throwable ->
                 workerDied = true
                 running = false
-                inFlight.getAndSet(null)?.let { reject(it, Rejection.WORKER_DEATH) }
-                while (true) {
-                    val item = queue.poll() ?: break
-                    reject(item, Rejection.WORKER_DEATH)
-                }
+                rejectRemaining(Rejection.WORKER_DEATH)
                 onWorkerDeath(throwable)
             }
             start()
@@ -193,7 +189,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
             return
         }
         running = false
-        // Phase 1: graceful drain. The worker's poll(100, MS) wakes up on
+        // Phase 1: graceful drain. The worker's poll(WORKER_POLL_MS) wakes up on
         // its next timeout, sees running=false, enters the drain loop and
         // keeps delivering until the queue is empty.
         // Invariant: the drain gets the whole budget before any interrupt
@@ -229,13 +225,22 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         // fails and nothing is counted twice (the conservative direction).
         // Rationale: drain rather than read queue.size, so the items are
         // released and cannot be re-accounted by a later call.
-        inFlight.getAndSet(null)?.let { reject(it, Rejection.SHUTDOWN_REMAINDER) }
-        while (true) {
-            val item = queue.poll() ?: break
-            reject(item, Rejection.SHUTDOWN_REMAINDER)
-        }
+        rejectRemaining(Rejection.SHUTDOWN_REMAINDER)
         if (interrupted) {
             Thread.currentThread().interrupt()
+        }
+    }
+
+    /**
+     * Claims the in-flight item, then drains the queue, rejecting each
+     * with [rejection]. The one place the worker-death handler and
+     * [close] account for what the worker will never deliver.
+     */
+    private fun rejectRemaining(rejection: Rejection) {
+        inFlight.getAndSet(null)?.let { reject(it, rejection) }
+        while (true) {
+            val item = queue.poll() ?: break
+            reject(item, rejection)
         }
     }
 
@@ -243,7 +248,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         while (running) {
             val item =
                 try {
-                    queue.poll(100, TimeUnit.MILLISECONDS)
+                    queue.poll(WORKER_POLL_MS, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
                     // Forced shutdown: exit immediately rather than pull
                     // another item that could then park in delivery as a
@@ -307,5 +312,12 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
          * itself. Comes on top of the drain budget.
          */
         const val INTERRUPT_GRACE_MS: Long = 500
+
+        /**
+         * How long the worker's queue poll blocks before it re-checks
+         * the running flag - the latency with which an idle worker
+         * notices [close] and enters the graceful drain.
+         */
+        const val WORKER_POLL_MS: Long = 100
     }
 }

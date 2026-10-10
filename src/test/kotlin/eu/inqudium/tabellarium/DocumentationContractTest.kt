@@ -1,6 +1,5 @@
 package eu.inqudium.tabellarium
 
-import ch.qos.logback.classic.LoggerContext
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.producer.ProducerConfig
@@ -29,18 +28,19 @@ class DocumentationContractTest {
         Files.readAllLines(Path.of("docs", "config", "kafka-appender-config-guide.md"))
 
     /** The "Default" cell of the defaults-table row whose "Setting" cell starts with [setting]. */
-    private fun defaultOf(setting: String): String {
-        val row =
-            guide.singleOrNull { it.startsWith("| $setting") }
-                ?: error("defaults table row '$setting' not found exactly once in the configuration guide")
-        return row.split("|")[2].trim()
-    }
+    private fun defaultOf(setting: String): String = defaultCell(rowStart = "| $setting", table = "defaults table")
 
     /** The "Default" cell of the circuit-breaker table row for [property]. */
-    private fun breakerDefaultOf(property: String): String {
+    private fun breakerDefaultOf(property: String): String = defaultCell(rowStart = "| `$property`", table = "circuit-breaker table")
+
+    /** The "Default" (second) cell of the one guide row starting with [rowStart]; [table] names it in the failure message. */
+    private fun defaultCell(
+        rowStart: String,
+        table: String,
+    ): String {
         val row =
-            guide.singleOrNull { it.startsWith("| `$property`") }
-                ?: error("circuit-breaker table row '$property' not found exactly once in the configuration guide")
+            guide.singleOrNull { it.startsWith(rowStart) }
+                ?: error("$table row '$rowStart' not found exactly once in the configuration guide")
         return row.split("|")[2].trim()
     }
 
@@ -68,7 +68,7 @@ class DocumentationContractTest {
             assertThat(defaultOf("Fallback dispatcher queue capacity"))
                 .contains("`${FallbackDispatcher.DEFAULT_QUEUE_CAPACITY}`")
             assertThat(defaultOf("Fallback dispatcher shutdown timeout"))
-                .contains("`${FallbackDispatcher.DEFAULT_SHUTDOWN_TIMEOUT_MS / 1000} s` drain")
+                .contains("`${FallbackDispatcher.DEFAULT_DRAIN_TIMEOUT_MS / 1000} s` drain")
                 .contains("`${BoundedWorkerDispatcher.INTERRUPT_GRACE_MS / 1000.0} s` interrupt grace")
             assertThat(defaultOf("Producer close timeout"))
                 .contains("`${ProducerRegistry.DEFAULT_CLOSE_TIMEOUT.toSeconds()} s`")
@@ -125,10 +125,7 @@ class DocumentationContractTest {
          * circuit-breaker and producer bridges documented further down.
          */
         private fun documentedTags(): Map<String, List<String>> =
-            overview
-                .dropWhile { it != "## Metric inventory" }
-                .drop(1)
-                .takeWhile { !it.startsWith("## ") }
+            section(overview, "## Metric inventory")
                 .filter { it.startsWith("| `kafka.appender.") }
                 .associate { row ->
                     val cells = row.split("|").map { it.trim() }
@@ -259,10 +256,7 @@ class DocumentationContractTest {
 
             // When: the guide's breaker table is read
             val documented =
-                overview
-                    .dropWhile { it != "## Circuit breaker metrics" }
-                    .drop(1)
-                    .takeWhile { !it.startsWith("## ") }
+                section(overview, "## Circuit breaker metrics")
                     .filter { it.startsWith("| `kafka.appender.circuitbreaker.") }
                     .associate { row ->
                         val cells = row.split("|").map { it.trim() }
@@ -298,10 +292,7 @@ class DocumentationContractTest {
 
             // When: the guide's producer table is read
             val documented =
-                overview
-                    .dropWhile { !it.startsWith("## Kafka producer bridge") }
-                    .drop(1)
-                    .takeWhile { !it.startsWith("## ") }
+                section(overview, "## Kafka producer bridge")
                     .filter { it.startsWith("| `kafka.appender.producer.") }
                     .map { it.split("|")[1].trim().trim('`') }
 
@@ -323,9 +314,7 @@ class DocumentationContractTest {
             lines: List<String>,
             heading: String,
         ): Map<String, Pair<String, Set<String>>> =
-            lines
-                .dropWhile { it != heading }
-                .drop(1)
+            section(lines, heading)
                 .dropWhile { !it.startsWith("| `kafka.appender.") }
                 .takeWhile { it.startsWith("|") }
                 .associate { row ->
@@ -355,7 +344,11 @@ class DocumentationContractTest {
             //   first page operators read; only the metrics guide's copy was
             //   checked, so this one could drift on every metric change
             //   (DEFECT_ANALYSIS-2026-10-10T13-00-00, finding 15).
+
+            // Given: the README as checked in
             val readme = Files.readAllLines(Path.of("README.md"))
+
+            // When / Then: its inventory equals the meters a real binding registers
             assertThat(inventoryTable(readme, "## Metrics")).containsExactlyInAnyOrderEntriesOf(liveOwnMeters())
         }
 
@@ -368,6 +361,8 @@ class DocumentationContractTest {
             //   if the table equals the inventory read from a real binding.
             // Why is it important to test this test case? Same as for the
             //   README copy: an unchecked duplicate drifts.
+
+            // Given / When / Then: the guide's inventory equals the meters a real binding registers
             assertThat(inventoryTable(guide, "### Metric inventory")).containsExactlyInAnyOrderEntriesOf(liveOwnMeters())
         }
     }
@@ -375,6 +370,12 @@ class DocumentationContractTest {
     private companion object {
         /** The backtick-quoted tag keys in a table cell. */
         fun tagsIn(cell: String): Set<String> = Regex("`([a-z._]+)`").findAll(cell).map { it.groupValues[1] }.toSet()
+
+        /** The lines after the first line of [lines] starting with [heading], up to the next `## ` heading. */
+        fun section(
+            lines: List<String>,
+            heading: String,
+        ): List<String> = lines.dropWhile { !it.startsWith(heading) }.drop(1).takeWhile { !it.startsWith("## ") }
 
         /** Documentation word for a Micrometer meter type. */
         fun typeWord(type: Meter.Type): String =
@@ -395,18 +396,15 @@ class DocumentationContractTest {
         fun liveInventory(realProducers: Boolean = false): Map<String, Pair<String, Set<String>>> {
             val registry = SimpleMeterRegistry()
             val appender =
-                KafkaAppender().apply {
-                    context = LoggerContext()
-                    encoder = MessageBytesEncoder()
-                    component = "doc-contract"
-                    cmdbId = "CMDB-DOC"
-                    environment = "test"
+                newTestAppender(
+                    component = "doc-contract",
+                    cmdbId = "CMDB-DOC",
                     kafkaProducerProperties =
-                        "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=${if (realProducers) "localhost:1" else "test:9092"}"
-                    topicMapping = TopicMappingConfig().apply { defaultTopic = "doc.topic" }
-                    producerFactory = if (realProducers) ProducerFactory.default() else RecordingProducerFactory()
-                    addAppender(RecordingAppender())
-                }
+                        "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=${if (realProducers) "localhost:1" else "test:9092"}",
+                    topicMapping = TopicMappingConfig().apply { defaultTopic = "doc.topic" },
+                    producerFactory = if (realProducers) ProducerFactory.default() else RecordingProducerFactory(),
+                    fallback = RecordingAppender(),
+                )
             appender.start()
             check(appender.isStarted) { "the documentation-contract appender did not start" }
             try {

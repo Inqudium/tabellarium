@@ -28,7 +28,7 @@ class ClientIdSelfLoggingGuardTest {
 
     private fun guard(vararg clientIds: String) = ClientIdSelfLoggingGuard(clientIds.toSet()).also { createdGuards += it }
 
-    private fun networkThreadOf(clientId: String) = ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId
+    private fun networkThreadOf(clientId: String) = "${ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX}$clientId"
 
     private fun eventFrom(threadName: String) = newTestLoggingEvent(message = "probe", threadName = threadName)
 
@@ -54,7 +54,7 @@ class ClientIdSelfLoggingGuardTest {
             val guard = guard(clientId)
 
             // When / Then
-            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + clientId))).isTrue()
+            assertThat(guard.shouldDrop(eventFrom(networkThreadOf(clientId)))).isTrue()
         }
 
         @Test
@@ -78,7 +78,7 @@ class ClientIdSelfLoggingGuardTest {
 
             // When / Then
             assertThat(guard.shouldDrop(eventFrom("app-worker-$clientId"))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "other-instance-audit"))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(networkThreadOf("other-instance-audit")))).isFalse()
             assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
             assertThat(guard.shouldDrop(eventFrom("main"))).isFalse()
         }
@@ -101,7 +101,7 @@ class ClientIdSelfLoggingGuardTest {
 
             // When / Then
             assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX + "  "))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(networkThreadOf("  ")))).isFalse()
         }
     }
 

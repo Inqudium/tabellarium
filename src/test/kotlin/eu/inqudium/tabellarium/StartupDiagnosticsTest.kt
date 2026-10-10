@@ -61,7 +61,7 @@ class StartupDiagnosticsTest {
                 )
 
             // When
-            val message = StartupDiagnostics.mandatoryOverrideWarning(violation)
+            val message = mandatoryOverrideWarning(violation)
 
             // Then
             assertThat(message)
@@ -91,7 +91,7 @@ class StartupDiagnosticsTest {
             val registry = newRegistry(setOf(TopicClass.AUDIT))
 
             // When
-            val message = StartupDiagnostics.cleartextTransportWarning(registry)
+            val message = cleartextTransportWarning(registry)
 
             // Then
             assertThat(message)
@@ -122,7 +122,7 @@ class StartupDiagnosticsTest {
                 )
 
             // When / Then
-            assertThat(StartupDiagnostics.cleartextTransportWarning(registry))
+            assertThat(cleartextTransportWarning(registry))
                 .isNotNull()
                 .contains("FUNCTIONAL")
         }
@@ -147,7 +147,7 @@ class StartupDiagnosticsTest {
                 )
 
             // When / Then
-            assertThat(StartupDiagnostics.cleartextTransportWarning(registry)).isNull()
+            assertThat(cleartextTransportWarning(registry)).isNull()
         }
 
         @Test
@@ -166,7 +166,7 @@ class StartupDiagnosticsTest {
             val registry = newRegistry(setOf(TopicClass.TECHNICAL, TopicClass.PERFORMANCE))
 
             // When / Then
-            assertThat(StartupDiagnostics.cleartextTransportWarning(registry)).isNull()
+            assertThat(cleartextTransportWarning(registry)).isNull()
         }
     }
 
@@ -189,7 +189,7 @@ class StartupDiagnosticsTest {
             val registry = newRegistry(setOf(TopicClass.AUDIT, TopicClass.TECHNICAL))
 
             // When
-            val messages = StartupDiagnostics.debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = "")
+            val messages = debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = "")
 
             // Then
             assertThat(messages[0]).contains("<debug>").contains("no per-event effect")
@@ -217,9 +217,9 @@ class StartupDiagnosticsTest {
             val notStarted = ListAppender<ILoggingEvent>()
 
             // When
-            val without = StartupDiagnostics.debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = "")
-            val with = StartupDiagnostics.debugMessages(registry, fallbackAppender = started, kafkaProducerProperties = "")
-            val dead = StartupDiagnostics.debugMessages(registry, fallbackAppender = notStarted, kafkaProducerProperties = "")
+            val without = debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = "")
+            val with = debugMessages(registry, fallbackAppender = started, kafkaProducerProperties = "")
+            val dead = debugMessages(registry, fallbackAppender = notStarted, kafkaProducerProperties = "")
 
             // Then
             assertThat(without).anyMatch { it.startsWith("Fallback appender: none") }
@@ -251,7 +251,7 @@ class StartupDiagnosticsTest {
             val registry = newRegistry(setOf(TopicClass.AUDIT), parseKafkaProducerProperties(text))
 
             // When
-            val messages = StartupDiagnostics.debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = text)
+            val messages = debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = text)
 
             // Then
             val auditLine = messages.single { it.startsWith("Generated producer settings [audit]") }

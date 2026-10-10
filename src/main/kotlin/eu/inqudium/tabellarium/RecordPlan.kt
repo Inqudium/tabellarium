@@ -94,7 +94,7 @@ internal class RecordPlan private constructor(
                         environment = environment,
                     ),
                 encoder = encoder,
-                // The router validated the default topic; the table
+                // Invariant: the router validated the default topic; the table
                 // guarantees a mapping naming it agrees on the class.
                 topics = topicTable.topics + (topicMapping.defaultTopic to topicTable.fallbackClass),
             )
@@ -103,7 +103,7 @@ internal class RecordPlan private constructor(
 }
 
 /** Where an event goes: the resolved topic and its topic class. */
-internal class Route(
+internal data class Route(
     val topicName: String,
     val topicClass: TopicClass,
 )

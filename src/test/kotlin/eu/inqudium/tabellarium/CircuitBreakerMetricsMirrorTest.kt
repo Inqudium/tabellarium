@@ -1,11 +1,9 @@
 package eu.inqudium.tabellarium
 
-import ch.qos.logback.classic.LoggerContext
 import io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
-import org.apache.kafka.clients.producer.ProducerConfig
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -88,16 +86,7 @@ class CircuitBreakerMetricsMirrorTest {
         //   appender under test on one side and to the reference on the other
         val breakerRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry()
         val appender =
-            KafkaAppender().also { createdAppenders += it }.apply {
-                context = LoggerContext()
-                name = "KAFKA_MIRROR"
-                encoder = MessageBytesEncoder()
-                component = "mirror-test"
-                cmdbId = "CMDB-TEST"
-                environment = "test"
-                kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092"
-                topicMapping = TopicMappingConfig().apply { defaultTopic = "default.topic" }
-                producerFactory = RecordingProducerFactory()
+            newTestAppender(name = "KAFKA_MIRROR", component = "mirror-test").also { createdAppenders += it }.apply {
                 circuitBreakerRegistry = breakerRegistry
             }
         appender.start()

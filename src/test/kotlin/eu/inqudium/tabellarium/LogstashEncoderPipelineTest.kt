@@ -6,7 +6,6 @@ import ch.qos.logback.classic.spi.LoggingEvent
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import net.logstash.logback.encoder.LogstashEncoder
-import org.apache.kafka.clients.producer.ProducerConfig
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.slf4j.event.KeyValuePair
@@ -46,16 +45,14 @@ class LogstashEncoderPipelineTest {
         val factory = RecordingProducerFactory()
         val registry = SimpleMeterRegistry()
         val appender =
-            KafkaAppender().apply {
-                this.context = context
-                encoder = LogstashEncoder().apply { this.context = context }
-                component = "logstash-test"
-                cmdbId = "CMDB-LOGSTASH"
-                environment = "test"
-                kafkaProducerProperties = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092"
-                topicMapping = TopicMappingConfig().apply { defaultTopic = "logstash.topic" }
-                producerFactory = factory
-            }
+            newTestAppender(
+                context = context,
+                encoder = LogstashEncoder().apply { this.context = context },
+                component = "logstash-test",
+                cmdbId = "CMDB-LOGSTASH",
+                topicMapping = TopicMappingConfig().apply { defaultTopic = "logstash.topic" },
+                producerFactory = factory,
+            )
         // stop() in finally: a failing assertion before it would leak the
         // workers and the process-wide guard names into later tests
         // (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md, finding 11).

@@ -2,9 +2,22 @@ package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.Appender
+import ch.qos.logback.core.encoder.Encoder
 import ch.qos.logback.core.encoder.EncoderBase
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
+import io.micrometer.core.instrument.FunctionCounter
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Meter
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Tag
+import io.micrometer.core.instrument.TimeGauge
+import io.micrometer.core.instrument.Timer
+import io.micrometer.core.instrument.search.Search
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
+import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.ByteArraySerializer
 
 /*
@@ -101,3 +114,99 @@ internal class ThrowingEncoder : EncoderBase<ILoggingEvent>() {
 
     override fun footerBytes(): ByteArray = ByteArray(0)
 }
+
+// region Meter lookups
+
+/*
+ * Rationale: one lookup form for every test that reads a meter. A
+ * missing meter fails with its name and tags instead of a bare NPE
+ * after `isNotNull` plus a non-null assertion, or an "expected 1.0
+ * but was null" from a `?.count()` passed into `assertThat`
+ * (CODE_STYLE-2026-10-10T16-38-23, findings 1 and 2). Tests that
+ * assert a meter's absence keep using `find(...)` directly.
+ */
+
+private fun <M : Meter> MeterRegistry.requireMeter(
+    kind: String,
+    name: String,
+    tags: Array<out Pair<String, String>>,
+    lookup: (Search) -> M?,
+): M = lookup(find(name).tags(tags.map { Tag.of(it.first, it.second) })) ?: error("$kind $name with tags ${tags.toList()} not registered")
+
+/** The counter [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireCounter(
+    name: String,
+    vararg tags: Pair<String, String>,
+): Counter = requireMeter("counter", name, tags) { it.counter() }
+
+/** The function counter [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireFunctionCounter(
+    name: String,
+    vararg tags: Pair<String, String>,
+): FunctionCounter = requireMeter("function counter", name, tags) { it.functionCounter() }
+
+/** The gauge [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireGauge(
+    name: String,
+    vararg tags: Pair<String, String>,
+): Gauge = requireMeter("gauge", name, tags) { it.gauge() }
+
+/** The time gauge [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireTimeGauge(
+    name: String,
+    vararg tags: Pair<String, String>,
+): TimeGauge = requireMeter("time gauge", name, tags) { it.timeGauge() }
+
+/** The timer [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireTimer(
+    name: String,
+    vararg tags: Pair<String, String>,
+): Timer = requireMeter("timer", name, tags) { it.timer() }
+
+/** The distribution summary [name] carrying (at least) [tags]; fails naming both when absent. */
+internal fun MeterRegistry.requireSummary(
+    name: String,
+    vararg tags: Pair<String, String>,
+): DistributionSummary = requireMeter("summary", name, tags) { it.summary() }
+
+// endregion
+
+// region Appender fixture
+
+/**
+ * An unstarted [KafkaAppender] with every mandatory property set: the
+ * one place a newly mandatory property is added
+ * (CODE_STYLE-2026-10-10T16-38-23, finding 21). Callers override only
+ * what their test is about and own the lifecycle (start, stop, cleanup
+ * lists).
+ *
+ * @param name Appender name; `null` keeps the appender's own default.
+ * @param fallback Filled via `addAppender`, the path Joran's
+ *                 `<appender-ref>` takes.
+ */
+internal fun newTestAppender(
+    context: LoggerContext = LoggerContext(),
+    name: String? = null,
+    encoder: Encoder<ILoggingEvent>? = MessageBytesEncoder(),
+    component: String = "test-service",
+    cmdbId: String = "CMDB-TEST",
+    environment: String = "test",
+    kafkaProducerProperties: String = "${ProducerConfig.BOOTSTRAP_SERVERS_CONFIG}=test:9092",
+    topicMapping: TopicMappingConfig = TopicMappingConfig().apply { defaultTopic = "default.topic" },
+    producerFactory: ProducerFactory = RecordingProducerFactory(),
+    fallback: Appender<ILoggingEvent>? = null,
+): KafkaAppender =
+    KafkaAppender().apply {
+        this.context = context
+        name?.let { this.name = it }
+        this.encoder = encoder
+        this.component = component
+        this.cmdbId = cmdbId
+        this.environment = environment
+        this.kafkaProducerProperties = kafkaProducerProperties
+        this.topicMapping = topicMapping
+        this.producerFactory = producerFactory
+        fallback?.let { addAppender(it) }
+    }
+
+// endregion

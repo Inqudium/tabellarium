@@ -44,6 +44,12 @@ class SendDispatcherTest {
 
     private fun pending(message: String) = newTestLoggingEvent(message = message)
 
+    /** Dispatches an event carrying [message] with an empty payload and enrichment - only the event identity varies between tests. */
+    private fun SendDispatcher.dispatchEvent(
+        message: String,
+        topic: String = "t",
+    ) = dispatch(topicName = topic, payload = ByteArray(0), enrichment = EnrichedRecord(null, emptyList()), originalEvent = pending(message))
+
     /**
      * Real (asynchronous) fallback dispatcher, as in production.
      * Assertions on the recorder poll with [pollUntil]; where a test
@@ -108,8 +114,8 @@ class SendDispatcherTest {
             val bothDispatchesReturned = CountDownLatch(1)
             val caller =
                 Thread {
-                    dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("first"))
-                    dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("second"))
+                    dispatcher.dispatchEvent("first")
+                    dispatcher.dispatchEvent("second")
                     bothDispatchesReturned.countDown()
                 }
             try {
@@ -155,7 +161,7 @@ class SendDispatcherTest {
             try {
                 // When
                 (1..5).forEach { i ->
-                    dispatcher.dispatch("topic-$i", ByteArray(0), EnrichedRecord(null, emptyList()), pending("e$i"))
+                    dispatcher.dispatchEvent("e$i", topic = "topic-$i")
                 }
 
                 // Then: all delivered, in order
@@ -202,7 +208,7 @@ class SendDispatcherTest {
                 )
             try {
                 // When
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("probe"))
+                dispatcher.dispatchEvent("probe")
 
                 // Then
                 pollUntil { guardSeenTrue.get() }
@@ -257,11 +263,11 @@ class SendDispatcherTest {
             try {
                 // When: first dispatch pins the worker, second fills the
                 //   queue, third and fourth overflow
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
+                dispatcher.dispatchEvent("in-flight")
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued"))
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("overflow-1"))
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("overflow-2"))
+                dispatcher.dispatchEvent("queued")
+                dispatcher.dispatchEvent("overflow-1")
+                dispatcher.dispatchEvent("overflow-2")
 
                 // Then: the overflow events reached the fallback with the
                 //   queue-full reason; nothing blocked
@@ -308,7 +314,7 @@ class SendDispatcherTest {
 
             // When
             (1..4).forEach { i ->
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("e$i"))
+                dispatcher.dispatchEvent("e$i")
             }
             dispatcher.close()
 
@@ -346,27 +352,17 @@ class SendDispatcherTest {
                     topicClass = TopicClass.TECHNICAL,
                     sendAction = {
                         entered.countDown()
-                        var wasInterrupted = false
-                        while (release.count > 0) {
-                            try {
-                                release.await()
-                            } catch (_: InterruptedException) {
-                                wasInterrupted = true
-                            }
-                        }
-                        if (wasInterrupted) {
-                            Thread.currentThread().interrupt()
-                        }
+                        awaitUninterruptibly(release)
                         sendReturned.set(true)
                     },
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
             dispatcher.setMetrics(metrics)
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
+            dispatcher.dispatchEvent("in-flight")
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
             (1..3).forEach { i ->
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-$i"))
+                dispatcher.dispatchEvent("queued-$i")
             }
 
             // When
@@ -441,7 +437,7 @@ class SendDispatcherTest {
                     drainTimeoutMs = 100,
                 )
             dispatcher.setMetrics(metrics)
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("parked"))
+            dispatcher.dispatchEvent("parked")
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
 
             // When: the drain budget passes with the worker still parked
@@ -491,26 +487,16 @@ class SendDispatcherTest {
                     topicClass = TopicClass.TECHNICAL,
                     sendAction = {
                         entered.countDown()
-                        var wasInterrupted = false
-                        while (release.count > 0) {
-                            try {
-                                release.await()
-                            } catch (_: InterruptedException) {
-                                wasInterrupted = true
-                            }
-                        }
-                        if (wasInterrupted) {
-                            Thread.currentThread().interrupt()
-                        }
+                        awaitUninterruptibly(release)
                     },
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 60_000,
                 )
             dispatcher.setMetrics(metrics)
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
+            dispatcher.dispatchEvent("in-flight")
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-1"))
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-2"))
+            dispatcher.dispatchEvent("queued-1")
+            dispatcher.dispatchEvent("queued-2")
 
             // When: closed from an interrupted thread
             Thread.currentThread().interrupt()
@@ -560,7 +546,7 @@ class SendDispatcherTest {
             dispatcher.close()
 
             // When
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("late"))
+            dispatcher.dispatchEvent("late")
 
             // Then
             pollUntil { recorder.events.size == 1 }
@@ -598,7 +584,7 @@ class SendDispatcherTest {
                 )
             try {
                 // When
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("doomed"))
+                dispatcher.dispatchEvent("doomed")
 
                 // Then: death reported, item diverted exactly once
                 pollUntil { death.get() != null }
@@ -649,9 +635,9 @@ class SendDispatcherTest {
             dispatcher.setMetrics(metrics)
             try {
                 // When: one item in flight, one queued behind it
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("in-flight"))
+                dispatcher.dispatchEvent("in-flight")
                 assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued"))
+                dispatcher.dispatchEvent("queued")
                 release.countDown()
                 pollUntil { death.get() != null }
 
@@ -662,7 +648,7 @@ class SendDispatcherTest {
                     .containsExactlyInAnyOrder("in-flight", "queued")
 
                 // And: a dispatch after the death diverts on the caller
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("after-death"))
+                dispatcher.dispatchEvent("after-death")
                 pollUntil { recorder.events.size == 3 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactlyInAnyOrder("in-flight", "queued", "after-death")
@@ -718,8 +704,8 @@ class SendDispatcherTest {
             dispatcher.setMetrics(metrics)
             try {
                 // When: the first event fails, the second follows
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("failing"))
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("later"))
+                dispatcher.dispatchEvent("failing")
+                dispatcher.dispatchEvent("later")
 
                 // Then: the failing event was diverted as a send error, the
                 //   later one was delivered by the still-living worker
@@ -765,17 +751,7 @@ class SendDispatcherTest {
                     topicClass = TopicClass.TECHNICAL,
                     sendAction = { item ->
                         entered.countDown()
-                        var wasInterrupted = false
-                        while (release.count > 0) {
-                            try {
-                                release.await()
-                            } catch (_: InterruptedException) {
-                                wasInterrupted = true
-                            }
-                        }
-                        if (wasInterrupted) {
-                            Thread.currentThread().interrupt()
-                        }
+                        awaitUninterruptibly(release)
                         // The sender would now take its send-error path
                         // and ask for the claim first:
                         lateClaim.set(item.ownership.tryDivert())
@@ -783,7 +759,7 @@ class SendDispatcherTest {
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("pinned"))
+            dispatcher.dispatchEvent("pinned")
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue()
 
             // When: forced shutdown claims and diverts, then the send unblocks
@@ -835,26 +811,16 @@ class SendDispatcherTest {
                         // producer.send returned without a synchronous failure:
                         assertThat(item.ownership.tryHandOff()).isTrue()
                         handedOff.countDown()
-                        var wasInterrupted = false
-                        while (release.count > 0) {
-                            try {
-                                release.await()
-                            } catch (_: InterruptedException) {
-                                wasInterrupted = true
-                            }
-                        }
-                        if (wasInterrupted) {
-                            Thread.currentThread().interrupt()
-                        }
+                        awaitUninterruptibly(release)
                     },
                     fallbackDispatcher = fallbackDispatcher,
                     drainTimeoutMs = 100,
                 )
             dispatcher.setMetrics(metrics)
-            dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("handed-off"))
+            dispatcher.dispatchEvent("handed-off")
             assertThat(handedOff.await(2, TimeUnit.SECONDS)).isTrue()
             (1..2).forEach { i ->
-                dispatcher.dispatch("t", ByteArray(0), EnrichedRecord(null, emptyList()), pending("queued-$i"))
+                dispatcher.dispatchEvent("queued-$i")
             }
 
             // When: the forced close claims the in-flight item and the queue
