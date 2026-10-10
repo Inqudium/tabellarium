@@ -367,6 +367,50 @@ class ProducerRegistryTest {
                 assertThat(producer.closed()).isTrue()
             }
         }
+
+        @Test
+        fun `should close already-created producers and rethrow unchanged when a later factory call throws an Error`() {
+            // What is to be tested? Whether the rollback also covers an
+            //   Error (linkage, initializer, resource exhaustion) from a
+            //   later factory call - not only an Exception.
+            // How will the test case be deemed successful and why? Successful
+            //   if the very LinkageError instance reaches the caller,
+            //   unwrapped (it is no configuration failure to attribute),
+            //   and the producers created before it report as closed.
+            //   KafkaTransport.open promises rollback for any construction
+            //   failure, and the registry is built before its own catch
+            //   region (DEFECT_ANALYSIS-2026-10-10T13-46-50, finding 4).
+            // Why is it important to test this test case? An Error during
+            //   startup is already a degraded JVM; leaking a Kafka network
+            //   thread, its buffers and MBeans on top makes it worse.
+
+            // Given: a factory that creates two producers, then fails with an Error
+            val createdMocks = mutableListOf<MockProducer<ByteArray, ByteArray>>()
+            val failure = LinkageError("synthetic linkage failure")
+            val failingFactory =
+                ProducerFactory { _ ->
+                    if (createdMocks.size >= 2) {
+                        throw failure
+                    }
+                    MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                        .also { createdMocks += it }
+                }
+
+            // When / Then: the Error propagates unchanged
+            assertThatThrownBy {
+                ProducerRegistry.create(
+                    propertiesBuilder = newBuilder(),
+                    activeTopicClasses = setOf(TopicClass.AUDIT, TopicClass.FUNCTIONAL, TopicClass.TECHNICAL),
+                    producerFactory = failingFactory,
+                )
+            }.isSameAs(failure)
+
+            // And: the two already-created producers were closed by rollback
+            assertThat(createdMocks).hasSize(2)
+            assertThat(createdMocks).allSatisfy { producer ->
+                assertThat(producer.closed()).isTrue()
+            }
+        }
     }
 
     @Nested

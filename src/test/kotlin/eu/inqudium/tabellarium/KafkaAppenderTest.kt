@@ -26,6 +26,7 @@ import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -782,6 +783,33 @@ class KafkaAppenderTest {
 
     @Nested
     inner class `Pipeline failure reporting` {
+        @Test
+        fun `should release the encoder and rethrow when the producer factory fails with an Error`() {
+            // What is to be tested? Whether start() keeps its rollback
+            //   contract for an Error from the pipeline construction: the
+            //   encoder start() started first must be released, and the
+            //   Error must propagate unchanged instead of being reported
+            //   as a configuration problem.
+            // How will the test case be deemed successful and why? Successful
+            //   if start() throws the very LinkageError, the appender is
+            //   not started and the encoder is stopped. Before the fix only
+            //   Exception was handled, so the encoder stayed started
+            //   (DEFECT_ANALYSIS-2026-10-10T13-46-50, finding 4).
+            // Why is it important to test this test case? An encoder can
+            //   hold streams and buffers; leaking it during an already
+            //   degraded startup violates the documented lifecycle.
+
+            // Given
+            val failure = LinkageError("synthetic linkage failure")
+            val encoder = RecordingEncoder()
+            val appender = newAppender(encoder = encoder, producerFactory = ProducerFactory { _ -> throw failure })
+
+            // When / Then
+            assertThatThrownBy { appender.start() }.isSameAs(failure)
+            assertThat(appender.isStarted).isFalse()
+            assertThat(encoder.isStarted).isFalse()
+        }
+
         @Test
         fun `should withhold the cause and stack trace when debug is disabled`() {
             // What is to be tested? Whether a producer-construction failure
@@ -2837,6 +2865,48 @@ class KafkaAppenderTest {
         }
 
         @Test
+        fun `should keep removing circuit-breaker meters after one removal fails`() {
+            // What is to be tested? Whether the unbind removes the breaker
+            //   meters one by one, so a registry that throws while removing
+            //   one of them does not skip all later ones.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after stop(), exactly the one meter whose removal threw
+            //   is still registered, every other breaker meter is gone, and
+            //   a WARN names the failed removal. A single try around the
+            //   whole loop left every meter after the failing one orphaned
+            //   (DEFECT_ANALYSIS-2026-10-10T13-46-50, finding 5).
+            // Why is it important to test this test case? Orphaned breaker
+            //   meters keep reporting a stopped appender's state and are
+            //   unreachable for any later cleanup.
+
+            // Given: a registry that fails to remove the first breaker meter asked for
+            var failedRemoval: Meter.Id? = null
+            val registry =
+                object : SimpleMeterRegistry() {
+                    override fun remove(meter: Meter): Meter? {
+                        if (failedRemoval == null && meter.id.name.startsWith(MetricsBindings.CIRCUIT_BREAKER_PREFIX)) {
+                            failedRemoval = meter.id
+                            throw IllegalStateException("simulated removal failure")
+                        }
+                        return super.remove(meter)
+                    }
+                }
+            val appender = newAppender()
+            appender.start()
+            appender.bindMeterRegistry(registry)
+            assertThat(registry.meters.count { it.id.name.startsWith(MetricsBindings.CIRCUIT_BREAKER_PREFIX) })
+                .isGreaterThan(1)
+
+            // When
+            appender.stop()
+
+            // Then: only the failed one is left, and its failure is a WARN
+            assertThat(registry.meters.map { it.id }).containsExactly(failedRemoval)
+            assertThat(appender.statusEntries())
+                .anyMatch { it.level == Status.WARN && it.message.contains("Error removing Resilience4j meter") }
+        }
+
+        @Test
         fun `should register appender-tagged circuit-breaker meters without resilience4j-micrometer`() {
             // What is to be tested? Whether the appender's own breaker
             //   binder publishes the kafka.appender.circuitbreaker.* meters
@@ -3010,13 +3080,15 @@ class KafkaAppenderTest {
             appenderB.name = "KAFKA"
             appenderA.start()
             appenderB.start()
-            appenderA.bindMeterRegistry(registry)
+            assertThat(appenderA.bindMeterRegistry(registry)).isTrue()
             val metersAfterFirstBind = registry.meters.size
 
             // When
-            appenderB.bindMeterRegistry(registry)
+            val boundB = appenderB.bindMeterRegistry(registry)
 
-            // Then: refused, warned, nothing added
+            // Then: refused (also in the return value the Spring helper
+            //   logs on), warned, nothing added
+            assertThat(boundB).isFalse()
             assertThat(appenderB.statusMessages())
                 .anyMatch { it.contains("Metrics binding refused") && it.contains("appender='KAFKA'") }
             assertThat(appenderB.isMeterRegistryBound).isFalse()

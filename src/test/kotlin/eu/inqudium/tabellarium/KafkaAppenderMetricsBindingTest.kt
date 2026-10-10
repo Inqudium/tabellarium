@@ -1,5 +1,6 @@
 package eu.inqudium.tabellarium
 
+import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
@@ -18,6 +19,8 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.ResourceLock
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.slf4j.LoggerFactory
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -25,6 +28,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.event.ContextClosedEvent
 import org.springframework.context.event.ContextRefreshedEvent
 import org.springframework.context.support.GenericApplicationContext
+import java.util.function.Supplier
 
 /**
  * Mutates the GLOBAL SLF4J LoggerContext (the binding discovers
@@ -112,17 +116,20 @@ class KafkaAppenderMetricsBindingTest {
         }
 
     /**
-     * Registry whose FIRST counter registration throws - the transient
-     * start-up failure of the retry test. MicrometerKafkaAppenderMetrics
-     * registers its counters in the constructor, so the throw escapes
-     * bindMeterRegistry before anything is bound.
+     * Registry whose [failingCounter]-th counter registration (1-based)
+     * throws once - the transient start-up failure of the retry tests.
+     * MicrometerKafkaAppenderMetrics registers its counters in the
+     * constructor, so the throw escapes bindMeterRegistry: with 1 before
+     * anything is registered, with a later ordinal after some meters
+     * have already been accepted - the case its rollback exists for.
      */
-    private class ThrowOnceMeterRegistry : SimpleMeterRegistry() {
-        private var thrown = false
+    private class ThrowOnceMeterRegistry(
+        private val failingCounter: Int = 1,
+    ) : SimpleMeterRegistry() {
+        private var counters = 0
 
         override fun newCounter(id: Meter.Id): Counter {
-            if (!thrown) {
-                thrown = true
+            if (++counters == failingCounter) {
                 throw IllegalStateException("registry not ready")
             }
             return super.newCounter(id)
@@ -354,37 +361,102 @@ class KafkaAppenderMetricsBindingTest {
         }
 
         @Test
-        fun `should retry a bind that failed on the previous call`() {
+        fun `should not log a successful bind for a same-named appender whose bind was refused`() {
+            // What is to be tested? Whether bindAppenders() reports a bind
+            //   that bindMeterRegistry refused (a second appender with the
+            //   fixture's name, i.e. the same meter identity) as what it
+            //   is - not with the INFO "Bound" record of a success.
+            // How will the test case be deemed successful and why? Successful
+            //   if the sibling stays unbound and the binding's own log holds
+            //   no "Bound KafkaAppender" record for that call. The refusal
+            //   is a normal return with a status warning, so a helper that
+            //   logs success whenever nothing is thrown contradicts it
+            //   (DEFECT_ANALYSIS-2026-10-10T13-46-50, finding 6).
+            // Why is it important to test this test case? An operator who
+            //   reads "Bound" next to the refusal warning has two
+            //   contradicting records and no metrics for the second
+            //   appender.
+
+            // Given: the fixture appender bound, a same-named sibling started
+            //   after the refresh, and the binding's log captured
+            val sibling = newUnstartedAppender("TEST_KAFKA")
+            bindingTestLogger.addAppender(sibling)
+            val bindingLogger = loggerContext.getLogger(KafkaAppenderMetricsBinding::class.java)
+            val previousLevel = bindingLogger.level
+            bindingLogger.level = Level.DEBUG
+            val bindingLog = ThreadSafeListAppender().apply { start() }
+            bindingLogger.addAppender(bindingLog)
+            try {
+                ApplicationContextRunner()
+                    .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                    .run { ctx ->
+                        assertThat(appender.isMeterRegistryBound).isTrue()
+                        sibling.start()
+                        bindingLog.events.clear()
+
+                        // When
+                        ctx.getBean(KafkaAppenderMetricsBinding::class.java).bindAppenders()
+
+                        // Then: refused, and not reported as bound
+                        assertThat(sibling.isMeterRegistryBound).isFalse()
+                        assertThat(bindingLog.events.map { it.formattedMessage })
+                            .noneMatch { it.startsWith("Bound KafkaAppender") }
+                            .anyMatch { it.contains("was not bound") }
+                    }
+            } finally {
+                bindingLogger.detachAppender(bindingLog)
+                bindingLogger.level = previousLevel
+                bindingTestLogger.detachAppender(sibling)
+                sibling.stop()
+            }
+        }
+
+        @ParameterizedTest(name = "failing counter #{0}")
+        @ValueSource(ints = [1, 2, 4])
+        fun `should retry a bind that failed on the previous call`(failingCounter: Int) {
             // What is to be tested? Whether a bindMeterRegistry that
             //   throws (a registry that is not ready, a meter clash) is
-            //   reported and leaves the appender unbound, so the next
-            //   bindAppenders() retries instead of treating it as done.
+            //   reported, leaves the appender unbound and leaves no meter
+            //   behind, so the next bindAppenders() retries instead of
+            //   treating it as done - also when the failure strikes after
+            //   some appender meters were already registered (ordinal 2:
+            //   after the first events.accepted counter, ordinal 4: after
+            //   all of them).
             // How will the test case be deemed successful and why? Successful
-            //   if the appender is unbound after the context refresh
-            //   against a registry that throws on its first counter
-            //   registration, and bound after a second bindAppenders()
-            //   against the same, now healthy registry. The decision is
-            //   made on the appender's bound state, not on identity - the
-            //   contract the KDoc states.
+            //   if the registry is empty and the appender unbound after the
+            //   context refresh, and after a second bindAppenders() against
+            //   the same, now healthy registry the appender is bound with
+            //   exactly the meter set a clean bind registers. An orphaned
+            //   events.accepted counter would make the identity probe
+            //   refuse the retry as a "live second appender" for good
+            //   (DEFECT_ANALYSIS-2026-10-10T13-46-50, findings 2 and 3).
             // Why is it important to test this test case? The retry
             //   branch is what keeps a transient start-up failure from
             //   silencing the metrics for the process lifetime; nothing
             //   else would ever call bindMeterRegistry again.
 
-            // Given: a registry whose first counter registration throws
+            // Given: a registry whose n-th counter registration throws
             ApplicationContextRunner()
-                .withUserConfiguration(ThrowOnceRegistryConfig::class.java, BindingConfig::class.java)
+                .withBean(MeterRegistry::class.java, Supplier<MeterRegistry> { ThrowOnceMeterRegistry(failingCounter) })
+                .withUserConfiguration(BindingConfig::class.java)
                 .run { ctx ->
-                    // Then: the first bind failed and left the appender unbound
+                    val registry = ctx.getBean(MeterRegistry::class.java)
+
+                    // Then: the first bind failed, left the appender unbound
+                    //   and rolled back every meter it had registered
                     assertThat(appender.isMeterRegistryBound).isFalse()
+                    assertThat(registry.meters).isEmpty()
 
                     // When: the binding is asked again
                     ctx.getBean(KafkaAppenderMetricsBinding::class.java).bindAppenders()
 
-                    // Then: bound, with the counters in the registry
+                    // Then: bound, with the complete meter set of a clean bind
                     assertThat(appender.isMeterRegistryBound).isTrue()
-                    val registry = ctx.getBean(MeterRegistry::class.java)
-                    assertThat(registry.find("kafka.appender.events.accepted").counters()).isNotEmpty
+                    val retried = registry.meters.map { it.id }.toSet()
+                    assertThat(appender.unbindMeterRegistry(registry)).isTrue()
+                    val clean = SimpleMeterRegistry()
+                    assertThat(appender.bindMeterRegistry(clean)).isTrue()
+                    assertThat(retried).isEqualTo(clean.meters.map { it.id }.toSet())
                 }
         }
     }
@@ -522,12 +594,6 @@ class KafkaAppenderMetricsBindingTest {
     open class MeterRegistryConfig {
         @Bean
         open fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()
-    }
-
-    @Configuration
-    open class ThrowOnceRegistryConfig {
-        @Bean
-        open fun meterRegistry(): MeterRegistry = ThrowOnceMeterRegistry()
     }
 
     @Configuration

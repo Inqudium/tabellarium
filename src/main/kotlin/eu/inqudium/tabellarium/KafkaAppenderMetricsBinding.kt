@@ -174,11 +174,20 @@ open class KafkaAppenderMetricsBinding(
                 continue
             }
             try {
-                appender.bindMeterRegistry(meterRegistry, commonTags)
-                log.info(
-                    "Bound KafkaAppender '{}' to MeterRegistry.",
-                    appender.name ?: "<unnamed>",
-                )
+                if (appender.bindMeterRegistry(meterRegistry, commonTags)) {
+                    log.info(
+                        "Bound KafkaAppender '{}' to MeterRegistry.",
+                        appender.name ?: "<unnamed>",
+                    )
+                } else {
+                    // Refused (duplicate meter identity) or stopped in the
+                    // meantime: the appender's status warning is the
+                    // authoritative diagnostic - no success record here.
+                    log.debug(
+                        "KafkaAppender '{}' was not bound to MeterRegistry; see its Logback status warning.",
+                        appender.name ?: "<unnamed>",
+                    )
+                }
             } catch (e: Exception) {
                 // Rationale: a transient failure (registry not ready,
                 // meter clash) leaves the appender unbound, so the next

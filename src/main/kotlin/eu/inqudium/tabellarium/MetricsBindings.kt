@@ -209,7 +209,10 @@ internal class MetricsBindings(
             )
             return KafkaAppenderMetrics.NO_OP
         }
-        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName, info = info)
+        // Transactional: a failure halfway removes the meters registered
+        // so far, so nothing is left for the identity probe to mistake
+        // for a live appender on the retry.
+        val impl = MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info)
         boundMetrics = impl
         boundRegistry = registry
         bindResilience4jMetrics(registry, commonTags, appenderTag, circuitBreakerRegistry)
@@ -233,10 +236,14 @@ internal class MetricsBindings(
         producerMetricBindings.clear()
         producerMetricsMirror?.close()
         producerMetricsMirror = null
-        try {
-            boundResilience4jMeters.forEach { registry.remove(it) }
-        } catch (e: Exception) {
-            status.addWarn("Error removing Resilience4j meters: ${e.message}", e)
+        // Per meter: one failing removal must not skip the rest, which
+        // would stay registered with nothing left to remove them.
+        boundResilience4jMeters.forEach { meter ->
+            try {
+                registry.remove(meter)
+            } catch (e: Exception) {
+                status.addWarn("Error removing Resilience4j meter '${meter.id.name}': ${e.message}", e)
+            }
         }
         boundResilience4jMeters.clear()
         // Stop the still-attached event consumers from recording into

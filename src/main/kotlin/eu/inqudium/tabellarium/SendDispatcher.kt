@@ -132,7 +132,7 @@ internal class SendDispatcher(
 
     /**
      * Replaces the metrics implementation and registers the queue
-     * gauges with it. Called by [KafkaAppender.bindMeterRegistry].
+     * gauges with it. Called by [bindMeterRegistry].
      */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
         this.metrics = metrics

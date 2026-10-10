@@ -686,6 +686,13 @@ Spring `@PostConstruct`):
 kafkaAppender.bindMeterRegistry(meterRegistry, Tags.of("application", "payment-service"))
 ```
 
+From Java (the function is a Kotlin extension, kept off the appender class
+so that Logback can configure the appender without Micrometer):
+
+```java
+KafkaAppenderMeterRegistry.bindMeterRegistry(kafkaAppender, meterRegistry, Tags.of("application", "payment-service"));
+```
+
 `commonTags` is optional (default `Tags.empty()`) — the registry's own common
 tags are usually enough. Calling this on a stopped appender is a no-op with a
 status-manager warning. A repeated call replaces the previous binding (its
