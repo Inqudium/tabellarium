@@ -636,7 +636,7 @@ class KafkaAppender :
         // closed components record nothing a scrape can see any more -
         // the meters are removed, detached objects - and a send that
         // completes after the teardown still accounts into them, which
-        // is what KafkaAppenderTest observes for the exactly-once proof
+        // is what KafkaAppenderDispatchTest observes for the exactly-once proof
         // of a pinned send (`DEFECT_ANALYSIS-2026-10-10T19-11-11`,
         // finding 10).
         bindLock.withLock {

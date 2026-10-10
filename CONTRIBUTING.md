@@ -12,7 +12,7 @@ artifact still targets Java 21):
 
 ```bash
 mvn verify                                      # build + run all tests + ktlint
-mvn -Dtest=KafkaAppenderTest test               # run a single test class
+mvn -Dtest=KafkaAppenderHotPathTest test        # run a single test class
 mvn -Dtest='*MessageEnricher*' test             # pattern-match
 ```
 

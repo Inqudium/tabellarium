@@ -121,6 +121,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("Installation", "Reproducible builds") describes it; the Installation
   text no longer claims an SBOM on Maven Central - the CycloneDX SBOM
   and the provenance are GitHub-release assets.
+- **`KafkaAppenderTest` split by concern:** the 4 000-line composition-root
+  test is now eight classes on a shared fixture (`KafkaAppenderTestBase`:
+  `newAppender`, the `@AfterEach` stop list, status helpers) -
+  `KafkaAppenderConfigurationTest`, `KafkaAppenderStartupTest`,
+  `KafkaAppenderGuardTest`, `KafkaAppenderHotPathTest`,
+  `KafkaAppenderShutdownTest`, `KafkaAppenderDispatchTest`,
+  `KafkaAppenderMetricsLifecycleTest` and
+  `KafkaAppenderFallbackWiringTest`. The 93 tests, their nested groups and
+  rationale comments are unchanged, so the test-evidence page keeps its
+  entries under the new class names.
 
 ### Fixed
 
