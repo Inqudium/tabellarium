@@ -1,5 +1,6 @@
 package eu.inqudium.tabellarium
 
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.FunctionCounter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
@@ -106,6 +107,40 @@ class RenamingMeterMirrorTest {
 
             // Then
             assertThat(target.meters).isEmpty()
+        }
+
+        @Test
+        fun `should not publish a meter of a type the Kafka binder never registers and report it once`() {
+            // What is to be tested? Whether a meter type outside the three the
+            //   mirror handles (gauge, time gauge, function counter - the types
+            //   KafkaClientMetrics registers) is left out of the target and
+            //   reported through the warn path, once, instead of being copied
+            //   generically by its measurements.
+            // How will the test case be deemed successful and why? Successful if
+            //   two counters registered into the source leave the target empty,
+            //   the source registration itself does not throw, and exactly one
+            //   warning names the type. The generic copy this replaces was a
+            //   branch no binder version ever reached and no test covered
+            //   (ARCHITECTURE_REVIEW-2026-10-10T22-15-57, finding 2).
+            // Why is it important to test this test case? A binder upgrade that
+            //   starts registering another type must show up as a warning an
+            //   operator can read, not as silently absent or half-copied series.
+
+            // Given
+            val target = SimpleMeterRegistry()
+            val mirror = mirrorInto(target)
+
+            // When
+            assertThatCode {
+                Counter.builder("kafka.producer.some.counter").register(mirror.source)
+                Counter.builder("kafka.producer.other.counter").register(mirror.source)
+            }.doesNotThrowAnyException()
+
+            // Then
+            assertThat(target.meters).isEmpty()
+            assertThat(mirror.mirroredNames).isEmpty()
+            assertThat(warnings).hasSize(1)
+            assertThat(warnings.single()).contains("kafka.producer.some.counter", "kafka.appender.producer.some.counter")
         }
 
         @Test

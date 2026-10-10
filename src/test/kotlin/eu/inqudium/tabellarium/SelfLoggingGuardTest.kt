@@ -8,7 +8,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-class ClientIdSelfLoggingGuardTest {
+class SelfLoggingGuardTest {
     // -- Test fixtures --------------------------------------------------
 
     private val clientId = "tabellarium-payments-audit"
@@ -18,7 +18,7 @@ class ClientIdSelfLoggingGuardTest {
      * leave the process-wide registry and cannot make another test's
      * "foreign" thread name an echo.
      */
-    private val createdGuards = mutableListOf<ClientIdSelfLoggingGuard>()
+    private val createdGuards = mutableListOf<SelfLoggingGuard>()
 
     @AfterEach
     fun closeGuards() {
@@ -26,9 +26,9 @@ class ClientIdSelfLoggingGuardTest {
         createdGuards.clear()
     }
 
-    private fun guard(vararg clientIds: String) = ClientIdSelfLoggingGuard(clientIds.toSet()).also { createdGuards += it }
+    private fun guard(vararg clientIds: String) = SelfLoggingGuard(clientIds.toSet()).also { createdGuards += it }
 
-    private fun networkThreadOf(clientId: String) = "${ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX}$clientId"
+    private fun networkThreadOf(clientId: String) = "${SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX}$clientId"
 
     private fun eventFrom(threadName: String) = newTestLoggingEvent(message = "probe", threadName = threadName)
 
@@ -79,7 +79,7 @@ class ClientIdSelfLoggingGuardTest {
             // When / Then
             assertThat(guard.shouldDrop(eventFrom("app-worker-$clientId"))).isFalse()
             assertThat(guard.shouldDrop(eventFrom(networkThreadOf("other-instance-audit")))).isFalse()
-            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
             assertThat(guard.shouldDrop(eventFrom("main"))).isFalse()
         }
 
@@ -100,7 +100,7 @@ class ClientIdSelfLoggingGuardTest {
             val guard = guard("", "  ")
 
             // When / Then
-            assertThat(guard.shouldDrop(eventFrom(ClientIdSelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
+            assertThat(guard.shouldDrop(eventFrom(SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))).isFalse()
             assertThat(guard.shouldDrop(eventFrom(networkThreadOf("  ")))).isFalse()
         }
     }

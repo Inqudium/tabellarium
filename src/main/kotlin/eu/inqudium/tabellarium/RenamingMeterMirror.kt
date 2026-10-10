@@ -2,7 +2,6 @@ package eu.inqudium.tabellarium
 
 import io.micrometer.core.instrument.FunctionCounter
 import io.micrometer.core.instrument.Gauge
-import io.micrometer.core.instrument.Measurement
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.TimeGauge
@@ -19,8 +18,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * is [closed][close].
  *
  * Used for Micrometer's `KafkaClientMetrics`, whose `kafka.producer.*`
- * names are fixed, to publish them as `kafka.appender.producer.*` (see
- * "One namespace" in [MetricsBindings]).
+ * names are fixed, to publish them as `kafka.appender.producer.*` - the
+ * one-namespace decision of ADR-0005 (every meter the appender publishes
+ * starts with `kafka.appender.`; see "One namespace" in
+ * [MetricsBindings]).
  *
  * ## Why a mirror and not a rename `MeterFilter`
  *
@@ -39,10 +40,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * ## What is mirrored
  *
  * Gauges (time gauges keeping their unit) and function counters - the
- * two types `KafkaMetrics` registers - read through to the source
- * meter; any other type is mirrored generically by its measurements.
- * Names [rename] returns `null` for are not mirrored (`KafkaMetrics`
- * briefly registers a `delete.this` probe on bind).
+ * types `KafkaMetrics` registers - read through to the source meter.
+ * Any other type is not mirrored but reported through [warn], once: it
+ * would mean the binder changed, and a generic copy by measurements
+ * that no binder version has ever needed is not kept for that case
+ * (`ARCHITECTURE_REVIEW-2026-10-10T22-15-57`, finding 2). Names
+ * [rename] returns `null` for are not mirrored (`KafkaMetrics` briefly
+ * registers a `delete.this` probe on bind).
  *
  * ## Threads
  *
@@ -126,12 +130,12 @@ internal class RenamingMeterMirror(
             }
 
             else -> {
-                Meter
-                    .builder(name, id.type, Iterable<Measurement> { meter.measure().iterator() })
-                    .tags(id.tags)
-                    .description(id.description)
-                    .baseUnit(id.baseUnit)
-                    .register(target)
+                // Rationale: reaches the warn path in mirror() - once, like
+                // a failing registration - instead of a generic copy; see
+                // "What is mirrored" in the class KDoc.
+                throw IllegalStateException(
+                    "meter type ${id.type} is not one KafkaClientMetrics registers (gauge, time gauge, function counter)",
+                )
             }
         }
     }

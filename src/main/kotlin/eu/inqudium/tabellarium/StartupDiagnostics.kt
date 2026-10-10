@@ -61,7 +61,7 @@ internal fun cleartextTransportWarning(registry: ProducerRegistry): String? {
  * both as one client. `null` when nothing is shared.
  */
 internal fun sharedClientIdWarning(registry: ProducerRegistry): String? {
-    val shared = ClientIdSelfLoggingGuard.clientIdsHeldByOtherInstances(registry.clientIds)
+    val shared = SelfLoggingGuard.clientIdsHeldByOtherInstances(registry.clientIds)
     if (shared.isEmpty()) return null
     return "client.id ${shared.joinToString()} is also used by another running KafkaAppender " +
         "(same <component>, or the same explicit client.id): Kafka registers its JMX MBeans per " +

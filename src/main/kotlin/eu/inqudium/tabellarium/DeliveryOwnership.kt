@@ -47,6 +47,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * callback retains this object until the client completes the record
  * (under a slow broker up to `delivery.timeout.ms`), and it must not
  * keep the serialized payload reachable for that long.
+ *
+ * One ownership per event, never reused: there is no reset. Reusing one
+ * whose event is still in the client would let two events share one
+ * outcome; the benchmark that used to reset a pre-built ring allocates
+ * a fresh ownership per operation instead and states the delta
+ * (`benchmarks/README.md`).
  */
 internal class DeliveryOwnership {
     private val state = AtomicInteger(PENDING)
@@ -73,22 +79,6 @@ internal class DeliveryOwnership {
      * a second callback.
      */
     fun tryDivertAfterSend(): Boolean = state.compareAndSet(PENDING, DIVERTED) || state.compareAndSet(HANDED_OFF, DIVERTED)
-
-    /**
-     * Returns to PENDING. **Benchmark instrument only**: production
-     * allocates one ownership per [SendDispatcher.PendingSend] and
-     * never reuses it, and reusing one whose event is still in the
-     * client would let two events share one outcome. `SenderPathBenchmark`
-     * calls this on a pre-built ring so the measured send path carries
-     * no per-event allocation that production puts on the caller path.
-     * Compatibility: `@JvmName` keeps the name unmangled for that Java
-     * JMH caller - an `internal` member is otherwise emitted with a
-     * module-name suffix.
-     */
-    @JvmName("reset")
-    internal fun reset() {
-        state.set(PENDING)
-    }
 
     private companion object {
         const val PENDING = 0

@@ -1304,7 +1304,7 @@ Standard Maven module:
 
 ```bash
 mvn verify                                      # build + run all offline tests
-mvn -Dtest=KafkaAppenderTest test               # run a single test class
+mvn -Dtest=KafkaAppenderHotPathTest test        # run a single test class
 mvn -Dtest='*MessageEnricher*' test             # pattern-match
 mvn -Pintegration test                          # + real-broker tests (needs Docker)
 ```

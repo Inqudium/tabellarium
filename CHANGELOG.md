@@ -79,7 +79,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meters - no `MeterFilter` is added to the operator's registry, and
   composite registries (Spring Boot's) see the new names on the
   composite itself. The shipped dashboards, the metrics guide and the
-  README use the new names.
+  README use the new names. The single namespace is recorded as a
+  product decision, with its costs, in ADR-0005; the mirror handles
+  exactly the meter types the Kafka binder registers (gauge, time gauge,
+  function counter) and reports any other type once instead of copying
+  it generically.
+
+- Internal structure (no behavior change, public API per ADR-0002
+  unchanged): the `SelfLoggingGuard` interface and its
+  `SelfLoggingGuardFactory` are gone. The one implementation, formerly
+  `ClientIdSelfLoggingGuard`, is now the class `SelfLoggingGuard`, which
+  `KafkaTransport.open` constructs directly from the producer registry's
+  client ids. The interface had been extracted for a second, process-wide
+  implementation that was then built into the first one (the JVM-wide
+  registry of 1.1.2), leaving a seam that served three test substitutions
+  only; the tests observe the guard through its behavior instead - the
+  thread names it drops, the client ids it holds in the process-wide
+  registry after a failed start.
+- `DeliveryOwnership` has no `reset()` any more: an ownership is never
+  reused in production, and the method existed for the sender-path
+  benchmark alone, which now allocates a fresh ownership per operation
+  (`benchmarks/README.md` states the +32 B/op). CONTRIBUTING names the
+  rule for test- and benchmark-only seams in production signatures.
+- ADR-0002's table of public declarations gains the `bindMeterRegistry`
+  extension function (it had been public since the move above without a
+  row) and records the `open` hooks of `KafkaAppenderMetricsBinding` as
+  the surface's one extension point.
 
 - Reproducible builds: the POM sets `project.build.outputTimestamp`
   (bumped in every release commit), the jar and sources manifests no
@@ -96,6 +121,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("Installation", "Reproducible builds") describes it; the Installation
   text no longer claims an SBOM on Maven Central - the CycloneDX SBOM
   and the provenance are GitHub-release assets.
+- **`KafkaAppenderTest` split by concern:** the 4 000-line composition-root
+  test is now eight classes on a shared fixture (`KafkaAppenderTestBase`:
+  `newAppender`, the `@AfterEach` stop list, status helpers) -
+  `KafkaAppenderConfigurationTest`, `KafkaAppenderStartupTest`,
+  `KafkaAppenderGuardTest`, `KafkaAppenderHotPathTest`,
+  `KafkaAppenderShutdownTest`, `KafkaAppenderDispatchTest`,
+  `KafkaAppenderMetricsLifecycleTest` and
+  `KafkaAppenderFallbackWiringTest`. The 93 tests, their nested groups and
+  rationale comments are unchanged, so the test-evidence page keeps its
+  entries under the new class names.
 
 ### Fixed
 

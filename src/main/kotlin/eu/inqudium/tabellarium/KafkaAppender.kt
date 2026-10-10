@@ -194,14 +194,6 @@ class KafkaAppender :
         ResilientMessageSender.defaultCircuitBreakerRegistry()
 
     /**
-     * Chooses the [SelfLoggingGuard] implementation. Default builds a
-     * [ClientIdSelfLoggingGuard] over the producers' client ids; the
-     * transport calls the factory once in [start], after the producers
-     * exist. Tests substitute a guard with recorded decisions.
-     */
-    internal var selfLoggingGuardFactory: SelfLoggingGuardFactory = SelfLoggingGuardFactory.default()
-
-    /**
      * Capacity of each per-topic-class [SendDispatcher] queue - the
      * bounded hand-off between the logging caller and the worker that
      * performs `producer.send`. Configurable via
@@ -364,7 +356,6 @@ class KafkaAppender :
                     fallbackAppender = fallbackAppender,
                     producerFactory = producerFactory,
                     circuitBreakerRegistry = circuitBreakerRegistry,
-                    selfLoggingGuardFactory = selfLoggingGuardFactory,
                     warn = { message, cause -> addWarn(message, cause) },
                 )
             } catch (e: Exception) {
@@ -645,7 +636,7 @@ class KafkaAppender :
         // closed components record nothing a scrape can see any more -
         // the meters are removed, detached objects - and a send that
         // completes after the teardown still accounts into them, which
-        // is what KafkaAppenderTest observes for the exactly-once proof
+        // is what KafkaAppenderDispatchTest observes for the exactly-once proof
         // of a pinned send (`DEFECT_ANALYSIS-2026-10-10T19-11-11`,
         // finding 10).
         bindLock.withLock {
