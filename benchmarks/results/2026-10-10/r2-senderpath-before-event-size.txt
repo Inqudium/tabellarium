@@ -1,0 +1,333 @@
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: <none>
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent
+# Parameters: (metricsBound = false)
+
+# Run progress: 0,00% complete, ETA 00:01:00
+# Fork: 1 of 3
+# Warmup Iteration   1: 86,349 ns/op
+# Warmup Iteration   2: 71,402 ns/op
+# Warmup Iteration   3: 70,780 ns/op
+# Warmup Iteration   4: 70,057 ns/op
+# Warmup Iteration   5: 70,291 ns/op
+Iteration   1: 70,378 ns/op
+                 gc.alloc.rate:      1517,443 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   2: 70,451 ns/op
+                 gc.alloc.rate:      1515,764 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            5,000 ms
+
+Iteration   3: 73,345 ns/op
+                 gc.alloc.rate:      1456,042 MB/sec
+                 gc.alloc.rate.norm: 112,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   4: 70,367 ns/op
+                 gc.alloc.rate:      1517,558 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   5: 71,065 ns/op
+                 gc.alloc.rate:      1502,659 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           5,000 counts
+                 gc.time:            4,000 ms
+
+
+# Run progress: 16,67% complete, ETA 00:00:51
+# Fork: 2 of 3
+# Warmup Iteration   1: 81,224 ns/op
+# Warmup Iteration   2: 72,449 ns/op
+# Warmup Iteration   3: 77,305 ns/op
+# Warmup Iteration   4: 73,287 ns/op
+# Warmup Iteration   5: 70,846 ns/op
+Iteration   1: 71,389 ns/op
+                 gc.alloc.rate:      1495,673 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            1,000 ms
+
+Iteration   2: 71,141 ns/op
+                 gc.alloc.rate:      1500,939 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 71,176 ns/op
+                 gc.alloc.rate:      1500,386 MB/sec
+                 gc.alloc.rate.norm: 112,000 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   4: 72,395 ns/op
+                 gc.alloc.rate:      1474,988 MB/sec
+                 gc.alloc.rate.norm: 112,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   5: 74,964 ns/op
+                 gc.alloc.rate:      1424,349 MB/sec
+                 gc.alloc.rate.norm: 112,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+
+# Run progress: 33,33% complete, ETA 00:00:41
+# Fork: 3 of 3
+# Warmup Iteration   1: 86,843 ns/op
+# Warmup Iteration   2: 86,237 ns/op
+# Warmup Iteration   3: 74,244 ns/op
+# Warmup Iteration   4: 73,889 ns/op
+# Warmup Iteration   5: 73,635 ns/op
+Iteration   1: 74,110 ns/op
+                 gc.alloc.rate:      2058,595 MB/sec
+                 gc.alloc.rate.norm: 160,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   2: 73,649 ns/op
+                 gc.alloc.rate:      2071,435 MB/sec
+                 gc.alloc.rate.norm: 160,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 73,350 ns/op
+                 gc.alloc.rate:      2079,906 MB/sec
+                 gc.alloc.rate.norm: 160,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   4: 73,523 ns/op
+                 gc.alloc.rate:      2071,601 MB/sec
+                 gc.alloc.rate.norm: 160,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 73,581 ns/op
+                 gc.alloc.rate:      2073,162 MB/sec
+                 gc.alloc.rate.norm: 160,001 B/op
+                 gc.count:           2,000 counts
+                 gc.time:            2,000 ms
+
+
+
+Result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent":
+  72,326 ±(99.9%) 1,650 ns/op [Average]
+  (min, avg, max) = (70,367, 72,326, 74,964), stdev = 1,543
+  CI (99.9%): [70,676, 73,975] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate":
+  1684,033 ±(99.9%) 303,890 MB/sec [Average]
+  (min, avg, max) = (1424,349, 1684,033, 2079,906), stdev = 284,259
+  CI (99.9%): [1380,143, 1987,924] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm":
+  128,001 ±(99.9%) 25,039 B/op [Average]
+  (min, avg, max) = (112,000, 128,001, 160,001), stdev = 23,422
+  CI (99.9%): [102,961, 153,040] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.count":
+  46,000 ±(99.9%) 0,001 counts [Sum]
+  (min, avg, max) = (2,000, 3,067, 5,000), stdev = 1,335
+  CI (99.9%): [46,000, 46,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.time":
+  42,000 ±(99.9%) 0,001 ms [Sum]
+  (min, avg, max) = (1,000, 2,800, 5,000), stdev = 1,082
+  CI (99.9%): [42,000, 42,000] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 26.0.1, Java HotSpot(TM) 64-Bit Server VM, 26.0.1+8-34
+# VM invoker: /usr/lib/jvm/jdk-26.0.1-oracle-x64/bin/java
+# VM options: <none>
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 5 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent
+# Parameters: (metricsBound = true)
+
+# Run progress: 50,00% complete, ETA 00:00:31
+# Fork: 1 of 3
+# Warmup Iteration   1: 225,216 ns/op
+# Warmup Iteration   2: 192,692 ns/op
+# Warmup Iteration   3: 191,908 ns/op
+# Warmup Iteration   4: 193,077 ns/op
+# Warmup Iteration   5: 190,498 ns/op
+Iteration   1: 190,572 ns/op
+                 gc.alloc.rate:      1120,487 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            5,000 ms
+
+Iteration   2: 189,724 ns/op
+                 gc.alloc.rate:      1125,546 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 190,127 ns/op
+                 gc.alloc.rate:      1123,187 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   4: 194,362 ns/op
+                 gc.alloc.rate:      1098,762 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   5: 197,101 ns/op
+                 gc.alloc.rate:      1083,232 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            2,000 ms
+
+
+# Run progress: 66,67% complete, ETA 00:00:20
+# Fork: 2 of 3
+# Warmup Iteration   1: 236,519 ns/op
+# Warmup Iteration   2: 204,519 ns/op
+# Warmup Iteration   3: 198,353 ns/op
+# Warmup Iteration   4: 197,609 ns/op
+# Warmup Iteration   5: 211,824 ns/op
+Iteration   1: 202,552 ns/op
+                 gc.alloc.rate:      1054,419 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   2: 207,560 ns/op
+                 gc.alloc.rate:      1028,973 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   3: 201,014 ns/op
+                 gc.alloc.rate:      1062,479 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            1,000 ms
+
+Iteration   4: 196,217 ns/op
+                 gc.alloc.rate:      1088,407 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            3,000 ms
+
+Iteration   5: 196,015 ns/op
+                 gc.alloc.rate:      1089,474 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+
+# Run progress: 83,33% complete, ETA 00:00:10
+# Fork: 3 of 3
+# Warmup Iteration   1: 233,985 ns/op
+# Warmup Iteration   2: 202,643 ns/op
+# Warmup Iteration   3: 208,783 ns/op
+# Warmup Iteration   4: 199,178 ns/op
+# Warmup Iteration   5: 198,236 ns/op
+Iteration   1: 199,371 ns/op
+                 gc.alloc.rate:      1071,102 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            6,000 ms
+
+Iteration   2: 203,727 ns/op
+                 gc.alloc.rate:      1048,373 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   3: 197,147 ns/op
+                 gc.alloc.rate:      1083,396 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            2,000 ms
+
+Iteration   4: 197,550 ns/op
+                 gc.alloc.rate:      1081,119 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           4,000 counts
+                 gc.time:            4,000 ms
+
+Iteration   5: 195,828 ns/op
+                 gc.alloc.rate:      1090,530 MB/sec
+                 gc.alloc.rate.norm: 224,001 B/op
+                 gc.count:           3,000 counts
+                 gc.time:            3,000 ms
+
+
+
+Result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent":
+  197,258 ±(99.9%) 5,422 ns/op [Average]
+  (min, avg, max) = (189,724, 197,258, 207,560), stdev = 5,072
+  CI (99.9%): [191,836, 202,680] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate":
+  1083,299 ±(99.9%) 29,564 MB/sec [Average]
+  (min, avg, max) = (1028,973, 1083,299, 1125,546), stdev = 27,654
+  CI (99.9%): [1053,735, 1112,863] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm":
+  224,001 ±(99.9%) 0,001 B/op [Average]
+  (min, avg, max) = (224,001, 224,001, 224,001), stdev = 0,001
+  CI (99.9%): [224,001, 224,001] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.count":
+  52,000 ±(99.9%) 0,001 counts [Sum]
+  (min, avg, max) = (3,000, 3,467, 4,000), stdev = 0,516
+  CI (99.9%): [52,000, 52,000] (assumes normal distribution)
+
+Secondary result "eu.inqudium.tabellarium.bench.SenderPathBenchmark.sendOneEvent:gc.time":
+  46,000 ±(99.9%) 0,001 ms [Sum]
+  (min, avg, max) = (1,000, 3,067, 6,000), stdev = 1,280
+  CI (99.9%): [46,000, 46,000] (assumes normal distribution)
+
+
+# Run complete. Total time: 00:01:02
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                            (metricsBound)  Mode  Cnt     Score     Error   Units
+SenderPathBenchmark.sendOneEvent                              false  avgt   15    72,326 ±   1,650   ns/op
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate                false  avgt   15  1684,033 ± 303,890  MB/sec
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm           false  avgt   15   128,001 ±  25,039    B/op
+SenderPathBenchmark.sendOneEvent:gc.count                     false  avgt   15    46,000            counts
+SenderPathBenchmark.sendOneEvent:gc.time                      false  avgt   15    42,000                ms
+SenderPathBenchmark.sendOneEvent                               true  avgt   15   197,258 ±   5,422   ns/op
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate                 true  avgt   15  1083,299 ±  29,564  MB/sec
+SenderPathBenchmark.sendOneEvent:gc.alloc.rate.norm            true  avgt   15   224,001 ±   0,001    B/op
+SenderPathBenchmark.sendOneEvent:gc.count                      true  avgt   15    52,000            counts
+SenderPathBenchmark.sendOneEvent:gc.time                       true  avgt   15    46,000                ms

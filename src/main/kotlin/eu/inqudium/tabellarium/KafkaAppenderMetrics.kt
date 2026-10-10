@@ -89,6 +89,19 @@ internal interface KafkaAppenderMetrics {
     )
 
     /**
+     * Recorded once per event the class's send worker takes up, before
+     * the throttle and breaker gates, with the encoded payload size in
+     * [bytes] (key and headers excluded). Runs on the [SendDispatcher]
+     * worker, never on the logging caller. Events diverted before they
+     * reach the worker - `queue.full`, `encoder.error`, a `shutdown`
+     * remainder - are not recorded.
+     */
+    fun eventSize(
+        topicClass: TopicClass,
+        bytes: Int,
+    )
+
+    /**
      * Recorded by the [FallbackDispatcher] every time an event is
      * dropped because the dispatcher's queue was full at
      * [FallbackDispatcher.enqueue] time, the worker died with events
@@ -198,6 +211,11 @@ private object NoOpKafkaAppenderMetrics : KafkaAppenderMetrics {
         topicClass: TopicClass,
         outcome: KafkaAppenderMetrics.SendOutcome,
         duration: Duration,
+    ) = Unit
+
+    override fun eventSize(
+        topicClass: TopicClass,
+        bytes: Int,
     ) = Unit
 
     override fun fallbackDispatcherDropped() = Unit

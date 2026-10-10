@@ -160,6 +160,7 @@ class DocumentationContractTest {
                         listOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_REASON),
                     MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION to
                         listOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_OUTCOME),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE to listOf(appender, topicClass),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to listOf(appender),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to listOf(appender),
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to listOf(appender),
@@ -214,13 +215,14 @@ class DocumentationContractTest {
             assertThat(documentedSeries("events.dispatched")).isEqualTo(classes)
             assertThat(documentedSeries("events.fallback")).isEqualTo(classes * reasons)
             assertThat(documentedSeries("send.duration")).isEqualTo(classes * outcomes)
+            assertThat(documentedSeries("event.size")).isEqualTo(classes)
             assertThat(documentedSeries("fallback.dropped")).isEqualTo(1)
             assertThat(documentedSeries("fallback.queue.size")).isEqualTo(1)
             assertThat(documentedSeries("fallback.queue.capacity")).isEqualTo(1)
             assertThat(documentedSeries("send.queue.size")).isEqualTo(classes)
             assertThat(documentedSeries("send.queue.capacity")).isEqualTo(classes)
             assertThat(documentedSeries("info")).isEqualTo(1)
-            val total = classes * 2 + classes * reasons + classes * outcomes + 3 + classes * 2 + 1
+            val total = classes * 2 + classes * reasons + classes * outcomes + classes + 3 + classes * 2 + 1
             val totalRow = overview.single { it.startsWith("| **Total**") }
             assertThat(totalRow).contains("**$total**")
         }

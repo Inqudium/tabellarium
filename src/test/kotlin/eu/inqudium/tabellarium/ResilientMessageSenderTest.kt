@@ -74,6 +74,13 @@ class ResilientMessageSenderTest {
 
         val events: MutableList<Event> = Collections.synchronizedList(mutableListOf())
 
+        /**
+         * Recorded payload sizes, kept apart from [events]: the size hook
+         * fires for every event the worker takes up, while [events] holds
+         * the outcome hooks whose exact sequence the tests assert.
+         */
+        val sizes: MutableList<Pair<TopicClass, Int>> = Collections.synchronizedList(mutableListOf())
+
         override fun eventAccepted(topicClass: TopicClass) {
             events.add(Event("accepted", topicClass, null))
         }
@@ -95,6 +102,13 @@ class ResilientMessageSenderTest {
             duration: Duration,
         ) {
             events.add(Event("send.completed", topicClass, outcome.tag))
+        }
+
+        override fun eventSize(
+            topicClass: TopicClass,
+            bytes: Int,
+        ) {
+            sizes.add(topicClass to bytes)
         }
 
         override fun fallbackDispatcherDropped() {
@@ -1403,6 +1417,50 @@ class ResilientMessageSenderTest {
             assertThat(metrics.kinds()).containsExactly("send.completed", "dispatched")
             val success = metrics.events.single { it.kind == "send.completed" }
             assertThat(success.detail).isEqualTo("success")
+        }
+
+        @Test
+        fun `should record the payload size once per event, delivered or diverted by a gate`() {
+            // What is to be tested? Whether send records the encoded payload
+            //   size exactly once per event it takes up - for a delivered event
+            //   and for one the open breaker diverts - before the gates decide.
+            // How will the test case be deemed successful and why? Successful
+            //   if the captured sizes are exactly (AUDIT, 11) for the clean send
+            //   followed by (AUDIT, 3) for the diverted one: one record each,
+            //   the payload's byte count, the event's class.
+            // Why is it important to test this test case? The size summary
+            //   describes what the application logs; recording only delivered
+            //   events would hide exactly the large events an outage diverts,
+            //   and recording twice would double the count against
+            //   events.accepted.
+
+            // Given
+            val ctx = newSender()
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When: one clean send, then one with the breaker open
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "hello world".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+            ctx.circuitBreakerRegistry
+                .circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
+                .transitionToOpenState()
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "big".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+
+            // Then
+            assertThat(metrics.sizes).containsExactly(TopicClass.AUDIT to 11, TopicClass.AUDIT to 3)
+            assertThat(metrics.kinds()).containsExactly("send.completed", "dispatched", "fallback")
         }
 
         @Test

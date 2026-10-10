@@ -925,6 +925,7 @@ metric are the ones that vary within an appender instance.
 | `kafka.appender.events.dispatched`  | Counter | `topic.class`                     | Events handed to `producer.send` without a synchronous failure (callback outcome unknown); never also counted as a fallback of the same moment |
 | `kafka.appender.events.fallback`    | Counter | `topic.class`, `reason`           | Events diverted from Kafka (to the fallback if configured, otherwise dropped) |
 | `kafka.appender.send.duration`      | Timer   | `topic.class`, `outcome`          | Wall-clock send duration from invocation to callback          |
+| `kafka.appender.event.size`         | Summary | `topic.class`                     | Encoded payload size (bytes) of every event the send worker takes up, delivered or diverted by breaker/throttle |
 | `kafka.appender.fallback.dropped`   | Counter | —                                 | Events lost by the fallback dispatcher (queue full, `doAppend` threw, worker died, shutdown remainder) |
 | `kafka.appender.fallback.queue.size`     | Gauge   | —                                 | Current depth of the fallback dispatcher queue (only with a fallback appender) |
 | `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue (only with a fallback appender) |
@@ -947,9 +948,9 @@ for example to see whether `events.fallback` goes to a file
 Labels and join patterns are described in the
 [metrics overview](docs/metrics/metrics-overview.md#info-gauges).
 
-Cardinality budget per appender instance: ~52 time series plus one per
+Cardinality budget per appender instance: ~56 time series plus one per
 configured topic.
-At 100 microservices in a shared Prometheus this is ~5 500 series —
+At 100 microservices in a shared Prometheus this is ~5 900 series —
 well within the default cardinality budget.
 
 ### Reading the send-duration timer

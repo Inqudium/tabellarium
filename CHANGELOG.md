@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Distribution summary `kafka.appender.event.size` (bytes, per
+  `topic.class`): the encoded payload size of every event the class's
+  send worker takes up, delivered or diverted by breaker/throttle.
+  Recorded on the send worker, never on the logging caller; measured at
+  +21 to +31 ns per event on the worker path with metrics bound and no
+  allocation (`benchmarks/results/2026-10-10/`). Four series per
+  appender; percentiles opt-in via `MeterFilter`. The appender dashboard
+  shows average and max per class.
 - Info gauges `kafka.appender.info` and `kafka.appender.topic.info`
   (value always `1`, the Prometheus `*_info` convention), registered by
   `bindMeterRegistry()` and removed with the other meters on stop. The
