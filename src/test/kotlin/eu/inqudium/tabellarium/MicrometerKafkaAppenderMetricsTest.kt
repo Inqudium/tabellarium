@@ -486,18 +486,31 @@ class MicrometerKafkaAppenderMetricsTest {
 
         /**
          * Registry whose registration of the gauge named [failingName]
-         * throws on the first attempt only - the selective, transient
-         * failure a meter filter or custom registry can produce.
+         * throws on exactly one attempt - the [failOnAttempt]-th one
+         * (1-based) - and succeeds on every other: the selective,
+         * transient failure a meter filter or custom registry can
+         * produce. Attempts past the first are what let a test fail a
+         * group in the MIDDLE, with more than one meter already
+         * registered (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 2).
+         * With [failingRemoval], the first `remove` of any meter throws
+         * as well - the rollback that fails on top of the registration
+         * that failed (finding 17).
          */
         private inner class FailOnceGaugeRegistry(
             private val failingName: String,
+            private val failOnAttempt: Int = 1,
+            private val failingRemoval: Boolean = false,
         ) : SimpleMeterRegistry() {
-            val failures = AtomicInteger()
+            val attempts = AtomicInteger()
+            private val removalFailures = AtomicInteger()
 
             /** Every id removed from this registry, in order - pins the scope of a rollback or teardown. */
             val removals: MutableList<Meter.Id> = mutableListOf()
 
             override fun remove(mappedId: Meter.Id): Meter? {
+                if (failingRemoval && removalFailures.getAndIncrement() == 0) {
+                    throw IllegalStateException("transient removal failure")
+                }
                 removals += mappedId
                 return super.remove(mappedId)
             }
@@ -507,12 +520,18 @@ class MicrometerKafkaAppenderMetricsTest {
                 obj: T?,
                 valueFunction: ToDoubleFunction<T>,
             ): Gauge {
-                if (id.name == failingName && failures.getAndIncrement() == 0) {
+                if (id.name == failingName && attempts.incrementAndGet() == failOnAttempt) {
                     throw IllegalStateException("transient gauge failure")
                 }
                 return super.newGauge(id, obj, valueFunction)
             }
         }
+
+        /** The ids currently registered in [registry]; the removal log must equal it after a teardown. */
+        private fun idsIn(registry: SimpleMeterRegistry): List<Meter.Id> = registry.meters.map { it.id }
+
+        /** The ids a plain instance named [appenderName] registers on construction, for comparison with an instance whose info set rolled back. */
+        private fun idsWithoutInfo(appenderName: String): List<Meter.Id> = idsIn(newRegistry().also { MicrometerKafkaAppenderMetrics(it, appenderName = appenderName) })
 
         @Test
         fun `should roll back a half-registered fallback gauge pair, warn, and register both on the retry`() {
@@ -560,6 +579,16 @@ class MicrometerKafkaAppenderMetricsTest {
             assertThat(registry.requireGauge(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).value()).isEqualTo(7.0)
             assertThat(registry.requireGauge(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).value()).isEqualTo(100.0)
             assertThat(warnings).hasSize(1)
+
+            // And: the rolled-back first size gauge is no longer tracked -
+            //   the teardown removes every surviving meter exactly once,
+            //   the retried pair included (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 17)
+            val survivors = idsIn(registry)
+            registry.removals.clear()
+            metrics.deregisterFrom(registry)
+            assertThat(registry.removals).containsExactlyInAnyOrderElementsOf(survivors)
+            assertThat(appenderMeters(registry)).isEmpty()
         }
 
         @Test
@@ -643,6 +672,120 @@ class MicrometerKafkaAppenderMetricsTest {
                         MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
                     ).count(),
             ).isEqualTo(1.0)
+
+            // And: the rolled-back info gauge is no longer tracked - the
+            //   teardown removes exactly the surviving meters
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 17)
+            val survivors = idsIn(registry)
+            registry.removals.clear()
+            metrics.deregisterFrom(registry)
+            assertThat(registry.removals).containsExactlyInAnyOrderElementsOf(survivors)
+            assertThat(appenderMeters(registry)).isEmpty()
+        }
+
+        @Test
+        fun `should roll back every info gauge registered before a failure in the middle of the set`() {
+            // What is to be tested? The scope of the all-or-none rollback when
+            //   the group is more than one meter deep: with two configured
+            //   topics and the SECOND topic-info gauge failing, both
+            //   kafka.appender.info and the first topic.info were already
+            //   registered, and both must go - not only the last one.
+            // How will the test case be deemed successful and why? Successful
+            //   if afterwards no info gauge of either name exists, the
+            //   registry holds exactly the meters a plain instance without
+            //   info registers (so nothing else was touched either), and one
+            //   warning arrived. The existing rollback tests fail the second
+            //   registration of their group, so their partial set is always
+            //   exactly one meter and a rollback that removes only the last
+            //   tracked meter passes them
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 2).
+            // Why is it important to test this test case? A rollback that
+            //   leaves the appender series and the first topic series behind
+            //   is precisely the partial info set that drops the remaining
+            //   topics from every join on the labels - the symptom the
+            //   transaction was introduced to prevent.
+
+            // Given: a registry whose second topic-info registration fails
+            val registry = FailOnceGaugeRegistry(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO, failOnAttempt = 2)
+            val warnings = mutableListOf<String>()
+            val info =
+                AppenderInfo(
+                    fallback = AppenderInfo.NONE,
+                    fallbackType = AppenderInfo.NONE,
+                    debug = false,
+                    topics =
+                        listOf(
+                            TopicInfo("audit.security", TopicClass.AUDIT, acks = "all", lingerMs = "50"),
+                            TopicInfo("svc.logs", TopicClass.TECHNICAL, acks = "1", lingerMs = "50"),
+                        ),
+                )
+
+            // When
+            val metrics =
+                MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", info = info, warn = { message, _ -> warnings += message })
+
+            // Then: the failure hit the second topic, and the whole set is gone
+            assertThat(registry.attempts.get()).isEqualTo(2)
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauges()).isEmpty()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges()).isEmpty()
+            assertThat(idsIn(registry)).containsExactlyInAnyOrderElementsOf(idsWithoutInfo("flaky"))
+            assertThat(warnings).singleElement().asString().contains("info gauges")
+
+            // And: none of the three rolled-back gauges is tracked any more
+            val survivors = idsIn(registry)
+            registry.removals.clear()
+            metrics.deregisterFrom(registry)
+            assertThat(registry.removals).containsExactlyInAnyOrderElementsOf(survivors)
+            assertThat(appenderMeters(registry)).isEmpty()
+        }
+
+        @Test
+        fun `should keep a meter whose rollback removal failed tracked and report the removal failure`() {
+            // What is to be tested? The failure of the failure path: when a
+            //   group registration throws and the rollback's `remove` of an
+            //   already registered meter throws as well, the meter must stay
+            //   tracked (so the final teardown still removes it) and the
+            //   removal failure must travel as a suppressed exception of the
+            //   warned cause instead of vanishing.
+            // How will the test case be deemed successful and why? Successful
+            //   if after the failing call the size gauge is still in the
+            //   registry (the rollback could not remove it), the warned cause
+            //   carries the removal failure as its suppressed exception, and
+            //   deregisterFrom then removes the gauge so nothing is left. The
+            //   hostile-registry test throws on every gauge registration, so
+            //   its rollback never has a meter to remove and this branch was
+            //   unreachable from the suite
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 17).
+            // Why is it important to test this test case? A rollback that
+            //   untracks a meter it failed to remove leaves a size series
+            //   without its capacity in the operator's registry for good;
+            //   and an operator reading the warning needs the removal failure
+            //   attached to understand why the series is still there.
+
+            // Given: the capacity registration and then the first removal fail
+            val registry =
+                FailOnceGaugeRegistry(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY, failingRemoval = true)
+            val warnings = mutableListOf<Pair<String, Throwable>>()
+            val metrics =
+                MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", warn = { message, cause -> warnings += message to cause })
+
+            // When
+            metrics.registerSendQueueGauges(TopicClass.AUDIT, queueSize = { 3 }, capacity = 50)
+
+            // Then: the size gauge survived the failed rollback, and the
+            //   warning carries both failures
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE).gauge()).isNotNull()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(warnings).singleElement().satisfies({ (message, cause) ->
+                assertThat(message).contains("topic.class=audit")
+                assertThat(cause).hasMessage("transient gauge failure")
+                assertThat(cause.suppressed.single()).hasMessage("transient removal failure")
+            })
+
+            // And: still tracked - the teardown removes it with the rest
+            metrics.deregisterFrom(registry)
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE).gauge()).isNull()
+            assertThat(appenderMeters(registry)).isEmpty()
         }
     }
 
@@ -817,6 +960,103 @@ class MicrometerKafkaAppenderMetricsTest {
                     .`as`("appender tag of %s", meter.id)
                     .isEqualTo("audit-appender")
             }
+        }
+
+        @Test
+        fun `should register exactly the series the enum sizes imply and reach every one of them`() {
+            // What is to be tested? Whether the pre-resolved meter tables are
+            //   complete: one series per topic class (accepted, dispatched,
+            //   event.size, the send-queue gauges), per class and reason
+            //   (events.fallback), per class and outcome (send.duration),
+            //   and exactly one for the untagged fallback-dispatcher meters -
+            //   and whether every one of those series is the one its hook
+            //   increments.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after every hook was called once per enum combination,
+            //   the registry holds exactly the expected number of series per
+            //   metric name and every per-class, per-reason and per-outcome
+            //   series reads 1. The inventory test above pins the set of
+            //   names and the tag keys only; a table built from a filtered
+            //   enum would pass it, because every hook wraps its lookup in
+            //   `safe {}` and a missing key is swallowed as a
+            //   NoSuchElementException (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 3).
+            // Why is it important to test this test case? The series count is
+            //   the documented cardinality operators budget with, and a class
+            //   or reason silently missing from the tables loses exactly
+            //   that class's or reason's telemetry - at the counters the
+            //   conservation alerts are built on.
+
+            // Given: the enum sizes the tables are built from
+            val classes = TopicClass.entries
+            val reasons = KafkaAppenderMetrics.FallbackReason.entries
+            val outcomes = KafkaAppenderMetrics.SendOutcome.entries
+            val expectedSeries =
+                mapOf(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED to classes.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED to classes.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK to classes.size * reasons.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION to classes.size * outcomes.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE to classes.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to 1,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to 1,
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to 1,
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE to classes.size,
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY to classes.size,
+                )
+            val registry = newRegistry()
+            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "audit-appender")
+
+            // When: every hook once per enum combination
+            classes.forEach { tc ->
+                metrics.eventAccepted(tc)
+                metrics.eventDispatched(tc)
+                metrics.eventSize(tc, 512)
+                reasons.forEach { reason -> metrics.eventFallback(tc, reason) }
+                outcomes.forEach { outcome -> metrics.sendCompleted(tc, outcome, Duration.ofMillis(1)) }
+                metrics.registerSendQueueGauges(tc, queueSize = { 0 }, capacity = 1024)
+            }
+            metrics.fallbackDispatcherDropped()
+            metrics.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1024)
+
+            // Then: exactly the expected number of series per name, and no other name
+            val meters = appenderMeters(registry)
+            assertThat(meters.groupingBy { it.id.name }.eachCount()).containsExactlyInAnyOrderEntriesOf(expectedSeries)
+
+            // And: every series was reached by its hook
+            val topicClass = MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS
+            classes.forEach { tc ->
+                assertThat(registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED, topicClass to tc.tag).count())
+                    .`as`("accepted %s", tc.tag)
+                    .isEqualTo(1.0)
+                assertThat(registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED, topicClass to tc.tag).count())
+                    .`as`("dispatched %s", tc.tag)
+                    .isEqualTo(1.0)
+                assertThat(registry.requireSummary(MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE, topicClass to tc.tag).count())
+                    .`as`("event.size %s", tc.tag)
+                    .isEqualTo(1L)
+                reasons.forEach { reason ->
+                    assertThat(
+                        registry
+                            .requireCounter(
+                                MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                                topicClass to tc.tag,
+                                MicrometerKafkaAppenderMetrics.TAG_REASON to reason.tag,
+                            ).count(),
+                    ).`as`("fallback %s/%s", tc.tag, reason.tag).isEqualTo(1.0)
+                }
+                outcomes.forEach { outcome ->
+                    assertThat(
+                        registry
+                            .requireTimer(
+                                MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION,
+                                topicClass to tc.tag,
+                                MicrometerKafkaAppenderMetrics.TAG_OUTCOME to outcome.tag,
+                            ).count(),
+                    ).`as`("send.duration %s/%s", tc.tag, outcome.tag).isEqualTo(1L)
+                }
+            }
+            assertThat(registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED).count()).isEqualTo(1.0)
         }
 
         @Test

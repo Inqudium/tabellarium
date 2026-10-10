@@ -195,11 +195,15 @@ class RenamingMeterMirrorTest {
             //   the target is empty once both the registration and close()
             //   have completed. Deterministic: the target's gauge registration
             //   parks on a latch, and is released only once close() has swept
-            //   the mirror map and sits blocked in source.close() - Micrometer
-            //   runs the onMeterAdded listener under the source's meter-map
-            //   lock, which close() needs as well. The mirror is then put into
-            //   the already swept map, and only the re-check after the put can
-            //   remove it again.
+            //   the mirror map - observed as the closer either sitting blocked
+            //   in source.close() (Micrometer runs the onMeterAdded listener
+            //   under the source's meter-map lock, which close() needs as
+            //   well) or, should a Micrometer version close without that
+            //   lock, having finished. Either way the mirror is put into the
+            //   already swept map, and only the re-check after the put can
+            //   remove it again; the test is about that re-check, not about
+            //   Micrometer's locking (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 18).
             // Why is it important to test this test case? KafkaMetrics refreshes
             //   on its own scheduler; a refresh coinciding with stop() would
             //   otherwise leave an orphaned producer meter in the operator's
@@ -233,7 +237,11 @@ class RenamingMeterMirrorTest {
             // registration completes
             val closer = Thread { mirror.close() }
             closer.start()
-            pollUntil { closer.state == Thread.State.BLOCKED || closer.state == Thread.State.WAITING }
+            pollUntil {
+                closer.state == Thread.State.BLOCKED ||
+                    closer.state == Thread.State.WAITING ||
+                    closer.state == Thread.State.TERMINATED
+            }
             release.countDown()
             refresh.join(10_000)
             closer.join(10_000)

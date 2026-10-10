@@ -1,9 +1,13 @@
 package eu.inqudium.tabellarium
 
+import ch.qos.logback.classic.AsyncAppender
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.encoder.EncoderBase
+import ch.qos.logback.core.spi.AppenderAttachable
+import ch.qos.logback.core.spi.AppenderAttachableImpl
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.MeterRegistry
@@ -288,6 +292,124 @@ class KafkaAppenderMetricsBindingTest {
                     appender.doAppend(loggingEvent())
                     assertThat(accepted() - afterSecondRefresh).isEqualTo(1.0)
                 }
+        }
+    }
+
+    @Nested
+    inner class `Appender discovery` {
+        /**
+         * A bare [AppenderAttachable] appender: the shape the binding's walk
+         * descends into. Never started, so it appends nothing - the fixture
+         * logger receives no events anyway.
+         */
+        private inner class WrapperAppender(
+            wrapperName: String,
+        ) : AppenderBase<ILoggingEvent>(),
+            AppenderAttachable<ILoggingEvent> by AppenderAttachableImpl() {
+            init {
+                context = loggerContext
+                name = wrapperName
+            }
+
+            override fun append(event: ILoggingEvent) = Unit
+        }
+
+        @Test
+        fun `should bind a KafkaAppender wrapped in an AsyncAppender`() {
+            // What is to be tested? The nested-appender discovery the class
+            //   KDoc calls the common case: a KafkaAppender that is not
+            //   attached to a logger itself but sits inside an AsyncAppender
+            //   must still be found and bound on refresh.
+            // How will the test case be deemed successful and why? Successful
+            //   if the wrapped appender reports a live binding after the
+            //   context refresh and its accepted counters exist in the
+            //   registry. Without the recursion into AppenderAttachable
+            //   (KafkaAppenderMetricsBinding.visit) the wrapped appender stays
+            //   unbound while the suite stayed green
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 6).
+            // Why is it important to test this test case? A wrapped appender
+            //   that is silently skipped leaves the operator's dashboards dark
+            //   for exactly the deployments the README discusses.
+
+            // Given: a second KafkaAppender reachable only through an AsyncAppender
+            val wrapped = newUnstartedAppender("WRAPPED_KAFKA").apply { start() }
+            val async =
+                AsyncAppender().apply {
+                    context = loggerContext
+                    name = "ASYNC"
+                    addAppender(wrapped)
+                    start()
+                }
+            bindingTestLogger.addAppender(async)
+            try {
+                // When: the context refreshes
+                ApplicationContextRunner()
+                    .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                    .run { ctx ->
+                        val registry = ctx.getBean(MeterRegistry::class.java)
+
+                        // Then: the wrapped appender is bound, with its own series
+                        assertThat(wrapped.isMeterRegistryBound).isTrue()
+                        val accepted =
+                            registry
+                                .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                                .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "WRAPPED_KAFKA")
+                                .counters()
+                        assertThat(accepted).hasSize(TopicClass.entries.size)
+                    }
+            } finally {
+                bindingTestLogger.detachAppender(async)
+                async.stop()
+                wrapped.stop()
+            }
+        }
+
+        @Test
+        fun `should terminate on a cyclic appender attachment and bind the appender inside it once`() {
+            // What is to be tested? The identity-set cycle guard of the walk:
+            //   two attachable appenders referencing each other, with the
+            //   KafkaAppender attached to one of them, must not overflow the
+            //   stack inside the ContextRefreshedEvent listener, and the
+            //   appender inside the cycle must be bound exactly once.
+            // How will the test case be deemed successful and why? Successful
+            //   if the refresh completes, the appender inside the cycle is
+            //   bound and carries exactly one accepted counter per topic
+            //   class. Without the visited set the walk recurses forever and
+            //   aborts the application start
+            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 6).
+            // Why is it important to test this test case? A pathological but
+            //   constructible configuration must degrade to "bound once", not
+            //   to a StackOverflowError at application startup.
+
+            // Given: wrapper A -> wrapper B -> wrapper A, with the KafkaAppender on B
+            val inside = newUnstartedAppender("CYCLIC_KAFKA").apply { start() }
+            val wrapperA = WrapperAppender("WRAPPER_A")
+            val wrapperB = WrapperAppender("WRAPPER_B")
+            wrapperA.addAppender(wrapperB)
+            wrapperB.addAppender(wrapperA)
+            wrapperB.addAppender(inside)
+            bindingTestLogger.addAppender(wrapperA)
+            try {
+                // When
+                ApplicationContextRunner()
+                    .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
+                    .run { ctx ->
+                        val registry = ctx.getBean(MeterRegistry::class.java)
+
+                        // Then: the walk ended and bound the appender once
+                        assertThat(ctx).hasNotFailed()
+                        assertThat(inside.isMeterRegistryBound).isTrue()
+                        val accepted =
+                            registry
+                                .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                                .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "CYCLIC_KAFKA")
+                                .counters()
+                        assertThat(accepted).hasSize(TopicClass.entries.size)
+                    }
+            } finally {
+                bindingTestLogger.detachAppender(wrapperA)
+                inside.stop()
+            }
         }
     }
 

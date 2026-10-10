@@ -1,9 +1,12 @@
 package eu.inqudium.tabellarium
 
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
@@ -39,10 +42,12 @@ class BoundedWorkerDispatcherTest {
         queue: PausingQueue,
         private val onDeliver: (String) -> Unit = {},
         onWorkerDeath: (Throwable) -> Unit = {},
+        threadName: String = "probe-worker",
+        drainTimeoutMs: Long = 1000,
     ) : BoundedWorkerDispatcher<String>(
-            threadName = "probe-worker",
+            threadName = threadName,
             queueCapacity = 16,
-            drainTimeoutMs = 1000,
+            drainTimeoutMs = drainTimeoutMs,
             onWorkerDeath = onWorkerDeath,
             queueFactory = { queue },
         ) {
@@ -172,6 +177,43 @@ class BoundedWorkerDispatcherTest {
             )
             assertThat(dispatcher.delivered).isEmpty()
             assertThat(dispatcher.depth()).isZero()
+        }
+    }
+
+    @Nested
+    inner class `Drain budget validation` {
+        @ParameterizedTest(name = "drainTimeoutMs = {0}")
+        @ValueSource(longs = [0, -1])
+        fun `should refuse a non-positive drain budget before starting a worker`(drainTimeoutMs: Long) {
+            // What is to be tested? Whether the constructor rejects a drain
+            //   budget that close() could not honor: Thread.join(0) waits
+            //   forever and a negative timeout makes join throw before the
+            //   remainder is accounted (DEFECT_ANALYSIS-2026-10-10T19-11-11,
+            //   finding 9).
+            // How will the test case be deemed successful and why? Successful
+            //   if construction throws IllegalArgumentException naming the
+            //   join(0) trap, and no worker thread with the dispatcher's name
+            //   exists afterwards - the check must run before the thread
+            //   starts, or a refused dispatcher would leak its worker.
+            // Why is it important to test this test case? Production passes
+            //   constants today; the guard is what turns a future caller's
+            //   "0 means no drain" into a named error instead of a close()
+            //   that never returns.
+
+            // When / Then: refused by name
+            assertThatThrownBy {
+                ProbeDispatcher(
+                    PausingQueue(16, "never", CountDownLatch(1), CountDownLatch(1)),
+                    threadName = "refused-probe-worker",
+                    drainTimeoutMs = drainTimeoutMs,
+                )
+            }.isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("drainTimeoutMs must be positive")
+                .hasMessageContaining("join(0)")
+                .hasMessageContaining(drainTimeoutMs.toString())
+
+            // And: no worker was started for the refused dispatcher
+            assertThat(Thread.getAllStackTraces().keys.map { it.name }).doesNotContain("refused-probe-worker")
         }
     }
 }
