@@ -136,6 +136,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client.id`s, which makes their producers' JMX metrics collide; the
   second appender now warns at start-up (the guide no longer claims the
   derived ids never collide).
+- A fallback appender that is also attached to a logger ahead of the
+  KafkaAppender (e.g. `CONSOLE` on root) is already stopped when a
+  Logback context reset reaches the KafkaAppender, so every event its
+  teardown diverts is dropped. `stop()` now names this case in a status
+  warning, and the configuration guide no longer calls a shared fallback
+  safe under full-context shutdown: use a dedicated fallback appender,
+  or attach the KafkaAppender ahead of the shared one.
+- A failing registration of the info gauges is now rolled back and
+  reported as a status warning instead of being swallowed with a partial
+  info set left behind.
+- `stop()` on a thread without a happens-before edge to `start()` can no
+  longer miss the running pipeline and skip the teardown.
 
 ## [1.1.2] - 2026-09-16
 

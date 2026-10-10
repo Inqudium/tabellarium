@@ -11,7 +11,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.system.measureTimeMillis
+import kotlin.time.measureTime
 
 /**
  * Pins the shared parallel-close helper on its own: the budget is one
@@ -75,7 +75,7 @@ class ParallelCloseTest {
                 }
 
             // When
-            val elapsedMs = measureTimeMillis { closeInParallel(budgetMs = 5_000, tasks = tasks) }
+            val elapsedMs = measureTime { closeInParallel(budgetMs = 5_000, tasks = tasks) }.inWholeMilliseconds
 
             // Then: everything ran, and the call did not sit on the budget
             assertThat(ran.get()).isEqualTo(3)
@@ -121,7 +121,7 @@ class ParallelCloseTest {
             val elapsedMs: Long =
                 assertTimeoutPreemptively(
                     Duration.ofSeconds(5),
-                    ThrowingSupplier { measureTimeMillis { closeInParallel(budgetMs = budgetMs, tasks = tasks) } },
+                    ThrowingSupplier { measureTime { closeInParallel(budgetMs = budgetMs, tasks = tasks) }.inWholeMilliseconds },
                 )
 
             // Then: every task started, the caller waited the budget and no more
@@ -144,7 +144,7 @@ class ParallelCloseTest {
             //   there would be a silent shutdown delay.
 
             // When
-            val elapsedMs = measureTimeMillis { closeInParallel(budgetMs = 5_000, tasks = emptyList()) }
+            val elapsedMs = measureTime { closeInParallel(budgetMs = 5_000, tasks = emptyList()) }.inWholeMilliseconds
 
             // Then
             assertThat(elapsedMs).isLessThan(1_000)
