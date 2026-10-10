@@ -131,7 +131,7 @@
         <!-- Security pin; see the direct lz4-java dependency for the rationale. -->
         <lz4-java.version>1.12.0</lz4-java.version>
         <!-- Security pin; see the jackson-bom import in dependencyManagement. -->
-        <jackson3.version>3.1.7</jackson3.version>
+        <jackson3.version>3.2.3</jackson3.version>
 
         <!--
             JUnit tags excluded from the default test run. The external-contract
