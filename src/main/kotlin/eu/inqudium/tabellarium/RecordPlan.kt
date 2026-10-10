@@ -31,6 +31,12 @@ internal class RecordPlan private constructor(
     private val topicTable: TopicTable,
     private val messageEnricher: MessageEnricher,
     private val encoder: Encoder<ILoggingEvent>,
+    /**
+     * Every topic [route] can resolve to - the mapped topics plus the
+     * default topic - with its class. Published as
+     * `kafka.appender.topic.info`.
+     */
+    val topics: Map<String, TopicClass>,
 ) {
     /**
      * The topic classes the mapping makes active - what the transport
@@ -75,10 +81,12 @@ internal class RecordPlan private constructor(
             cmdbId: String,
             environment: String,
             encoder: Encoder<ILoggingEvent>,
-        ): RecordPlan =
-            RecordPlan(
-                topicRouter = topicMapping.toTopicRouter(),
-                topicTable = topicMapping.toTopicTable(),
+        ): RecordPlan {
+            val topicRouter = topicMapping.toTopicRouter()
+            val topicTable = topicMapping.toTopicTable()
+            return RecordPlan(
+                topicRouter = topicRouter,
+                topicTable = topicTable,
                 messageEnricher =
                     MessageEnricher(
                         component = component,
@@ -86,7 +94,11 @@ internal class RecordPlan private constructor(
                         environment = environment,
                     ),
                 encoder = encoder,
+                // The router validated the default topic; the table
+                // guarantees a mapping naming it agrees on the class.
+                topics = topicTable.topics + (topicMapping.defaultTopic to topicTable.fallbackClass),
             )
+        }
     }
 }
 

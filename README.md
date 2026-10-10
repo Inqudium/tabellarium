@@ -930,6 +930,8 @@ metric are the ones that vary within an appender instance.
 | `kafka.appender.fallback.queue.capacity` | Gauge   | —                                 | Maximum depth of the fallback dispatcher queue (only with a fallback appender) |
 | `kafka.appender.send.queue.size`         | Gauge   | `topic.class`                     | Current depth of the class's send dispatcher queue            |
 | `kafka.appender.send.queue.capacity`     | Gauge   | `topic.class`                     | Maximum depth of the class's send dispatcher queue            |
+| `kafka.appender.info`                    | Gauge   | `fallback`, `fallback.type`, `appender.version`, `kafka.client.version`, `debug` | Configuration of the appender as labels; value always `1` |
+| `kafka.appender.topic.info`              | Gauge   | `topic.class`, `topic`, `acks`, `linger.ms` | One series per configured topic with its class's producer settings; value always `1` |
 
 `reason` values: `breaker.open`, `throttle`, `send.error`,
 `encoder.error`, `queue.full`, `shutdown`.
@@ -937,8 +939,17 @@ metric are the ones that vary within an appender instance.
 `topic.class` values: `audit`, `functional`, `technical`,
 `performance`.
 
-Cardinality budget per appender instance: ~51 time series.
-At 100 microservices in a shared Prometheus this is ~5 100 series —
+The two info gauges carry configuration, not measurements (the
+Prometheus `*_info` convention): join their labels onto the other
+series with `* on(job, instance, appender) group_left(fallback) kafka_appender_info`,
+for example to see whether `events.fallback` goes to a file
+(`fallback_type="RollingFileAppender"`) or is dropped (`fallback="none"`).
+Labels and join patterns are described in the
+[metrics overview](docs/metrics/metrics-overview.md#info-gauges).
+
+Cardinality budget per appender instance: ~52 time series plus one per
+configured topic.
+At 100 microservices in a shared Prometheus this is ~5 500 series —
 well within the default cardinality budget.
 
 ### Reading the send-duration timer
@@ -1102,6 +1113,13 @@ trade-off, since capturing them would require a static
 `MeterRegistry` reference that conflicts with Spring's lifecycle.
 
 ### Grafana / dashboard pointers
+
+The shipped dashboards ([appender](docs/metrics/kafka-appender-dashboard.json),
+[producer internals](docs/metrics/kafka-producer-internals-dashboard.json))
+cover the points below and add the info gauges: a "Fallback events by
+destination" panel that separates events going to a fallback from
+events dropped for lack of one, and configuration tables (fallback,
+versions, debug flag, topics with `acks`/`linger.ms`).
 
 A minimal dashboard typically shows:
 

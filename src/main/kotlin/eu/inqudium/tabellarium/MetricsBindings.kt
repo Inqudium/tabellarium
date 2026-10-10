@@ -157,13 +157,18 @@ internal class MetricsBindings(
      * instead of duplicating. Returns [KafkaAppenderMetrics.NO_OP] and
      * binds nothing when [registry] already holds a live binding with
      * the same meter identity (see the class KDoc).
+     *
+     * @param info Configuration metadata for the info gauges; `null`
+     *             (the benchmarks' sender-only binding) registers none.
      */
+    @JvmOverloads
     fun bind(
         registry: MeterRegistry,
         commonTags: Iterable<Tag>,
         appenderName: String?,
         circuitBreakerRegistry: CircuitBreakerRegistry,
         producerRegistry: ProducerRegistry,
+        info: AppenderInfo? = null,
     ): KafkaAppenderMetrics {
         unbind()
         // Same derivation as MicrometerKafkaAppenderMetrics: every meter
@@ -179,7 +184,7 @@ internal class MetricsBindings(
             )
             return KafkaAppenderMetrics.NO_OP
         }
-        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName)
+        val impl = MicrometerKafkaAppenderMetrics(registry, commonTags, appenderName = appenderName, info = info)
         boundMetrics = impl
         boundRegistry = registry
         bindResilience4jMetrics(registry, commonTags, appenderTag, circuitBreakerRegistry)

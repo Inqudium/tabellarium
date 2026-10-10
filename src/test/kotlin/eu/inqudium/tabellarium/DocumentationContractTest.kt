@@ -165,6 +165,23 @@ class DocumentationContractTest {
                     MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to listOf(appender),
                     MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE to listOf(appender, topicClass),
                     MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY to listOf(appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_INFO to
+                        listOf(
+                            appender,
+                            MicrometerKafkaAppenderMetrics.TAG_FALLBACK,
+                            MicrometerKafkaAppenderMetrics.TAG_FALLBACK_TYPE,
+                            MicrometerKafkaAppenderMetrics.TAG_APPENDER_VERSION,
+                            MicrometerKafkaAppenderMetrics.TAG_KAFKA_CLIENT_VERSION,
+                            MicrometerKafkaAppenderMetrics.TAG_DEBUG,
+                        ),
+                    MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO to
+                        listOf(
+                            appender,
+                            topicClass,
+                            MicrometerKafkaAppenderMetrics.TAG_TOPIC,
+                            MicrometerKafkaAppenderMetrics.TAG_ACKS,
+                            MicrometerKafkaAppenderMetrics.TAG_LINGER_MS,
+                        ),
                 )
 
             // When / Then: the overview's inventory equals it, row by row
@@ -176,7 +193,8 @@ class DocumentationContractTest {
             // What is to be tested? Whether the cardinality table's per-metric series
             //   counts and its total are the products of the enum sizes the pre-resolved
             //   meter tables are built from (classes, classes x reasons, classes x
-            //   outcomes, 1 for the fallback-dispatcher meters).
+            //   outcomes, 1 for the fallback-dispatcher meters and the appender info;
+            //   the topic info scales with the configuration, not with an enum).
             // How will the test case be deemed successful and why? Successful if each
             //   row's leading integer equals the formula for that metric and the bold
             //   total equals their sum; adding an enum constant without updating the
@@ -201,7 +219,8 @@ class DocumentationContractTest {
             assertThat(documentedSeries("fallback.queue.capacity")).isEqualTo(1)
             assertThat(documentedSeries("send.queue.size")).isEqualTo(classes)
             assertThat(documentedSeries("send.queue.capacity")).isEqualTo(classes)
-            val total = classes * 2 + classes * reasons + classes * outcomes + 3 + classes * 2
+            assertThat(documentedSeries("info")).isEqualTo(1)
+            val total = classes * 2 + classes * reasons + classes * outcomes + 3 + classes * 2 + 1
             val totalRow = overview.single { it.startsWith("| **Total**") }
             assertThat(totalRow).contains("**$total**")
         }

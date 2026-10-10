@@ -14,6 +14,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Meter
+import io.micrometer.core.instrument.config.MeterFilter
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.producer.Callback
@@ -2998,6 +2999,90 @@ class KafkaAppenderTest {
             assertThat(registry.find("resilience4j.circuitbreaker.state").gauges()).isNotEmpty()
             appenderA.stop()
             assertThat(registry.meters).isEmpty()
+        }
+
+        @Test
+        fun `should bind and stop cleanly when a MeterFilter denies the info gauges`() {
+            // What is to be tested? Whether the documented way to switch the
+            //   info gauges off - a Micrometer MeterFilter.deny on their names -
+            //   suppresses exactly them and leaves binding and stopping intact.
+            // How will the test case be deemed successful and why? Successful
+            //   if after the bind neither info metric is in the registry while
+            //   the other kafka.appender.* meters are, no warning was reported,
+            //   and stop() still leaves no kafka.appender.* meter behind.
+            // Why is it important to test this test case? There is deliberately
+            //   no appender switch for the info gauges; the MeterFilter is the
+            //   documented replacement, so it must not break the lifecycle
+            //   (the denied gauges come back as no-op meters that the
+            //   deregistration also has to tolerate).
+
+            // Given: a registry that denies both info metrics
+            val registry = SimpleMeterRegistry()
+            val infoNames =
+                setOf(MicrometerKafkaAppenderMetrics.METRIC_INFO, MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO)
+            registry.config().meterFilter(MeterFilter.deny { it.name in infoNames })
+            val appender = newAppender(fallback = RecordingAppender())
+            appender.start()
+            val warningsBeforeBind = appender.statusEntries().count { it.level >= Status.WARN }
+
+            // When
+            appender.bindMeterRegistry(registry)
+
+            // Then: only the info gauges are missing, and the bind added no warning
+            assertThat(registry.meters).noneMatch { it.id.name in infoNames }
+            assertThat(registry.meters).anyMatch { it.id.name == MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED }
+            assertThat(appender.statusEntries().count { it.level >= Status.WARN }).isEqualTo(warningsBeforeBind)
+            appender.stop()
+            assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.") }
+        }
+
+        @Test
+        fun `should publish the appender and topic info of the running configuration`() {
+            // What is to be tested? Whether bindMeterRegistry publishes the
+            //   info gauges with the labels of the started configuration:
+            //   fallback name and type, debug flag, and one topic series per
+            //   configured topic with its class's producer settings.
+            // How will the test case be deemed successful and why? Successful
+            //   if kafka.appender.info names the attached fallback and the
+            //   debug flag, and kafka.appender.topic.info holds the default
+            //   topic (TECHNICAL: acks=1, linger.ms=50) and the mapped audit
+            //   topic (AUDIT: acks=all, linger.ms=50) - the TopicClass defaults.
+            // Why is it important to test this test case? Only the appender
+            //   knows the fallback slot, the plan and the producer properties
+            //   at once; the unit tests of the parts cannot catch a wiring
+            //   that passes the wrong source.
+
+            // Given: a started appender with a named fallback and an audit mapping
+            val registry = SimpleMeterRegistry()
+            val fallback = RecordingAppender().apply { name = "FALLBACK_FILE" }
+            val appender = newAppender(fallback = fallback, debug = true)
+            appender.topicMapping.addMapping(
+                TopicMappingEntry().apply {
+                    marker = "SECURITY"
+                    topic = "audit.security"
+                    topicClass = "AUDIT"
+                },
+            )
+            appender.start()
+
+            // When
+            appender.bindMeterRegistry(registry)
+
+            // Then
+            val info = registry.find(MicrometerKafkaAppenderMetrics.METRIC_INFO).gauge()
+            assertThat(info).isNotNull
+            assertThat(info!!.id.getTag(MicrometerKafkaAppenderMetrics.TAG_FALLBACK)).isEqualTo("FALLBACK_FILE")
+            assertThat(info.id.getTag(MicrometerKafkaAppenderMetrics.TAG_FALLBACK_TYPE))
+                .isEqualTo(RecordingAppender::class.java.simpleName)
+            assertThat(info.id.getTag(MicrometerKafkaAppenderMetrics.TAG_DEBUG)).isEqualTo("true")
+            assertThat(
+                registry.find(MicrometerKafkaAppenderMetrics.METRIC_TOPIC_INFO).gauges().map { gauge ->
+                    listOf("topic", "topic.class", "acks", "linger.ms").map { gauge.id.getTag(it) }
+                },
+            ).containsExactlyInAnyOrder(
+                listOf("default.topic", "technical", "1", "50"),
+                listOf("audit.security", "audit", "all", "50"),
+            )
         }
     }
 
