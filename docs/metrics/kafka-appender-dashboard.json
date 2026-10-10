@@ -203,7 +203,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(resilience4j_circuitbreaker_state{application=~\"$application\",name=~\"kafka-appender-.*\",state=\"open\"})",
+          "expr": "sum(kafka_appender_circuitbreaker_state{application=~\"$application\",name=~\"kafka-appender-.*\",state=\"open\"})",
           "legendFormat": "open breakers",
           "refId": "A"
         }
@@ -756,7 +756,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "resilience4j_circuitbreaker_state{application=~\"$application\",name=~\"kafka-appender-.*\"}",
+          "expr": "kafka_appender_circuitbreaker_state{application=~\"$application\",name=~\"kafka-appender-.*\"}",
           "legendFormat": "{{name}} ({{state}})",
           "refId": "A"
         }
@@ -813,7 +813,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "resilience4j_circuitbreaker_failure_rate{application=~\"$application\",name=~\"kafka-appender-.*\"}",
+          "expr": "kafka_appender_circuitbreaker_failure_rate{application=~\"$application\",name=~\"kafka-appender-.*\"}",
           "legendFormat": "{{name}}",
           "refId": "A"
         }

@@ -139,7 +139,7 @@ JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
 3. Make sure `mvn verify` passes.
 4. Update the README / `docs/` when the configuration surface or the
    metrics inventory changes. `DocumentationContractTest` pins the
-   configuration guide's defaults tables and the metrics overview's
+   configuration guide's defaults tables and the metrics guide's
    inventory to the constants, so a changed constant fails `mvn verify`
    until the tables follow.
 5. Open the pull request with a description of *what* changed and *why*.

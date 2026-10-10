@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
  * binding instead.
  *
  * The inventory - names, tags, cardinality - is canonical in
- * `docs/metrics/metrics-overview.md`, and `DocumentationContractTest`
+ * `docs/metrics/metrics-guide.md`, and `DocumentationContractTest`
  * keeps that document in step with the `METRIC_*`/`TAG_*` constants
  * and the enum sizes here. Invariant: one pre-resolved meter per enum
  * combination (`topic.class` × `reason` for fallbacks, `topic.class` ×

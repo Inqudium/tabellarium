@@ -68,7 +68,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(kafka_producer_outgoing_byte_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum(kafka_appender_producer_outgoing_byte_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "outgoing",
           "refId": "A"
         }
@@ -104,7 +104,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(kafka_producer_record_send_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum(kafka_appender_producer_record_send_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "records/s",
           "refId": "A"
         }
@@ -144,7 +144,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(kafka_producer_record_error_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum(kafka_appender_producer_record_error_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "errors/s",
           "refId": "A"
         }
@@ -184,7 +184,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg(kafka_producer_request_latency_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg(kafka_appender_producer_request_latency_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "avg latency",
           "refId": "A"
         }
@@ -239,7 +239,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_outgoing_byte_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_outgoing_byte_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -286,14 +286,14 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg by (topic_class) (kafka_producer_batch_size_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg by (topic_class) (kafka_appender_producer_batch_size_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "batch.size.avg {{topic_class}}",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg by (topic_class) (kafka_producer_record_size_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg by (topic_class) (kafka_appender_producer_record_size_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "record.size.avg {{topic_class}}",
           "refId": "B"
         }
@@ -348,14 +348,14 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg by (topic_class) (kafka_producer_request_latency_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg by (topic_class) (kafka_appender_producer_request_latency_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "avg {{topic_class}}",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "max by (topic_class) (kafka_producer_request_latency_max{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "max by (topic_class) (kafka_appender_producer_request_latency_max{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "max {{topic_class}}",
           "refId": "B"
         }
@@ -402,14 +402,14 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg by (topic_class) (kafka_producer_record_queue_time_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg by (topic_class) (kafka_appender_producer_record_queue_time_avg{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "avg {{topic_class}}",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "max by (topic_class) (kafka_producer_record_queue_time_max{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "max by (topic_class) (kafka_appender_producer_record_queue_time_max{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "max {{topic_class}}",
           "refId": "B"
         }
@@ -473,7 +473,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "1 - (kafka_producer_buffer_available_bytes{application=~\"$application\",topic_class=~\"$topic_class\"} / clamp_min(kafka_producer_buffer_total_bytes{application=~\"$application\",topic_class=~\"$topic_class\"}, 1))",
+          "expr": "1 - (kafka_appender_producer_buffer_available_bytes{application=~\"$application\",topic_class=~\"$topic_class\"} / clamp_min(kafka_appender_producer_buffer_total_bytes{application=~\"$application\",topic_class=~\"$topic_class\"}, 1))",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -529,7 +529,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "avg by (topic_class) (kafka_producer_bufferpool_wait_ratio{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "avg by (topic_class) (kafka_appender_producer_bufferpool_wait_ratio{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -584,7 +584,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_record_error_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_record_error_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -631,7 +631,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_record_retry_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_record_retry_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -686,7 +686,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_connection_count{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_connection_count{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "{{topic_class}}",
           "refId": "A"
         }
@@ -733,14 +733,14 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_connection_creation_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_connection_creation_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "open/s {{topic_class}}",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum by (topic_class) (kafka_producer_connection_close_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
+          "expr": "sum by (topic_class) (kafka_appender_producer_connection_close_rate{application=~\"$application\",topic_class=~\"$topic_class\"})",
           "legendFormat": "close/s {{topic_class}}",
           "refId": "B"
         }
@@ -826,7 +826,7 @@
       {
         "current": {"selected": false, "text": "All", "value": "$__all"},
         "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "definition": "label_values(kafka_producer_outgoing_byte_rate, application)",
+        "definition": "label_values(kafka_appender_producer_outgoing_byte_rate, application)",
         "hide": 0,
         "includeAll": true,
         "label": "Application",
@@ -834,7 +834,7 @@
         "name": "application",
         "options": [],
         "query": {
-          "query": "label_values(kafka_producer_outgoing_byte_rate, application)",
+          "query": "label_values(kafka_appender_producer_outgoing_byte_rate, application)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -846,7 +846,7 @@
       {
         "current": {"selected": false, "text": "All", "value": "$__all"},
         "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "definition": "label_values(kafka_producer_outgoing_byte_rate{application=~\"$application\"}, topic_class)",
+        "definition": "label_values(kafka_appender_producer_outgoing_byte_rate{application=~\"$application\"}, topic_class)",
         "hide": 0,
         "includeAll": true,
         "label": "Topic class",
@@ -854,7 +854,7 @@
         "name": "topic_class",
         "options": [],
         "query": {
-          "query": "label_values(kafka_producer_outgoing_byte_rate{application=~\"$application\"}, topic_class)",
+          "query": "label_values(kafka_appender_producer_outgoing_byte_rate{application=~\"$application\"}, topic_class)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,

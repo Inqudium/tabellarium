@@ -112,7 +112,7 @@ for the exact scope.
 - **[Configuration guide](config/kafka-appender-config-guide.md)** —
   every XML element, producer property composition, topic routing,
   resilience behavior, and startup validation.
-- **[Metrics overview](metrics/metrics-overview.md)** — the full
+- **[Metrics guide](metrics/metrics-guide.md)** — the full
   Micrometer metric inventory with tags and dashboard guidance.
 - **[Test evidence](https://inqudium.github.io/tabellarium/tests/test-evidence/)** —
   the generated inventory of the test suite: every test sentence plus

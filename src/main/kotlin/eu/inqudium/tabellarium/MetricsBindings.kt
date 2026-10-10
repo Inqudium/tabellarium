@@ -36,9 +36,11 @@ import java.util.IdentityHashMap
  * breaker is deleted from a `CircuitBreakerRegistry` it observes; it
  * has no teardown API of its own, so every reconfiguration cycle would
  * leak the previous appender instance's meters into the shared
- * MeterRegistry. The own binder mirrors the official binder's metric
- * names and tags 1:1 (existing dashboards keep working), tracks every
- * meter it registers, and removes exactly those in [unbind]. It also
+ * MeterRegistry. The own binder mirrors the official binder's meters,
+ * types and tags 1:1 but publishes them under the appender's namespace
+ * (`kafka.appender.circuitbreaker.*` instead of
+ * `resilience4j.circuitbreaker.*`, see "One namespace" below), tracks
+ * every meter it registers, and removes exactly those in [unbind]. It also
  * needs only `resilience4j-circuitbreaker` (a required dependency)
  * plus `micrometer-core`, so the previously optional
  * `resilience4j-micrometer` bridge is no longer used. The price is
@@ -46,6 +48,19 @@ import java.util.IdentityHashMap
  * mirror (meter names, states, tags, event semantics) -
  * `CircuitBreakerMetricsMirrorTest` does the name/type/tag part on
  * every build against the official binder on the test classpath.
+ *
+ * ## One namespace: `kafka.appender.*`
+ *
+ * Every meter a bind registers starts with `kafka.appender.`, so one
+ * prefix selects, filters or switches off all of them, and none of them
+ * mixes with the application's own breakers or Kafka clients. The
+ * breaker meters get their names directly from the own binder. The Kafka
+ * client meters come from Micrometer's `KafkaClientMetrics`, whose names
+ * (`kafka.producer.*`) are fixed; the binders register into the private
+ * source registry of a [RenamingMeterMirror], which publishes each meter
+ * in the operator's registry as `kafka.appender.X` for `kafka.X` (see
+ * there why a mirror and not a rename `MeterFilter`). [unbind] closes the
+ * binders, then the mirror, which removes what is left.
  *
  * ## One binding per meter identity
  *
@@ -151,6 +166,13 @@ internal class MetricsBindings(
     private val producerMetricBindings = mutableListOf<AutoCloseable>()
 
     /**
+     * The mirror the Kafka client binders of the current bind register
+     * into (see "One namespace" in the class KDoc); closed in [unbind]
+     * after the binders.
+     */
+    private var producerMetricsMirror: RenamingMeterMirror? = null
+
+    /**
      * Binds everything to [registry] and returns the appender-metrics
      * implementation the caller should install on its hot path. A
      * previous bind is torn down first so a repeated bind replaces
@@ -206,6 +228,8 @@ internal class MetricsBindings(
             }
         }
         producerMetricBindings.clear()
+        producerMetricsMirror?.close()
+        producerMetricsMirror = null
         try {
             boundResilience4jMeters.forEach { registry.remove(it) }
         } catch (e: Exception) {
@@ -290,7 +314,7 @@ internal class MetricsBindings(
         // One 0/1 gauge per possible state, exactly like the official
         // binder - dashboards select the active state via `== 1`.
         for (state in CircuitBreaker.State.entries) {
-            registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.state", "state", state.name.lowercase(), "The states of the circuit breaker") {
+            registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.state", "state", state.name.lowercase(), "The states of the circuit breaker") {
                 if (it.state == state) 1.0 else 0.0
             }
         }
@@ -298,22 +322,22 @@ internal class MetricsBindings(
         // as a table: name, kind tag (null = untagged), description,
         // value - so the mirror the class KDoc commits to checking on
         // every Resilience4j upgrade is one list, not a page of chains.
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.buffered.calls", "kind", "successful", "The number of buffered successful calls stored in the ring buffer") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.buffered.calls", "kind", "successful", "The number of buffered successful calls stored in the ring buffer") {
             it.metrics.numberOfSuccessfulCalls.toDouble()
         }
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.buffered.calls", "kind", "failed", "The number of buffered failed calls stored in the ring buffer") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.buffered.calls", "kind", "failed", "The number of buffered failed calls stored in the ring buffer") {
             it.metrics.numberOfFailedCalls.toDouble()
         }
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.calls", "kind", "successful", "The number of slow successful calls which were slower than a certain threshold") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.calls", "kind", "successful", "The number of slow successful calls which were slower than a certain threshold") {
             it.metrics.numberOfSlowSuccessfulCalls.toDouble()
         }
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.calls", "kind", "failed", "The number of slow failed calls which were slower than a certain threshold") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.calls", "kind", "failed", "The number of slow failed calls which were slower than a certain threshold") {
             it.metrics.numberOfSlowFailedCalls.toDouble()
         }
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.failure.rate", null, null, "The failure rate of the circuit breaker") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.failure.rate", null, null, "The failure rate of the circuit breaker") {
             it.metrics.failureRate.toDouble()
         }
-        registerBreakerGauge(registry, breaker, tags, "resilience4j.circuitbreaker.slow.call.rate", null, null, "The slow call rate of the circuit breaker") {
+        registerBreakerGauge(registry, breaker, tags, "$CIRCUIT_BREAKER_PREFIX.slow.call.rate", null, null, "The slow call rate of the circuit breaker") {
             it.metrics.slowCallRate.toDouble()
         }
 
@@ -342,7 +366,7 @@ internal class MetricsBindings(
         holder.ignoredCalls = registerCallTimer(registry, tags, "ignored", "Total number of calls which failed but the exception was ignored")
         holder.notPermittedCalls =
             Counter
-                .builder("resilience4j.circuitbreaker.not.permitted.calls")
+                .builder("$CIRCUIT_BREAKER_PREFIX.not.permitted.calls")
                 .description("Total number of not permitted calls")
                 .tags(tags)
                 .tag("kind", "not_permitted")
@@ -376,7 +400,7 @@ internal class MetricsBindings(
         description: String,
     ): Timer =
         Timer
-            .builder("resilience4j.circuitbreaker.calls")
+            .builder("$CIRCUIT_BREAKER_PREFIX.calls")
             .description(description)
             .tags(tags)
             .tag("kind", kind)
@@ -416,6 +440,11 @@ internal class MetricsBindings(
         appenderTag: String,
         producerRegistry: ProducerRegistry,
     ) {
+        val mirror =
+            RenamingMeterMirror(registry, ::kafkaClientMeterName) { message, cause ->
+                status.addWarn("Kafka producer metrics: $message", cause)
+            }
+        producerMetricsMirror = mirror
         for (topicClass in producerRegistry.activeTopicClasses) {
             val producer = producerRegistry.producerFor(topicClass)
             // The appender tag keeps producer meters from colliding even
@@ -426,8 +455,28 @@ internal class MetricsBindings(
                     .and(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS, topicClass.tag)
                     .and(MicrometerKafkaAppenderMetrics.TAG_APPENDER, appenderTag)
             val binding = KafkaClientMetrics(producer, tagsForClass)
-            binding.bindTo(registry)
+            binding.bindTo(mirror.source)
             producerMetricBindings += binding
         }
+    }
+
+    companion object {
+        /** Name prefix of the circuit-breaker meters (official binder: `resilience4j.circuitbreaker`). */
+        const val CIRCUIT_BREAKER_PREFIX: String = "kafka.appender.circuitbreaker"
+
+        /**
+         * The appender-namespace name of a Kafka client binder meter:
+         * `kafka.producer.record.send.total` becomes
+         * `kafka.appender.producer.record.send.total`, and likewise for
+         * every other `kafka.*` group the binder registers. `null` for
+         * anything else (the binder's transient `delete.this` probe), which
+         * is then not published.
+         */
+        internal fun kafkaClientMeterName(name: String): String? =
+            if (name.startsWith("kafka.") && !name.startsWith("kafka.appender.")) {
+                "kafka.appender." + name.removePrefix("kafka.")
+            } else {
+                null
+            }
     }
 }

@@ -26,7 +26,7 @@ be shipped. Delivery is best-effort transport with visible loss - see
 [Delivery guarantees](#delivery-guarantees) for the exact scope.
 
 **Documentation:** [inqudium.github.io/tabellarium](https://inqudium.github.io/tabellarium/) —
-configuration guide, metrics overview, and Grafana dashboards.
+configuration guide, metrics guide, and Grafana dashboards.
 
 ## Features
 
@@ -946,7 +946,7 @@ series with `* on(job, instance, appender) group_left(fallback) kafka_appender_i
 for example to see whether `events.fallback` goes to a file
 (`fallback_type="RollingFileAppender"`) or is dropped (`fallback="none"`).
 Labels and join patterns are described in the
-[metrics overview](docs/metrics/metrics-overview.md#info-gauges).
+[metrics guide](docs/metrics/metrics-guide.md#info-gauges).
 
 Cardinality budget per appender instance: ~56 time series plus one per
 configured topic.
@@ -975,7 +975,7 @@ delay, not a slow broker; at high volume batches fill first and the
 duration drops towards the round trip. Aggregate and alert per
 `topic_class`: a quantile over all classes mixes the floors and moves
 with the class mix. The per-class table and the query patterns live in
-the [metrics overview](docs/metrics/metrics-overview.md#reading-kafkaappendersendduration).
+the [metrics guide](docs/metrics/metrics-guide.md#reading-kafkaappendersendduration).
 
 The timer therefore says nothing about the delay the **application**
 experiences when it logs. That delay is the synchronous part of
@@ -1020,16 +1020,22 @@ payload is caller path plus queue wait.
 When `bindMeterRegistry()` is called, two additional metric sources
 are bound:
 
-- **Circuit-breaker metrics** (`resilience4j.circuitbreaker.*`) are
+- **Circuit-breaker metrics** (`kafka.appender.circuitbreaker.*`) are
   published by the appender's own binder — no `resilience4j-micrometer`
-  needed. Metric names and tags mirror `TaggedCircuitBreakerMetrics`,
-  plus the same `appender` tag the appender's own meters carry, so
-  multiple appender instances on one registry never collide.
+  needed. Meters and tags mirror `TaggedCircuitBreakerMetrics` under the
+  appender's prefix instead of `resilience4j.circuitbreaker.*`, plus the
+  same `appender` tag the appender's own meters carry, so multiple
+  appender instances on one registry never collide.
 - **Micrometer Kafka binder** (part of `micrometer-core` for older
   versions, `micrometer-binders-kafka` for newer) publishes the
-  underlying Kafka producer's internal metrics (`kafka.producer.*`)
-  if it is on the classpath. One binding per active topic class,
+  underlying Kafka producer's internal metrics if it is on the
+  classpath, renamed from `kafka.producer.*` to
+  `kafka.appender.producer.*`. One binding per active topic class,
   tagged with `topic.class` and `appender`.
+
+Every meter the appender publishes therefore starts with
+`kafka.appender.` - one prefix selects or switches off all of them, and
+none mixes with the application's own breakers or Kafka clients.
 
 A missing Kafka binder is silently skipped — that binding is
 best-effort, not fail-fast.

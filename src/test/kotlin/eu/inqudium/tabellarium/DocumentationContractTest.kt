@@ -14,7 +14,7 @@ import java.nio.file.Path
  * fails the build until the table follows, the same anti-drift
  * principle the generated coverage and test-evidence pages apply
  * (docs/assessment/ARCHITECTURE_REVIEW-2026-09-07T20-23-00.md, finding 2).
- * The metric-inventory check does the same for the metrics overview
+ * The metric-inventory check does the same for the metrics guide
  * (docs/assessment/COMMENT_AUDIT-2026-09-07T21-20-00.md, finding 5).
  *
  * Runs from the module root (Surefire's working directory), where the
@@ -111,13 +111,20 @@ class DocumentationContractTest {
     }
 
     @Nested
-    inner class `Metrics overview` {
+    inner class `Metrics guide` {
         private val overview: List<String> =
-            Files.readAllLines(Path.of("docs", "metrics", "metrics-overview.md"))
+            Files.readAllLines(Path.of("docs", "metrics", "metrics-guide.md"))
 
-        /** Metric name to its documented tag list, from the counters/timers/gauges tables. */
+        /**
+         * Metric name to its documented tag list, from the tables of the
+         * "Metric inventory" section - the appender's own meters, not the
+         * circuit-breaker and producer bridges documented further down.
+         */
         private fun documentedTags(): Map<String, List<String>> =
             overview
+                .dropWhile { it != "## Metric inventory" }
+                .drop(1)
+                .takeWhile { !it.startsWith("## ") }
                 .filter { it.startsWith("| `kafka.appender.") }
                 .associate { row ->
                     val cells = row.split("|").map { it.trim() }
@@ -128,7 +135,7 @@ class DocumentationContractTest {
         private fun documentedSeries(shortName: String): Int {
             val row =
                 overview.singleOrNull { it.startsWith("| `$shortName`") }
-                    ?: error("cardinality table row '$shortName' not found exactly once in the metrics overview")
+                    ?: error("cardinality table row '$shortName' not found exactly once in the metrics guide")
             return Regex("\\d+").find(row.split("|")[2])?.value?.toInt() ?: error("no series count in row '$shortName'")
         }
 
