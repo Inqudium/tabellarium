@@ -130,6 +130,8 @@
         <jazzer.version>0.30.0</jazzer.version>
         <!-- Security pin; see the direct lz4-java dependency for the rationale. -->
         <lz4-java.version>1.12.0</lz4-java.version>
+        <!-- Security pin; see the jackson-bom import in dependencyManagement. -->
+        <jackson3.version>3.1.7</jackson3.version>
 
         <!--
             JUnit tags excluded from the default test run. The external-contract
@@ -196,7 +198,7 @@
         <dependencies>
             <!--
                 Import order matters: the first BOM to manage an artifact wins, so
-                the two BOMs this project pins itself come BEFORE the Spring Boot
+                the BOMs this project pins itself come BEFORE the Spring Boot
                 BOM (the same precedence the former child-over-parent layout had).
             -->
             <!-- Resilience4j is not in the Boot BOM; the BOM keeps every resilience4j
@@ -216,6 +218,35 @@
                 <groupId>org.testcontainers</groupId>
                 <artifactId>testcontainers-bom</artifactId>
                 <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+                Security pin for Jackson 3 (tools.jackson), raised above the 3.1.5 the
+                Boot BOM manages. Jackson 3 arrives only through the OPTIONAL
+                logstash-logback-encoder, so consumers never get it from this artifact
+                and a managed (not direct) pin suffices: it fixes this build, its tests
+                and the CycloneDX SBOM the OSV scan reads.
+
+                jackson-core/-databind 3.1.5 carry seven advisories fixed in 3.1.7
+                (3.1.6 for some): GHSA-7hhh-6rmp-j9qf, GHSA-p6pp-m3f8-5c89,
+                GHSA-cxp5-3px4-pw24, GHSA-q4xh-88c3-wmh7, GHSA-wv8q-qhhj-9h54,
+                GHSA-gx83-3vf8-gh7j, GHSA-wjgm-6hv5-3cvf. Our own exposure is nil: all
+                seven need Jackson to PARSE or DESERIALIZE attacker-influenced JSON
+                (DataInput parsing, number-string validation, identity references,
+                XML datatypes, polymorphic type ids, Path binding), while the shipped
+                code contains no Jackson reference and the LogstashEncoder only
+                writes JSON. Applications that add the encoder manage their own
+                Jackson version.
+
+                Dependabot keeps it current; drop the pin once the Boot BOM manages
+                3.1.7 or newer by itself.
+            -->
+            <dependency>
+                <groupId>tools.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson3.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

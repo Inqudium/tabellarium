@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Jackson 3 (`tools.jackson`) pinned to 3.1.7 via its BOM, above the
+  3.1.5 the Spring Boot BOM manages: seven advisories in jackson-core and
+  jackson-databind 3.1.5 (GHSA-7hhh-6rmp-j9qf, GHSA-p6pp-m3f8-5c89,
+  GHSA-cxp5-3px4-pw24, GHSA-q4xh-88c3-wmh7, GHSA-wv8q-qhhj-9h54,
+  GHSA-gx83-3vf8-gh7j, GHSA-wjgm-6hv5-3cvf). No exposure in tabellarium:
+  all seven need Jackson to parse or deserialize untrusted JSON, the
+  shipped code does not use Jackson, and Jackson 3 arrives only through
+  the optional logstash-logback-encoder, so consumers' Jackson version is
+  unaffected. The pin fixes the build, its tests and the SBOM the OSV
+  scan reads; it is dropped once the Boot BOM manages 3.1.7 or newer.
+
 ### Added
 
 - Info gauges `kafka.appender.info` and `kafka.appender.topic.info`
