@@ -534,6 +534,101 @@ class MicrometerKafkaAppenderMetricsTest {
                 metrics.deregisterFrom(registry)
             }.doesNotThrowAnyException()
         }
+
+        /**
+         * Registry whose registration of the gauge named [failingName]
+         * throws on the first attempt only - the selective, transient
+         * failure a meter filter or custom registry can produce.
+         */
+        private inner class FailOnceGaugeRegistry(
+            private val failingName: String,
+        ) : SimpleMeterRegistry() {
+            val failures = AtomicInteger()
+
+            override fun <T : Any> newGauge(
+                id: Meter.Id,
+                obj: T?,
+                valueFunction: ToDoubleFunction<T>,
+            ): Gauge {
+                if (id.name == failingName && failures.getAndIncrement() == 0) {
+                    throw IllegalStateException("transient gauge failure")
+                }
+                return super.newGauge(id, obj, valueFunction)
+            }
+        }
+
+        @Test
+        fun `should roll back a half-registered fallback gauge pair, warn, and register both on the retry`() {
+            // What is to be tested? Whether registerFallbackQueueGauges treats the
+            //   size/capacity pair as one transaction: when the capacity gauge
+            //   fails after the size gauge registered, the size gauge is removed
+            //   again, the failure is reported through the warn sink, and the
+            //   "registered" flag stays unset so a repeated call registers both.
+            // How will the test case be deemed successful and why? Successful if
+            //   after the failing call neither gauge exists and exactly one
+            //   warning naming the fallback queue arrived, and if after the
+            //   second call both gauges exist with the second supplier's value
+            //   and the capacity. Previously the flag was set before either
+            //   registration, so the retry returned on the flag and the pair
+            //   stayed missing for the binding's lifetime without any status
+            //   entry (DEFECT_ANALYSIS-2026-10-10T15-52-19, finding 2).
+            // Why is it important to test this test case? The hostile-registry
+            //   test above only proves that the hooks do not throw; it cannot
+            //   see permanently missing saturation telemetry, which silences
+            //   exactly the alert an operator relies on when the fallback
+            //   queue fills up.
+
+            // Given: an instance whose capacity-gauge registration fails once
+            val registry = FailOnceGaugeRegistry(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY)
+            val warnings = mutableListOf<String>()
+            val metrics =
+                MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", warn = { message, _ -> warnings += message })
+
+            // When: the first wiring hits the failure
+            metrics.registerFallbackQueueGauges(queueSize = { 5 }, capacity = 100)
+
+            // Then: no half pair is left behind and the operator is told
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauge()).isNull()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(warnings).singleElement().asString().contains("fallback queue")
+
+            // When: wired again
+            metrics.registerFallbackQueueGauges(queueSize = { 7 }, capacity = 100)
+
+            // Then: both gauges exist and read the live values
+            assertThat(gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).value()).isEqualTo(7.0)
+            assertThat(gauge(registry, MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY).value()).isEqualTo(100.0)
+            assertThat(warnings).hasSize(1)
+        }
+
+        @Test
+        fun `should roll back a half-registered send-queue gauge pair and warn`() {
+            // What is to be tested? Whether registerSendQueueGauges applies the
+            //   same pair transaction as the fallback gauges: a failing capacity
+            //   gauge removes the already registered size gauge and is reported.
+            // How will the test case be deemed successful and why? Successful if
+            //   after the failing call no send-queue gauge exists for the class,
+            //   one warning naming the topic class arrived, and the removed size
+            //   gauge is no longer tracked (deregisterFrom leaves no meter of the
+            //   pair behind either way).
+            // Why is it important to test this test case? A size series without
+            //   its capacity breaks the documented saturation ratio silently;
+            //   the warning is the only signal that the queue is unobserved.
+
+            // Given: an instance whose send-queue capacity registration fails once
+            val registry = FailOnceGaugeRegistry(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY)
+            val warnings = mutableListOf<String>()
+            val metrics =
+                MicrometerKafkaAppenderMetrics(registry, appenderName = "flaky", warn = { message, _ -> warnings += message })
+
+            // When
+            metrics.registerSendQueueGauges(TopicClass.AUDIT, queueSize = { 3 }, capacity = 50)
+
+            // Then
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE).gauge()).isNull()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY).gauge()).isNull()
+            assertThat(warnings).singleElement().asString().contains("topic.class=audit")
+        }
     }
 
     @Nested

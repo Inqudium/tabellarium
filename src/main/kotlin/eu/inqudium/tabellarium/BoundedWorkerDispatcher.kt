@@ -1,5 +1,6 @@
 package eu.inqudium.tabellarium
 
+import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -87,12 +88,18 @@ import java.util.concurrent.atomic.AtomicReference
  * @param onWorkerDeath Invoked after a worker death has been accounted
  *                      for, so the owner can report it - a dead worker
  *                      must not masquerade as a merely slow consumer.
+ * @param queueFactory Creates the queue for [queueCapacity]. Production
+ *                     code keeps the default; it is the test seam that
+ *                     lets `BoundedWorkerDispatcherTest` park an offer
+ *                     inside the check-then-act window of [offer]
+ *                     (`DEFECT_ANALYSIS-2026-10-10T15-52-19`, finding 1).
  */
 internal abstract class BoundedWorkerDispatcher<T : Any>(
     threadName: String,
     queueCapacity: Int,
     private val drainTimeoutMs: Long,
     private val onWorkerDeath: (Throwable) -> Unit,
+    queueFactory: (Int) -> BlockingQueue<T> = ::LinkedBlockingQueue,
 ) : AutoCloseable {
     /** Why an item will never be delivered; the subclass decides how to account for it. */
     protected enum class Rejection {
@@ -112,7 +119,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         DELIVERY_FAILED,
     }
 
-    private val queue: LinkedBlockingQueue<T> = LinkedBlockingQueue(queueCapacity)
+    private val queue: BlockingQueue<T> = queueFactory(queueCapacity)
 
     /** The item the worker has taken off the queue but not yet finished delivering; see the class KDoc. */
     private val inFlight = AtomicReference<T>()
