@@ -23,7 +23,7 @@ class KafkaAppenderGuardTest : KafkaAppenderTestBase() {
     @Nested
     inner class `Producer self-logging guard` {
         @Test
-        fun `should ignore events from threads whose name contains a producer client id`() {
+        fun `should ignore events from the network thread of one of its own producers`() {
             // What is to be tested? Whether a log event originating from one
             //   of the appender's own Kafka producer threads (the client
             //   names them after the client.id) is dropped instead of being
@@ -147,17 +147,25 @@ class KafkaAppenderGuardTest : KafkaAppenderTestBase() {
         }
 
         @Test
-        fun `should not drop events when the operator sets a blank client id`() {
+        fun `should not drop events from the bare network-thread prefix when the operator sets a blank client id`() {
             // What is to be tested? Whether a blank operator-supplied
-            //   client.id is excluded from the guard set.
+            //   client.id is kept out of the guard set at appender level:
+            //   the guard matches exact thread names, so a blank id would
+            //   register the bare producer-network-thread prefix - and the
+            //   one event such an id could wrongly drop is one from a thread
+            //   named exactly that prefix.
             // How will the test case be deemed successful and why? Successful
-            //   if an ordinary event is still delivered. A blank id in the
-            //   guard would be contained in every thread name and silently
-            //   drop all logging.
+            //   if an event from a thread named exactly the bare prefix is
+            //   still delivered. The former version appended from "main",
+            //   which passes whether or not the blank filter exists under
+            //   the exact-name semantics, so it pinned nothing
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 13). The
+            //   registry filters the blank id before the guard sees it;
+            //   SelfLoggingGuardTest pins the guard's own filter.
             // Why is it important to test this test case? `client.id=` (empty
-            //   value) is accepted by the properties parser; without the
-            //   blank-filter this valid-if-unusual configuration would turn
-            //   the appender into a black hole.
+            //   value) is accepted by the properties parser; a registered
+            //   bare prefix would drop events of every foreign Kafka client
+            //   whose own network thread carries no client id.
 
             // Given
             val factory = RecordingProducerFactory()
@@ -172,8 +180,8 @@ class KafkaAppenderGuardTest : KafkaAppenderTestBase() {
                 )
             appender.start()
 
-            // When
-            appender.doAppend(newTestLoggingEvent(threadName = "main"))
+            // When: an event from a thread named exactly the bare prefix
+            appender.doAppend(newTestLoggingEvent(threadName = SelfLoggingGuard.PRODUCER_NETWORK_THREAD_PREFIX))
 
             // Then
             appender.stop()

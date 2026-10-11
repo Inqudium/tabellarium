@@ -71,12 +71,20 @@ class MessageEnricherFuzzTest {
         if (record.getHeaders().size() != 5) {
             throw new IllegalStateException("header set incomplete: " + record.getHeaders());
         }
-        for (String identity : new String[] {component, cmdbId, environment}) {
-            byte[] utf8 = identity.getBytes(StandardCharsets.UTF_8);
-            boolean found = record.getHeaders().stream().anyMatch(h -> Arrays.equals(h.value(), utf8));
-            if (!found) {
-                throw new IllegalStateException("identity value missing from headers: '" + identity + "'");
-            }
+        // Each identity under ITS key - a key swap between two headers
+        // passed the former "appears in some header" check
+        // (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 24).
+        requireHeader(record, MessageEnricher.HEADER_COMPONENT, component);
+        requireHeader(record, MessageEnricher.HEADER_CMDB_ID, cmdbId);
+        requireHeader(record, MessageEnricher.HEADER_ENVIRONMENT, environment);
+    }
+
+    private static void requireHeader(EnrichedRecord record, String key, String expected) {
+        byte[] utf8 = expected.getBytes(StandardCharsets.UTF_8);
+        boolean found = record.getHeaders().stream()
+                .anyMatch(h -> h.key().equals(key) && Arrays.equals(h.value(), utf8));
+        if (!found) {
+            throw new IllegalStateException("header '" + key + "' does not carry '" + expected + "': " + record.getHeaders());
         }
     }
 }

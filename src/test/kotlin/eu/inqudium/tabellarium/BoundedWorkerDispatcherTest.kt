@@ -181,6 +181,146 @@ class BoundedWorkerDispatcherTest {
     }
 
     @Nested
+    inner class `Interrupts the worker does not own` {
+        /** A queue that pauses nothing - the plain skeleton under test. */
+        private fun plainQueue() = PausingQueue(16, "never", CountDownLatch(1), CountDownLatch(1))
+
+        @Test
+        fun `should keep delivering when a delivery leaves the interrupt flag set while no close is in progress`() {
+            // What is to be tested? Whether the worker tells a spurious
+            //   interrupt - a delivery that calls
+            //   Thread.currentThread().interrupt() on its own, as a fallback
+            //   appender or an interceptor might on an internal timeout -
+            //   from the close signal, and keeps working instead of
+            //   retiring with the dispatcher still accepting.
+            // How will the test case be deemed successful and why? Successful
+            //   if the item delivered after the one that set the flag is
+            //   delivered too, no worker death was reported, nothing was
+            //   rejected and a later offer is still accepted. A worker that
+            //   exits on any interrupt flag leaves "second" in a queue
+            //   nothing drains, with running still true: the dead worker
+            //   masquerading as a slow consumer, until the queue fills and
+            //   every event is rejected as full
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 26).
+            // Why is it important to test this test case? Silent loss of the
+            //   whole delivery capability with misattributed accounting is
+            //   the failure the death hook exists to prevent; this is the one
+            //   path around it.
+
+            // Given: a worker whose first delivery sets the interrupt flag
+            val deaths = Collections.synchronizedList(mutableListOf<Throwable>())
+            val dispatcher =
+                ProbeDispatcher(
+                    plainQueue(),
+                    onDeliver = { item -> if (item == "spurious") Thread.currentThread().interrupt() },
+                    onWorkerDeath = { deaths += it },
+                ).also { openDispatchers += it }
+
+            // When: the flag-setting delivery, then an ordinary one
+            assertThat(dispatcher.hand("spurious")).isTrue()
+            pollUntil { dispatcher.delivered.contains("spurious") }
+            assertThat(dispatcher.hand("second")).isTrue()
+
+            // Then: the worker survived the spurious flag
+            pollUntil { dispatcher.delivered.contains("second") }
+            assertThat(dispatcher.delivered).containsExactly("spurious", "second")
+            assertThat(dispatcher.rejections).isEmpty()
+            assertThat(deaths).isEmpty()
+            assertThat(dispatcher.hand("third")).isTrue()
+            pollUntil { dispatcher.delivered.contains("third") }
+        }
+
+        @Test
+        fun `should keep polling when an idle worker is interrupted from outside while no close is in progress`() {
+            // What is to be tested? The same distinction on the other wait
+            //   of the worker: an interrupt that wakes the queue poll while
+            //   the dispatcher is still running (nothing in the library does
+            //   this; a third party holding the thread reference could).
+            // How will the test case be deemed successful and why? Successful
+            //   if an item handed after the stray interrupt is still
+            //   delivered and no death was reported. A worker that treats
+            //   every InterruptedException from the poll as the close signal
+            //   exits and strands the item.
+            // Why is it important to test this test case? Same failure as the
+            //   delivery case - a stranded queue behind an accepting
+            //   dispatcher - reached through the poll instead of the delivery.
+
+            // Given: the worker thread, learned from its first delivery
+            val deaths = Collections.synchronizedList(mutableListOf<Throwable>())
+            val workerThread = AtomicReference<Thread>()
+            val dispatcher =
+                ProbeDispatcher(
+                    plainQueue(),
+                    onDeliver = { workerThread.set(Thread.currentThread()) },
+                    onWorkerDeath = { deaths += it },
+                ).also { openDispatchers += it }
+            assertThat(dispatcher.hand("first")).isTrue()
+            pollUntil { dispatcher.delivered.contains("first") }
+
+            // When: a stray interrupt hits the (now idle) worker, then an item follows
+            workerThread.get().interrupt()
+            assertThat(dispatcher.hand("second")).isTrue()
+
+            // Then: the worker is still there to deliver it
+            pollUntil { dispatcher.delivered.contains("second") }
+            assertThat(dispatcher.rejections).isEmpty()
+            assertThat(deaths).isEmpty()
+        }
+
+        @Test
+        fun `should still end the drain on the close interrupt when the delivery leaves the flag set`() {
+            // What is to be tested? The converse: the close() interrupt,
+            //   observed after a delivery that re-set the flag (the
+            //   well-behaved appender convention), must still end the
+            //   worker - the spurious-interrupt tolerance is keyed on
+            //   `running`, which close() clears first.
+            // How will the test case be deemed successful and why? Successful
+            //   if, with the first delivery parked interruptibly and a
+            //   second item queued, close() with a short drain budget ends
+            //   the worker within the grace: the parked delivery returns
+            //   (interrupted, flag restored) and counts as delivered, the
+            //   queued item is claimed by the close as SHUTDOWN_REMAINDER
+            //   and never delivered, and the worker thread is gone
+            //   afterwards. A worker that also cleared the close interrupt
+            //   would drain the second item instead of exiting.
+            // Why is it important to test this test case? The forced exit
+            //   is what bounds a shutdown with a stuck fallback; the
+            //   tolerance for stray interrupts must not weaken it.
+
+            // Given: a delivery parked in an interruptible wait that restores the flag
+            val parked = CountDownLatch(1)
+            val workerThread = AtomicReference<Thread>()
+            val dispatcher =
+                ProbeDispatcher(
+                    plainQueue(),
+                    onDeliver = { item ->
+                        if (item == "parked") {
+                            workerThread.set(Thread.currentThread())
+                            try {
+                                CountDownLatch(1).apply { parked.countDown() }.await()
+                            } catch (_: InterruptedException) {
+                                Thread.currentThread().interrupt()
+                            }
+                        }
+                    },
+                    drainTimeoutMs = 50,
+                ).also { openDispatchers += it }
+            assertThat(dispatcher.hand("parked")).isTrue()
+            assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue()
+            assertThat(dispatcher.hand("queued")).isTrue()
+
+            // When: closed with the worker parked - the budget expires, the interrupt follows
+            dispatcher.close()
+
+            // Then: the worker exited on the close interrupt; the queued item was claimed by the close
+            workerThread.get().join(5_000)
+            assertThat(workerThread.get().isAlive).isFalse()
+            assertThat(dispatcher.delivered).containsExactly("parked")
+            assertThat(dispatcher.rejections).containsExactly("queued" to "SHUTDOWN_REMAINDER")
+        }
+    }
+
+    @Nested
     inner class `Drain budget validation` {
         @ParameterizedTest(name = "drainTimeoutMs = {0}")
         @ValueSource(longs = [0, -1])

@@ -87,25 +87,39 @@ class TopicRouterFuzzTest {
         }
     }
 
-    /** Arbitrary names: accepted only when Kafka-valid, rejected only via IllegalArgumentException. */
+    /**
+     * Arbitrary names: accepted only when Kafka-valid, rejected only via
+     * IllegalArgumentException - and rejected only when something IS
+     * invalid. The second half is what keeps this leg a positive oracle in
+     * regression mode too: without it a rejection was accepted
+     * unconditionally, so a pattern tightened to [a-z._-]+ passed every
+     * checked-in input (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 10).
+     */
     private static void arbitraryNames(FuzzedDataProvider data) {
         String defaultTopic = data.consumeString(300);
         String marker = data.consumeString(12);
         String mappedTopic = data.consumeRemainingAsString();
         Map<String, String> mappings = mappedTopic.isEmpty() ? Map.of() : Map.of(marker, mappedTopic);
+        boolean anyInvalid = accepted(defaultTopic, mappings).stream().anyMatch(TopicRouterFuzzTest::kafkaInvalid)
+                || (!mappings.isEmpty() && FuzzOracles.kotlinBlank(marker));
         try {
             new TopicRouter(defaultTopic, mappings);
         } catch (IllegalArgumentException expected) {
+            if (!anyInvalid) {
+                throw new IllegalStateException("Kafka-valid configuration rejected: default='" + defaultTopic
+                        + "', marker='" + marker + "', mapped='" + mappedTopic + "': " + expected.getMessage());
+            }
             return;
         }
-        for (String topic : accepted(defaultTopic, mappings)) {
-            if (!KAFKA_TOPIC.matcher(topic).matches() || topic.equals(".") || topic.equals("..")) {
-                throw new IllegalStateException("Kafka-invalid topic accepted: '" + topic + "'");
-            }
+        if (anyInvalid) {
+            throw new IllegalStateException("Kafka-invalid configuration accepted: default='" + defaultTopic
+                    + "', marker='" + marker + "', mapped='" + mappedTopic + "'");
         }
-        if (!mappings.isEmpty() && FuzzOracles.kotlinBlank(marker)) {
-            throw new IllegalStateException("blank marker name accepted");
-        }
+    }
+
+    /** Kafka's own topic-name rule, spelled independently of the library: character set, length, reserved names. */
+    private static boolean kafkaInvalid(String topic) {
+        return !KAFKA_TOPIC.matcher(topic).matches() || topic.equals(".") || topic.equals("..");
     }
 
     private static List<String> accepted(String defaultTopic, Map<String, String> mappings) {

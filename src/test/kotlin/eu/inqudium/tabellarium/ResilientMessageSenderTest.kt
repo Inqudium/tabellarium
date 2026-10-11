@@ -82,6 +82,9 @@ class ResilientMessageSenderTest {
          */
         val sizes: MutableList<Pair<TopicClass, Int>> = Collections.synchronizedList(mutableListOf())
 
+        /** The send durations as the sender measured them, for value-level assertions against an injected clock. */
+        val durations: MutableList<Duration> = Collections.synchronizedList(mutableListOf())
+
         override fun eventAccepted(topicClass: TopicClass) {
             events.add(Event("accepted", topicClass, null))
         }
@@ -103,6 +106,7 @@ class ResilientMessageSenderTest {
             duration: Duration,
         ) {
             events.add(Event("send.completed", topicClass, outcome.tag))
+            durations.add(duration)
         }
 
         override fun eventSize(
@@ -502,18 +506,27 @@ class ResilientMessageSenderTest {
         fun `should silently drop the event when the circuit is open and no fallback is configured`() {
             // What is to be tested? The operator's "no fallback" choice on the
             //   OPEN-breaker path: with a null fallback dispatcher the event is
-            //   dropped, and send() neither throws nor touches the producer.
+            //   dropped, send() neither throws nor touches the producer, and
+            //   the drop is still accounted as fallback(breaker.open) - silent
+            //   for the caller, not for the metrics.
             // How will the test case be deemed successful and why? Successful
             //   if send() returns normally (an exception would fail the test
-            //   right there) and the producer history is empty. Pins the
-            //   null-safe sendToFallback plus the "denied -> return" flow.
+            //   right there), the producer history is empty and the captured
+            //   metrics hold exactly one fallback(breaker.open) and nothing
+            //   else. Pins the null-safe sendToFallback plus the "denied ->
+            //   account -> return" flow; a short-circuit on the null dispatcher
+            //   ahead of the metrics hook stays green without the last
+            //   assertion (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 17).
             // Why is it important to test this test case? send() runs on the
             //   send-dispatcher worker; an NPE here would kill that worker and
             //   turn a deliberate best-effort configuration into a dead pipeline
-            //   for the whole topic class.
+            //   for the whole topic class - and without a fallback the metrics
+            //   are the only trace of the loss.
 
-            // Given: no fallback appender
+            // Given: no fallback appender, a capturing recorder
             val ctx = newSender(fallback = null)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
             val cbName = ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT)
             ctx.circuitBreakerRegistry.circuitBreaker(cbName).transitionToOpenState()
 
@@ -526,8 +539,10 @@ class ResilientMessageSenderTest {
                 originalEvent = newTestLoggingEvent(),
             )
 
-            // And: the producer was not touched
+            // And: the producer was not touched, the drop was accounted once
             assertThat(ctx.factory.createdProducers[0].history()).isEmpty()
+            assertThat(metrics.kinds()).containsExactly("fallback")
+            assertThat(metrics.events.single().detail).isEqualTo(KafkaAppenderMetrics.FallbackReason.BREAKER_OPEN.tag)
         }
     }
 
@@ -623,20 +638,29 @@ class ResilientMessageSenderTest {
             //   fires exactly once - the drop is silent for the caller,
             //   not for the metrics.
             // How will the test case be deemed successful and why? Successful
-            //   if send returns normally and the metrics show exactly one
+            //   if send returns normally, the metrics show exactly one
             //   send.completed(error) and one fallback(send.error) with no
             //   dispatched - so a regression that swallowed the failure
-            //   before the hooks, or counted it as dispatched, is caught.
+            //   before the hooks, or counted it as dispatched, is caught -
+            //   and the breaker recorded exactly one failed call: the
+            //   permission acquired before the send must be settled by
+            //   onError, or it leaks (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 1).
             // Why is it important to test this test case? Without a
             //   fallback the metrics are the ONLY trace of the loss; a
             //   test that merely proves "does not throw" would let them
-            //   silently go dark.
+            //   silently go dark. And a synchronous throw that the breaker
+            //   never sees would not count toward the failure rate, so a
+            //   closed or interrupted producer could never open it.
 
-            // Given
-            val ctx = newSender(fallback = null)
+            // Given: the appender's breaker configuration, so the breaker's
+            //   metrics window is the production one
+            val ctx = newSender(fallback = null, cbRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry())
             val metrics = CapturingMetrics()
             ctx.sender.setMetrics(metrics)
             ctx.factory.createdProducers[0].close()
+            val breaker =
+                ctx.circuitBreakerRegistry.circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
 
             // When: must not throw
             ctx.sender.send(
@@ -651,6 +675,165 @@ class ResilientMessageSenderTest {
             assertThat(metrics.kinds()).containsExactly("send.completed", "fallback")
             assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
             assertThat(metrics.events.single { it.kind == "fallback" }.detail).isEqualTo("send.error")
+
+            // And: the breaker saw the failure - the permission was settled
+            assertThat(breaker.metrics.numberOfFailedCalls).isEqualTo(1)
+            assertThat(breaker.metrics.numberOfSuccessfulCalls).isZero()
+        }
+
+        @Test
+        fun `should complete the half-open probe window with synchronous throws and re-open the breaker`() {
+            // What is to be tested? Whether a send that throws synchronously
+            //   settles the HALF_OPEN permission it consumed: ten such sends
+            //   are the whole probe window, and the breaker must decide on
+            //   them - here re-open, since every probe failed.
+            // How will the test case be deemed successful and why? Successful
+            //   if after ten synchronous throws the breaker is OPEN again,
+            //   every probe was accounted as a fallback(send.error) and no
+            //   event was dispatched. Without the onError in the catch path
+            //   each probe consumes one of the ten permits with no outcome;
+            //   after ten the breaker can neither close nor re-open and
+            //   stays HALF_OPEN with no permits left - a topic class in
+            //   permanent fallback behind a healthy-looking breaker
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 1).
+            // Why is it important to test this test case? HALF_OPEN is the
+            //   breaker's recovery mechanism; a probe window that never
+            //   completes locks the class out of Kafka for good, and the
+            //   closed-producer / InterruptException failures that throw
+            //   synchronously are exactly what a probe hits during an outage.
+
+            // Given: the production breaker (10 half-open permits), the
+            //   throttle disabled so every probe reaches the breaker, and a
+            //   producer that throws synchronously on every send
+            val ctx =
+                newSender(
+                    fallback = null,
+                    cbRegistry = ResilientMessageSender.defaultCircuitBreakerRegistry(),
+                    halfOpenProbeGap = Duration.ZERO,
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+            ctx.factory.createdProducers[0].close()
+            val breaker =
+                ctx.circuitBreakerRegistry.circuitBreaker(ResilientMessageSender.circuitBreakerName(TopicClass.AUDIT))
+            breaker.transitionToOpenState()
+            breaker.transitionToHalfOpenState()
+            val permits = ResilientMessageSender.defaultCircuitBreakerConfig().permittedNumberOfCallsInHalfOpenState
+
+            // When: exactly the probe window's worth of synchronous throws
+            repeat(permits) {
+                ctx.sender.send(
+                    topicClass = TopicClass.AUDIT,
+                    topicName = "audit-events",
+                    payload = "payload".toByteArray(),
+                    enrichment = basicEnrichment,
+                    originalEvent = newTestLoggingEvent(),
+                )
+            }
+
+            // Then: the window completed and the breaker decided
+            assertThat(breaker.state).isEqualTo(CircuitBreaker.State.OPEN)
+            assertThat(metrics.events.filter { it.kind == "fallback" }.map { it.detail })
+                .hasSize(permits)
+                .containsOnly("send.error")
+            assertThat(metrics.kinds()).doesNotContain("dispatched")
+        }
+    }
+
+    @Nested
+    inner class `Send duration measurement` {
+        /** Advances [clock] by [delta] inside send, then throws synchronously - a slow client that fails. */
+        private fun slowThrowingProducer(
+            clock: AtomicLong,
+            delta: Duration,
+        ): (MockProducer<ByteArray, ByteArray>) -> Producer<ByteArray, ByteArray> =
+            { mock ->
+                object : Producer<ByteArray, ByteArray> by mock {
+                    override fun send(
+                        record: ProducerRecord<ByteArray, ByteArray>,
+                        callback: Callback?,
+                    ): Future<RecordMetadata> {
+                        clock.addAndGet(delta.toNanos())
+                        throw org.apache.kafka.common
+                            .KafkaException("simulated slow failure")
+                    }
+                }
+            }
+
+        @Test
+        fun `should measure the callback path's send duration with the injected clock`() {
+            // What is to be tested? Whether the duration handed to
+            //   sendCompleted on the callback path is the injected clock's
+            //   delta between send() entry and the callback, in nanoseconds.
+            // How will the test case be deemed successful and why? Successful
+            //   if a clock advanced by exactly 7 ms between the send and the
+            //   deferred completion yields a recorded duration of exactly
+            //   7 ms. A measurement taken from System.nanoTime instead of the
+            //   injected source, or a unit slip (ofMillis for a nanosecond
+            //   value - a million-fold inflation), gives another value
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 29).
+            // Why is it important to test this test case? The duration feeds
+            //   send.duration and the breaker's slow-call input; an
+            //   inflated series would mis-tune every latency alert, with
+            //   nothing else in the suite reading the value.
+
+            // Given: a deferred-completion producer and a controllable clock
+            val clock = AtomicLong(1_000)
+            val ctx = newSender(autoComplete = false, nanoTimeSource = clock::get)
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When: the clock advances between the send and its completion
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "payload".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+            clock.addAndGet(Duration.ofMillis(7).toNanos())
+            ctx.factory.createdProducers[0].completeNext()
+
+            // Then: exactly the clock's delta
+            assertThat(metrics.durations).containsExactly(Duration.ofMillis(7))
+            assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("success")
+        }
+
+        @Test
+        fun `should measure the synchronous-throw path's send duration with the injected clock`() {
+            // What is to be tested? The same value-level contract on the
+            //   synchronous-throw path, whose elapsed time is computed in
+            //   the catch block rather than in the callback.
+            // How will the test case be deemed successful and why? Successful
+            //   if a producer that advances the clock by exactly 3 ms before
+            //   throwing yields a recorded error duration of exactly 3 ms.
+            // Why is it important to test this test case? The two paths
+            //   compute the duration separately; a unit or clock regression
+            //   in one is invisible to a test of the other.
+
+            // Given: a producer that takes 3 ms of fake time and then throws
+            val clock = AtomicLong(1_000)
+            val ctx =
+                newSender(
+                    fallback = null,
+                    nanoTimeSource = clock::get,
+                    wrapProducer = slowThrowingProducer(clock, Duration.ofMillis(3)),
+                )
+            val metrics = CapturingMetrics()
+            ctx.sender.setMetrics(metrics)
+
+            // When
+            ctx.sender.send(
+                topicClass = TopicClass.AUDIT,
+                topicName = "audit-events",
+                payload = "payload".toByteArray(),
+                enrichment = basicEnrichment,
+                originalEvent = newTestLoggingEvent(),
+            )
+
+            // Then: exactly the clock's delta, on the error outcome
+            assertThat(metrics.durations).containsExactly(Duration.ofMillis(3))
+            assertThat(metrics.events.single { it.kind == "send.completed" }.detail).isEqualTo("error")
         }
     }
 

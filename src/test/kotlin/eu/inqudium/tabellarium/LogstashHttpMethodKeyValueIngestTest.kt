@@ -167,9 +167,13 @@ class LogstashHttpMethodKeyValueIngestTest {
             //   reached the filter (e.g. a CircuitBreaker short-circuit).
             // How will the test case be deemed successful and why? Successful
             //   if the field is simply absent from the JSON (LogstashEncoder
-            //   drops null KeyValues), no encode error occurred, and no
-            //   scalar/object conflict arises - an absent field never
-            //   conflicts with any mapping.
+            //   drops null KeyValues), the REST of the document is present
+            //   (message, path, status code), no encode error occurred, and
+            //   no scalar/object conflict arises - an absent field never
+            //   conflicts with any mapping. The presence check is what tells
+            //   "field omitted" from "event dropped": every other assertion
+            //   here also holds for an empty output
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 24).
             // Why is it important to test this test case? The fix must not
             //   trade the object-{} bug for a different ingest break.
 
@@ -180,7 +184,12 @@ class LogstashHttpMethodKeyValueIngestTest {
             // When
             val conflict = firstScalarFieldArrivingAsObject(doc, scalarMappedFields)
 
-            // Then: a null value is omitted (not rendered as null and not as an object), no encode error,
+            // Then: the event itself was emitted - only the null field is missing
+            assertThat(doc.get("message")?.asText()).`as`("the event reaches the encoder output").contains("Adapter http exchange")
+            assertThat(doc.get("lap.url.path")?.asText()).isEqualTo("/v5/access-profiles/by-involved-party/uuid")
+            assertThat(doc.get("lap.http.response.status_code")?.asInt()).isEqualTo(403)
+
+            // And: a null value is omitted (not rendered as null and not as an object), no encode error,
             // and no scalar/object conflict, so Elasticsearch accepts the document.
             assertThat(emitted.encodeErrors).`as`("no swallowed encode error for a null KeyValue").isZero()
             assertThat(emitted.json)

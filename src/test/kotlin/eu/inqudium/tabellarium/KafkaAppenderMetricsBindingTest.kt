@@ -130,10 +130,15 @@ class KafkaAppenderMetricsBindingTest {
             //   appender's metric counters after the context refreshes.
             // How will the test case be deemed successful and why? Successful
             //   if, after the ApplicationContext refresh, the registry
-            //   has a `kafka.appender.events.accepted` counter present.
-            //   This confirms the binding wired up successfully - a
-            //   stronger guarantee than just "the bean was created",
-            //   because it asserts the actual outcome of bindMeterRegistry.
+            //   holds exactly one `kafka.appender.events.accepted` counter
+            //   per topic class under this appender's tag. This confirms
+            //   the binding wired up successfully - a stronger guarantee
+            //   than just "the bean was created", because it asserts the
+            //   actual outcome of bindMeterRegistry; the exact count under
+            //   the tag, rather than a bare isNotEmpty on the global
+            //   context's counters, is not satisfied by a KafkaAppender
+            //   another class left attached to the global context
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 21).
             // Why is it important to test this test case? The whole
             //   point of KafkaAppenderMetricsBinding is to spare the
             //   operator the manual binding call. A regression where
@@ -146,9 +151,13 @@ class KafkaAppenderMetricsBindingTest {
                 .withUserConfiguration(MeterRegistryConfig::class.java, BindingConfig::class.java)
                 .run { ctx ->
                     val registry = ctx.getBean(MeterRegistry::class.java)
-                    // Then: counters are registered for each active class
-                    val accepted = registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED).counters()
-                    assertThat(accepted).isNotEmpty
+                    // Then: one counter per topic class, under this appender's tag
+                    val accepted =
+                        registry
+                            .find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED)
+                            .tag(MicrometerKafkaAppenderMetrics.TAG_APPENDER, "TEST_KAFKA")
+                            .counters()
+                    assertThat(accepted).hasSize(TopicClass.entries.size)
                 }
         }
 
@@ -520,8 +529,9 @@ class KafkaAppenderMetricsBindingTest {
             //   behind, so the next bindAppenders() retries instead of
             //   treating it as done - also when the failure strikes after
             //   some appender meters were already registered (ordinal 2:
-            //   after the first events.accepted counter, ordinal 4: after
-            //   all of them).
+            //   after the first events.accepted counter, ordinal 4: on the
+            //   last of the four events.accepted counters, with the
+            //   dispatched, fallback and dropped counters still ahead).
             // How will the test case be deemed successful and why? Successful
             //   if the registry is empty and the appender unbound after the
             //   context refresh, and after a second bindAppenders() against
@@ -651,6 +661,42 @@ class KafkaAppenderMetricsBindingTest {
                 }
             // ... and the own context's close unbound it
             assertThat(appender.isMeterRegistryBound).isFalse()
+        }
+
+        @Test
+        fun `should unbind on a close event when constructed outside Spring`() {
+            // What is to be tested? The null-context branch of the close
+            //   handler: a binding that was never given an application
+            //   context (constructed by hand, the trigger overridden by a
+            //   subclass, or driven from an operations endpoint) has no
+            //   "own" context to compare the event's source against and
+            //   must treat every close event as its own.
+            // How will the test case be deemed successful and why? Successful
+            //   if a manually constructed binding, without
+            //   setApplicationContext, unbinds the appender it bound on a
+            //   close event whose source is an arbitrary context. Dropping
+            //   the null guard would compare the foreign source against
+            //   null, ignore the event, and leave the appender bound with
+            //   the suite green (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 21).
+            // Why is it important to test this test case? The extension
+            //   point of ADR-0002 is exactly a binding whose events do not
+            //   come from Spring's context; an unbind that silently never
+            //   fires there keeps the appender recording into a registry
+            //   that is being torn down.
+
+            // Given: a binding constructed outside Spring, bound by hand
+            val registry = SimpleMeterRegistry()
+            val binding = KafkaAppenderMetricsBinding(registry)
+            binding.bindAppenders()
+            assertThat(appender.isMeterRegistryBound).isTrue()
+
+            // When: a close event of some context reaches it
+            binding.unbindAppenders(ContextClosedEvent(GenericApplicationContext()))
+
+            // Then: unbound, meters gone
+            assertThat(appender.isMeterRegistryBound).isFalse()
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED).counters()).isEmpty()
         }
 
         @Test

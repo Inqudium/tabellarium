@@ -134,6 +134,76 @@ class KafkaAppenderFallbackWiringTest : KafkaAppenderTestBase() {
         }
 
         @Test
+        fun `should stop and clear the fallback when detachAndStopAllAppenders is called before start`() {
+            // What is to be tested? The not-started half of
+            //   detachAndStopAllAppenders: the AppenderAttachable contract
+            //   says "stop and detach", so before start() the slot's
+            //   appender must be stopped and the slot cleared - and a second
+            //   call on the empty slot must be a quiet no-op.
+            // How will the test case be deemed successful and why? Successful
+            //   if the fallback reports isStarted=false, the slot reads null,
+            //   isAttached is false, and no refusal warning was emitted. Only
+            //   the refused-while-started path was pinned before
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 14).
+            // Why is it important to test this test case? Logback's
+            //   configuration tooling calls this method to release
+            //   appenders; a detach that left the fallback started would
+            //   leak its file handles through every programmatic re-wiring.
+
+            // Given
+            val fallback = RecordingAppender().apply { name = "FALLBACK" }
+            val appender = newAppender(fallback = fallback)
+            assertThat(fallback.isStarted).isTrue()
+
+            // When
+            appender.detachAndStopAllAppenders()
+
+            // Then: stopped and gone
+            assertThat(fallback.isStarted).isFalse()
+            assertThat(appender.fallbackAppender).isNull()
+            assertThat(appender.isAttached(fallback)).isFalse()
+
+            // And: a second call on the empty slot is a quiet no-op
+            appender.detachAndStopAllAppenders()
+            assertThat(appender.statusMessages()).noneMatch { it.contains("ignores detaching") }
+        }
+
+        @Test
+        fun `should detach by name without stopping when detachAppender(name) is called before start`() {
+            // What is to be tested? The by-name detach: only the attached
+            //   appender's own name frees the slot (an unknown or null name
+            //   is reported as "nothing detached"), and detaching does not
+            //   stop the appender - that is detachAndStopAllAppenders' job.
+            // How will the test case be deemed successful and why? Successful
+            //   if an unknown and a null name return false and leave the slot
+            //   intact, the matching name returns true and clears the slot,
+            //   the appender is still started afterwards, and a repeated
+            //   detach of the now-empty slot returns false. Only the
+            //   instance variant was pinned before
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 14).
+            // Why is it important to test this test case? Joran and
+            //   programmatic re-wiring address appenders by name; a by-name
+            //   detach that matched too widely or stopped the appender would
+            //   differ from the instance variant without any signal.
+
+            // Given
+            val fallback = RecordingAppender().apply { name = "FALLBACK" }
+            val appender = newAppender(fallback = fallback)
+
+            // When / Then: a foreign or null name detaches nothing
+            assertThat(appender.detachAppender("OTHER")).isFalse()
+            assertThat(appender.detachAppender(null as String?)).isFalse()
+            assertThat(appender.fallbackAppender).isSameAs(fallback)
+
+            // And: the matching name frees the slot without stopping the appender
+            assertThat(appender.detachAppender("FALLBACK")).isTrue()
+            assertThat(appender.fallbackAppender).isNull()
+            assertThat(fallback.isStarted).isTrue()
+            assertThat(appender.detachAppender("FALLBACK")).isFalse()
+            fallback.stop()
+        }
+
+        @Test
         fun `should refuse to detach the fallback while started and keep delivering to it`() {
             // What is to be tested? Whether the three detach paths
             //   (detachAppender by instance, by name, and

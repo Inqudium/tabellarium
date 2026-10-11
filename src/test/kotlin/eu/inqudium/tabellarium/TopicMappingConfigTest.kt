@@ -57,6 +57,37 @@ class TopicMappingConfigTest {
         }
 
         @Test
+        fun `should trim whitespace from the default topic class and still classify by it`() {
+            // What is to be tested? Whether the defaultTopicClass setter trims
+            //   its input like its two siblings (defaultTopic and the entry
+            //   setters), so Joran's whitespace-padded element text names a
+            //   class instead of failing the enum lookup.
+            // How will the test case be deemed successful and why? Successful
+            //   if "  audit  " is stored as "audit" and the resulting table
+            //   classifies the default topic as AUDIT - the setter and its
+            //   consumer, end to end. The padded input is the one the two
+            //   sibling setters already had and this one lacked
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 23).
+            // Why is it important to test this test case? A formatted
+            //   logback.xml puts the value on its own line; without the trim,
+            //   "\n    audit\n  " would be an unknown class and abort start().
+
+            // Given
+            val config =
+                TopicMappingConfig().apply {
+                    defaultTopic = "audit.trail"
+                    defaultTopicClass = "  audit  "
+                }
+
+            // When
+            val table = config.toTopicTable()
+
+            // Then
+            assertThat(config.defaultTopicClass).isEqualTo("audit")
+            assertThat(table.fallbackClass).isEqualTo(TopicClass.AUDIT)
+        }
+
+        @Test
         fun `should accept subsequent setter calls and use the last value`() {
             // What is to be tested? Whether the defaultTopic setter is a plain overwrite - the
             //   last value assigned wins, earlier values are not retained or concatenated.

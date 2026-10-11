@@ -248,7 +248,16 @@ internal class MetricsBindings(
             }
         }
         producerMetricBindings.clear()
-        producerMetricsMirror?.close()
+        // Safety: guarded like every other step - an unbind that aborts
+        // here would skip the breaker removals and the deregistration,
+        // leave boundRegistry set and make the identity probe refuse
+        // every later bind (`DEFECT_ANALYSIS-2026-10-11T16-25-57`,
+        // finding 27).
+        try {
+            producerMetricsMirror?.close()
+        } catch (e: Exception) {
+            status.addWarn("Error closing Kafka producer metrics mirror: ${e.message}", e)
+        }
         producerMetricsMirror = null
         // Safety: per meter - one failing removal must not skip the
         // rest, which would stay registered with nothing left to remove

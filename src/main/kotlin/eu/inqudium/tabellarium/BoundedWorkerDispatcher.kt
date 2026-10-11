@@ -67,7 +67,19 @@ import java.util.concurrent.atomic.AtomicReference
  *   itself after the grace and every item is still accounted exactly
  *   once) - so it must never come before the budget has been used. An
  *   interrupt of the *closing* thread ends its waits early, never the
- *   accounting, and is restored before returning.
+ *   accounting, and is restored before returning. The converse of the
+ *   swallowed interrupt is a *spurious* one: a delivery that leaves
+ *   the flag set on its own (a fallback appender or an interceptor
+ *   calling `Thread.currentThread().interrupt()` on an internal
+ *   timeout) while no close is in progress. The worker tells the two
+ *   apart by [running]: [close] clears it before it interrupts, and
+ *   the JDK's interrupt status is volatile, so an interrupt observed
+ *   while [running] is still `true` cannot be the close signal - it is
+ *   cleared and the worker keeps delivering. Without that, the worker
+ *   would retire silently with the dispatcher still accepting: the
+ *   dead worker masquerading as a slow consumer, which the death hook
+ *   exists to prevent (`DEFECT_ANALYSIS-2026-10-11T16-25-57`,
+ *   finding 26).
  * - **Self-logging**: the worker carries no guard state. Its fixed
  *   [threadName] is what the [SelfLoggingGuard] recognizes its own
  *   log events by, so anything delivered work logs through SLF4J from
@@ -261,6 +273,12 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
                 try {
                     queue.poll(WORKER_POLL_MS, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
+                    if (running) {
+                        // Spurious: close() clears `running` before it
+                        // interrupts (see the class KDoc). The exception
+                        // already cleared the flag; keep polling.
+                        continue
+                    }
                     // Forced shutdown: exit immediately rather than pull
                     // another item that could then park in delivery as a
                     // ghost; close() accounts for what remains.
@@ -269,6 +287,14 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
                 } ?: continue
             deliverGuarded(item)
             if (Thread.currentThread().isInterrupted) {
+                if (running) {
+                    // Spurious: the delivery set the flag on its own while
+                    // no close is in progress - clear it and keep working
+                    // instead of retiring with the dispatcher still
+                    // accepting (see the class KDoc).
+                    Thread.interrupted()
+                    continue
+                }
                 return
             }
         }

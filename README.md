@@ -757,8 +757,11 @@ in code that runs on JDK virtual threads. The largest reactive
 hazard — `synchronized` blocks in the appender hot path, which cause
 carrier-thread pinning on virtual threads and Reactor-Netty
 event-loop stalls — does not arise: the appender extends
-`UnsynchronizedAppenderBase`. There are no locks in the hot path;
-only atomics, volatiles and a per-thread reentry flag.
+`UnsynchronizedAppenderBase`. There is no `synchronized` and no
+blocking wait in the hot path: atomics, volatiles, a per-thread
+reentry flag and one brief `ReentrantLock` inside the bounded queue's
+non-blocking hand-off (`LinkedBlockingQueue.offer`), which never
+waits for I/O and does not pin a virtual thread.
 
 Two reactive-specific concerns remain that are worth tuning per
 service.

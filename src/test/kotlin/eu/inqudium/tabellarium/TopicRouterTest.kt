@@ -176,6 +176,45 @@ class TopicRouterTest {
         }
 
         @Test
+        fun `should let a hierarchical match on an earlier marker beat a direct match on a later one`() {
+            // What is to be tested? The documented order "the first marker
+            //   that produces a match (direct or hierarchical) wins": a
+            //   marker is fully resolved - direct, then its references -
+            //   before the next marker in the list is looked at.
+            // How will the test case be deemed successful and why? Successful
+            //   if [TRANSACTION(->AUDIT), PERFORMANCE] with AUDIT and
+            //   PERFORMANCE mapped resolves to "audit-topic": the first
+            //   marker's reference wins over the second marker's direct
+            //   mapping. The existing precedence tests use two direct matches
+            //   only, so an implementation that checked every direct match
+            //   before any hierarchical one stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 23).
+            // Why is it important to test this test case? Applications attach
+            //   a composite category marker first and a tuning marker second;
+            //   the audit event must land in the audit topic.
+
+            // Given
+            val router =
+                TopicRouter(
+                    defaultTopic = "default-topic",
+                    markerMappings =
+                        mapOf(
+                            "AUDIT" to "audit-topic",
+                            "PERFORMANCE" to "performance-topic",
+                        ),
+                )
+            val container = MarkerFactory.getDetachedMarker("TRANSACTION")
+            container.add(MarkerFactory.getDetachedMarker("AUDIT"))
+            val performanceMarker = MarkerFactory.getDetachedMarker("PERFORMANCE")
+
+            // When
+            val result = router.route(listOf(container, performanceMarker))
+
+            // Then
+            assertThat(result).isEqualTo("audit-topic")
+        }
+
+        @Test
         fun `should fall back to the default topic when none of the markers match`() {
             // What is to be tested? Rule 3 for the multi-marker case: when several markers are
             //   present and none of them is mapped, the default topic is returned.
@@ -496,6 +535,37 @@ class TopicRouterTest {
             // When / Then: accepted
             val router = TopicRouter(defaultTopic = maxLength, markerMappings = emptyMap())
             assertThat(router.route(emptyList())).isEqualTo(maxLength)
+        }
+
+        @Test
+        fun `should accept topic names using every character class Kafka permits`() {
+            // What is to be tested? The accept side of the topic-name
+            //   character set [a-zA-Z0-9._-]: upper-case letters, digits and
+            //   underscores in the default topic and in a mapped topic, and
+            //   that such names are then routed verbatim.
+            // How will the test case be deemed successful and why? Successful
+            //   if construction accepts "App_Logs-2026.v1" and
+            //   "Audit_Events-01" and route() returns them unchanged. Every
+            //   other topic literal of the default suite is lower-case
+            //   letters, dots and hyphens, so a pattern tightened to
+            //   [a-z._-]+ passed mvn verify while refusing app_logs or
+            //   logs-2026 at start-up (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 10).
+            // Why is it important to test this test case? Only the reject
+            //   side of the validation was pinned; the broker accepts these
+            //   names, so refusing them is a wrong result on common operator
+            //   topic names.
+
+            // Given
+            val router =
+                TopicRouter(
+                    defaultTopic = "App_Logs-2026.v1",
+                    markerMappings = mapOf("AUDIT" to "Audit_Events-01"),
+                )
+
+            // When / Then
+            assertThat(router.route(emptyList())).isEqualTo("App_Logs-2026.v1")
+            assertThat(router.route(listOf(MarkerFactory.getDetachedMarker("AUDIT")))).isEqualTo("Audit_Events-01")
         }
 
         @Test

@@ -598,9 +598,10 @@ Every event is diverted at most once, whichever gate fires first.
     the KafkaAppender ahead of it (`<appender-ref ref="KAFKA"/>` before
     `<appender-ref ref="CONSOLE"/>`).
 - **Must not log through SLF4J per event.** The fallback's `doAppend`
-  runs on the dispatcher's worker thread, which carries the appender's
-  reentry guard: log events it emits there are dropped (no metrics, no
-  fallback) instead of looping back into the pipeline. Logback's own
+  runs on the dispatcher's worker thread, which the appender's
+  self-logging guard recognizes by its fixed thread name: log events it
+  emits there are dropped (no metrics, no fallback) instead of looping
+  back into the pipeline. Logback's own
   file appenders report through the status manager and are unaffected.
 - **No fallback ⇒ silent drop.** Leaving it unset is the operator's explicit
   choice that best-effort delivery is acceptable. Configuring one is the way

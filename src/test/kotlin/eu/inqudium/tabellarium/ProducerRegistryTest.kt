@@ -360,6 +360,70 @@ class ProducerRegistryTest {
         }
 
         @Test
+        fun `should keep the original cause and roll back the remaining producers when a rollback close throws`() {
+            // What is to be tested? The failure path inside the rollback: a
+            //   producer created before the failing factory call throws on
+            //   its rollback close. The configuration error that broke the
+            //   start must still be the exception the caller sees, the
+            //   close failure attached as suppressed, and the rollback must
+            //   continue with the producers after the throwing one.
+            // How will the test case be deemed successful and why? Successful
+            //   if a ProducerConstructionException with the factory failure
+            //   as its cause propagates, carries exactly one suppressed
+            //   exception - the rollback close failure - and the healthy
+            //   producer created after the throwing one reports as closed.
+            //   Dropping addSuppressed loses the close failure; dropping the
+            //   inner try/catch replaces the start-up error by "producer
+            //   close failed" and leaves the healthy producer open
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 8).
+            // Why is it important to test this test case? The operator reads
+            //   the propagated exception to fix the configuration; a masked
+            //   cause sends them after the wrong problem, and the leaked
+            //   producer keeps a network thread alive per retry.
+
+            // Given: a factory that returns a throwing-on-close producer, then a
+            //   healthy one, then fails
+            val healthy = AtomicReference<MockProducer<ByteArray, ByteArray>>()
+            var created = 0
+            val factory =
+                ProducerFactory { _ ->
+                    when (created++) {
+                        0 -> {
+                            ThrowingOnCloseProducer()
+                        }
+
+                        1 -> {
+                            MockProducer(true, FixedZeroPartitioner(), ByteArraySerializer(), ByteArraySerializer())
+                                .also { healthy.set(it) }
+                        }
+
+                        else -> {
+                            throw RuntimeException("simulated factory failure")
+                        }
+                    }
+                }
+
+            // When / Then: the factory failure propagates with the close failure attached
+            assertThatThrownBy {
+                ProducerRegistry.create(
+                    propertiesBuilder = newBuilder(),
+                    activeTopicClasses = setOf(TopicClass.AUDIT, TopicClass.FUNCTIONAL, TopicClass.TECHNICAL),
+                    producerFactory = factory,
+                )
+            }.isInstanceOf(ProducerConstructionException::class.java)
+                .hasMessageContaining("simulated factory failure")
+                .satisfies({ thrown ->
+                    assertThat(thrown.cause).hasMessage("simulated factory failure")
+                    assertThat(thrown.suppressed).hasSize(1)
+                    assertThat(thrown.suppressed.single()).hasMessage("simulated close failure")
+                })
+
+            // And: the healthy producer was still closed by the rollback
+            assertThat(created).isEqualTo(3)
+            assertThat(healthy.get().closed()).isTrue()
+        }
+
+        @Test
         fun `should close already-created producers and rethrow unchanged when a later factory call throws an Error`() {
             // What is to be tested? Whether the rollback also covers an
             //   Error (linkage, initializer, resource exhaustion) from a

@@ -84,9 +84,11 @@ internal class HalfOpenThrottle(
      * deeply negative, and a sentinel below that origin would make
      * `now - last` negative - permanently denying every probe and
      * locking the breaker out of recovery. Anchoring to the actual
-     * clock keeps the arithmetic valid for any origin (the only
-     * remaining wrap case is a clock value within one gap of
-     * Long.MIN_VALUE, which no JVM produces in practice).
+     * clock keeps the arithmetic valid for any origin: the
+     * initializer's `now - gap` and the comparison's `now - last` wrap
+     * symmetrically in two's complement, so even a clock value within
+     * one gap of Long.MIN_VALUE is handled (`HalfOpenThrottleTest`
+     * pins a clock at `Long.MIN_VALUE + 1_000_000`).
      */
     private val lastProbeNanos: AtomicLong = AtomicLong(nanoTimeSource() - minProbeGapNanos)
 

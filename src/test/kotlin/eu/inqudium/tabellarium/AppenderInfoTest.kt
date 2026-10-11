@@ -68,6 +68,35 @@ class AppenderInfoTest {
             // Then
             assertThat(info.fallback).isEqualTo("unnamed")
         }
+
+        @Test
+        fun `should report an anonymous fallback appender class as anonymous, never as none`() {
+            // What is to be tested? Whether a fallback appender whose class
+            //   has no simple name (an anonymous class) gets a type label of
+            //   its own instead of the drop-policy value.
+            // How will the test case be deemed successful and why? Successful
+            //   if fallback.type reads `anonymous` while the name label still
+            //   names the appender - `none` would contradict the name label
+            //   on every series the info gauge is joined onto
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 25).
+            // Why is it important to test this test case? `none` is defined
+            //   as "no fallback"; an anonymous class has an empty simpleName,
+            //   so the blank filter alone would fall through to that value.
+
+            // Given
+            val fallback =
+                object : ch.qos.logback.core.AppenderBase<ch.qos.logback.classic.spi.ILoggingEvent>() {
+                    override fun append(eventObject: ch.qos.logback.classic.spi.ILoggingEvent) = Unit
+                }.apply { name = "INLINE" }
+            assertThat(fallback.javaClass.simpleName).isEmpty()
+
+            // When
+            val info = AppenderInfo.of(fallback, debug = false, topics = emptyMap(), effectiveProperties = emptyMap())
+
+            // Then
+            assertThat(info.fallback).isEqualTo("INLINE")
+            assertThat(info.fallbackType).isEqualTo(AppenderInfo.ANONYMOUS).isNotEqualTo(AppenderInfo.NONE)
+        }
     }
 
     @Nested
@@ -156,6 +185,38 @@ class AppenderInfoTest {
             assertThat(topic.acks).isEqualTo(defaults.getValue(ProducerConfig.ACKS_CONFIG).toString())
             assertThat(topic.acks).isEqualTo("all")
             assertThat(topic.lingerMs).isEqualTo(defaults.getValue(ProducerConfig.LINGER_MS_CONFIG).toString())
+        }
+
+        @Test
+        fun `should treat a blank merged value like an absent one`() {
+            // What is to be tested? Whether a merged property whose value is
+            //   blank (whitespace only) falls through to the Kafka client
+            //   default instead of being published as a blank label.
+            // How will the test case be deemed successful and why? Successful
+            //   if acks reads the ConfigDef default `all` and linger.ms the
+            //   trimmed operator value - the trim and the blank filter are
+            //   two separate steps of effectiveSetting, each pinned here.
+            // Why is it important to test this test case? A blank label value
+            //   is indistinguishable from a missing tag on most backends and
+            //   breaks the group_left join the info gauge exists for.
+
+            // When
+            val info =
+                AppenderInfo.of(
+                    fallbackAppender = null,
+                    debug = false,
+                    topics = mapOf("svc.logs" to TopicClass.TECHNICAL),
+                    effectiveProperties =
+                        mapOf(
+                            TopicClass.TECHNICAL to
+                                mapOf(ProducerConfig.ACKS_CONFIG to "   ", ProducerConfig.LINGER_MS_CONFIG to " 50 "),
+                        ),
+                )
+
+            // Then
+            val topic = info.topics.single()
+            assertThat(topic.acks).isEqualTo("all")
+            assertThat(topic.lingerMs).isEqualTo("50")
         }
     }
 }

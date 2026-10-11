@@ -61,11 +61,26 @@ class MetricsBindingsTest {
     /** Every producer registry a test built; closed after the test. */
     private val openRegistries = mutableListOf<ProducerRegistry>()
 
+    /**
+     * Every [Fixture] a test built; unbound after the test. Each bind
+     * starts one `KafkaClientMetrics` refresh scheduler per active topic
+     * class that only the binder close in `unbind()` stops - a fixture
+     * left bound leaks that daemon thread and an open mirror for the
+     * rest of the fork (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 3).
+     */
+    private val fixtures = mutableListOf<Fixture>()
+
     @AfterEach
-    fun closeRegistries() {
+    fun unbindAndCloseRegistries() {
+        // The binders read the producers' metrics: unbind before the producers close.
+        fixtures.forEach { it.bindings.unbind() }
+        fixtures.clear()
         openRegistries.forEach { it.close() }
         openRegistries.clear()
     }
+
+    /** The live threads of the Kafka client binder's refresh schedulers (`NamedThreadFactory("micrometer-kafka-metrics")`). */
+    private fun kafkaMetricsSchedulerThreads(): Set<Thread> = Thread.getAllStackTraces().keys.filterTo(HashSet()) { it.isAlive && it.name.startsWith(KAFKA_METRICS_THREAD_PREFIX) }
 
     /** One [TopicClass.TECHNICAL] producer from [factory]; the default [RecordingProducerFactory] hands out `MockProducer`s, which expose no client metrics. */
     private fun producerRegistry(
@@ -83,6 +98,9 @@ class MetricsBindingsTest {
                 producerFactory = factory,
             ).also { openRegistries += it }
 
+    /** A registry with one real `KafkaProducer` (no broker needed) - a `MockProducer` exposes no client metrics, so a rename that never fired would pass unnoticed. */
+    private fun realProducers(): ProducerRegistry = producerRegistry(factory = ProducerFactory.default(), bootstrapServers = "localhost:1")
+
     /** The default breaker registry with the technical breaker already created - the one the sender would create on start. */
     private fun breakerRegistry(): CircuitBreakerRegistry =
         ResilientMessageSender.defaultCircuitBreakerRegistry().also {
@@ -96,6 +114,10 @@ class MetricsBindingsTest {
     ) {
         val status = RecordingStatus()
         val bindings = MetricsBindings(status)
+
+        init {
+            fixtures += this
+        }
 
         fun bind(
             registry: MeterRegistry,
@@ -541,6 +563,157 @@ class MetricsBindingsTest {
         }
 
         @Test
+        fun `should report a failed queue gauge registration through the binding's status sink as a warning`() {
+            // What is to be tested? The warn sink bind hands to
+            //   MicrometerKafkaAppenderMetrics.register: a queue gauge pair
+            //   that a registry rejects must reach the appender's status
+            //   manager as a WARN naming the gauges and their consequence -
+            //   driven through the implementation the binding returned, not
+            //   through a test-owned lambda.
+            // How will the test case be deemed successful and why? Successful
+            //   if, after registerFallbackQueueGauges on the returned
+            //   implementation against a registry that rejects only the
+            //   fallback-capacity gauge, the status holds a WARN entry with
+            //   the "Failed to register the fallback queue gauges" message and
+            //   the "queue saturation will be unobserved" consequence, with
+            //   the registry's exception attached. Every other test captures
+            //   the warn hook with its own lambda; dropping the lambda in bind
+            //   (the default sink is silence) or downgrading it to addInfo
+            //   stayed green (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 4).
+            // Why is it important to test this test case? The warning is the
+            //   one signal that the fallback queue is unobserved; with the
+            //   wiring gone the failure it was added to make visible becomes
+            //   invisible again.
+
+            // Given: a registry that rejects the fallback-capacity gauge only
+            val registry =
+                object : SimpleMeterRegistry() {
+                    override fun <T : Any> newGauge(
+                        id: Meter.Id,
+                        obj: T?,
+                        valueFunction: ToDoubleFunction<T>,
+                    ): Gauge {
+                        check(id.name != MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY) { "simulated gauge registration failure" }
+                        return super.newGauge(id, obj, valueFunction)
+                    }
+                }
+            val fixture = Fixture()
+            val impl = checkNotNull(fixture.bind(registry)) { "bind refused" }
+            assertThat(fixture.status.entries).noneMatch { it.level >= Status.WARN }
+
+            // When: the dispatcher wiring registers the pair through the returned implementation
+            impl.registerFallbackQueueGauges(queueSize = { 0 }, capacity = 1024)
+
+            // Then: a WARN on the binding's status, cause attached, no half pair
+            assertThat(fixture.status.entries)
+                .filteredOn { it.message.contains("Failed to register the fallback queue gauges") }
+                .singleElement()
+                .satisfies({ entry ->
+                    assertThat(entry.level).isEqualTo(Status.WARN)
+                    assertThat(entry.message).contains("queue saturation will be unobserved")
+                    assertThat(entry.throwable).hasMessage("simulated gauge registration failure")
+                })
+            assertThat(registry.find(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE).gauge()).isNull()
+        }
+
+        @Test
+        fun `should track the breaker meters registered before a failure so the unbind removes them`() {
+            // What is to be tested? The KDoc promise of the breaker binding:
+            //   "every meter registered before a failure is tracked and torn
+            //   down by unbind". With the registry rejecting the
+            //   not-permitted counter - the LAST meter of the breaker set,
+            //   after ten state/rate gauges and three call timers - the
+            //   failure is reported, the bind stands, and the unbind leaves
+            //   the registry empty.
+            // How will the test case be deemed successful and why? Successful
+            //   if bind returns an implementation, a WARN names the failed
+            //   Resilience4j binding, the registry holds breaker meters after
+            //   the bind (so the failure struck mid-set), and after unbind()
+            //   no meter is left. The sibling test above rejects the FIRST
+            //   breaker gauge, so nothing was registered when the catch ran;
+            //   collecting the breaker meters into a local list and tracking
+            //   them only on normal completion stayed green there and orphans
+            //   thirteen meters here (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 20).
+            // Why is it important to test this test case? Orphaned breaker
+            //   meters keep reporting a stopped appender's state, and an
+            //   orphaned events.accepted-like series is exactly what the
+            //   identity probe mistakes for a live instance.
+
+            // Given: a registry that rejects the counters under the breaker prefix
+            val registry =
+                object : SimpleMeterRegistry() {
+                    override fun newCounter(id: Meter.Id): Counter {
+                        check(!id.name.startsWith(MetricsBindings.CIRCUIT_BREAKER_PREFIX)) { "simulated counter registration failure" }
+                        return super.newCounter(id)
+                    }
+                }
+            val fixture = Fixture()
+
+            // When
+            val impl = fixture.bind(registry)
+
+            // Then: bound, warned, and the meters before the failure are there
+            assertThat(impl).isNotNull
+            assertThat(fixture.bindings.isBound).isTrue()
+            assertThat(fixture.status.entries)
+                .anyMatch { it.level == Status.WARN && it.message.contains("Failed to bind Resilience4j metrics") }
+            val breakerMetersAfterBind = registry.meters.filter { it.id.name.startsWith(MetricsBindings.CIRCUIT_BREAKER_PREFIX) }
+            assertThat(breakerMetersAfterBind).isNotEmpty
+            assertThat(breakerMetersAfterBind).noneMatch { it.id.name.endsWith(".not.permitted.calls") }
+
+            // When / Then: the unbind removes them with the rest
+            fixture.bindings.unbind()
+            assertThat(registry.meters).isEmpty()
+        }
+
+        @Test
+        fun `should complete the unbind and allow a later bind when the registry refuses every removal`() {
+            // What is to be tested? Whether an unbind against a registry whose
+            //   `remove` throws for every meter - the mirrored Kafka client
+            //   meters included - still runs to its end: the binders closed,
+            //   the mirror closed, every failure reported, the instance
+            //   unbound and able to bind a fresh registry afterwards.
+            // How will the test case be deemed successful and why? Successful
+            //   if unbind() does not throw, isBound is false afterwards, the
+            //   removal failures of the breaker meters are WARNed, and a bind
+            //   to a fresh registry succeeds. The mirror close used to be the
+            //   one step of unbind() outside a try; it is safe only because
+            //   the mirror swallows a throwing `target.remove` - with that
+            //   swallow gone, an unguarded close would abort the unbind before
+            //   the breaker removals and the deregistration, leave the
+            //   registry reference set and make the identity probe refuse
+            //   every later bind (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 27). Mutation checked: with the mirror's swallow
+            //   deleted, the guard in unbind() is what keeps this test green.
+            // Why is it important to test this test case? An unbind that
+            //   leaves the appender permanently unbindable turns one hostile
+            //   registry into a monitoring outage for the process lifetime.
+
+            // Given: bound with real producers (so the mirror holds meters) to
+            //   a registry that refuses every removal
+            val hostile =
+                object : SimpleMeterRegistry() {
+                    override fun remove(mappedId: Meter.Id): Meter? = throw IllegalStateException("simulated removal failure")
+                }
+            val fixture = Fixture(producers = realProducers())
+            assertThat(fixture.bind(hostile)).isNotNull
+            assertThat(hostile.meters).anyMatch { it.id.name.startsWith("kafka.appender.producer.") }
+
+            // When
+            assertThatCode { fixture.bindings.unbind() }.doesNotThrowAnyException()
+
+            // Then: unbound, failures reported, and a fresh registry binds
+            assertThat(fixture.bindings.isBound).isFalse()
+            assertThat(fixture.status.entries)
+                .anyMatch { it.level == Status.WARN && it.message.contains("Error removing Resilience4j meter") }
+            val fresh = SimpleMeterRegistry()
+            assertThat(fixture.bind(fresh)).isNotNull
+            assertThat(fixture.bindings.isBoundTo(fresh)).isTrue()
+            fresh.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED, MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA")
+        }
+
+        @Test
         fun `should keep removing circuit-breaker meters after one removal fails`() {
             // What is to be tested? Whether the unbind removes the breaker
             //   meters one by one, so a registry that throws while removing
@@ -619,9 +792,6 @@ class MetricsBindingsTest {
 
     @Nested
     inner class `Kafka producer metrics` {
-        /** A registry with one real `KafkaProducer` (no broker needed) - a `MockProducer` exposes no client metrics, so a rename that never fired would pass unnoticed. */
-        private fun realProducers(): ProducerRegistry = producerRegistry(factory = ProducerFactory.default(), bootstrapServers = "localhost:1")
-
         @Test
         fun `should publish the Kafka client metrics under kafka-appender-producer and remove them on unbind`() {
             // What is to be tested? Whether the Kafka client binder's meters
@@ -634,20 +804,30 @@ class MetricsBindingsTest {
             //   if after the bind the registry holds kafka.appender.producer.*
             //   meters, every one carrying both tags, the client's app info
             //   under producer too, and not a single raw kafka.producer.*
-            //   meter; and if after the unbind none of them is left and the
-            //   registry is still open.
+            //   meter; and if after the unbind none of them is left, the
+            //   registry is still open, and the binder's refresh scheduler
+            //   thread (micrometer-kafka-metrics-N, started by the bind) has
+            //   exited. The mirror's close removes the mirrored meters
+            //   whether or not the binders were closed, so the thread is
+            //   the one observable effect of the binder close loop
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 3).
             // Why is it important to test this test case? A rename that
             //   silently does nothing is indistinguishable from one that
             //   works until a dashboard keyed on the new names reads empty;
-            //   and the unbind must only remove the mirrored meters, never
-            //   close the application's registry.
+            //   the unbind must only remove the mirrored meters, never
+            //   close the application's registry; and an unbind that skips
+            //   the binder close leaks one scheduler per topic class on
+            //   every Logback reconfiguration, polling a closed producer.
 
             // Given
             val registry = SimpleMeterRegistry()
             val fixture = Fixture(producers = realProducers())
+            val schedulersBefore = kafkaMetricsSchedulerThreads()
 
             // When
             fixture.bind(registry)
+            val schedulersStarted = kafkaMetricsSchedulerThreads() - schedulersBefore
+            assertThat(schedulersStarted).`as`("refresh schedulers started by the bind").isNotEmpty
 
             // Then: renamed, tagged, no raw name left
             val producerMeters = registry.meters.filter { it.id.name.startsWith("kafka.appender.producer.") }
@@ -660,10 +840,13 @@ class MetricsBindingsTest {
             assertThat(registry.meters).anyMatch { it.id.name.startsWith("kafka.appender.producer.app.info") }
             assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.appender.app.") }
 
-            // When / Then: the unbind removes them and leaves the registry open
+            // When / Then: the unbind removes them, leaves the registry open
+            //   and stops the refresh schedulers (thread exit is asynchronous
+            //   after shutdownNow, hence the bounded poll)
             fixture.bindings.unbind()
             assertThat(registry.appenderMeterIds()).isEmpty()
             assertThat(registry.isClosed).isFalse()
+            pollUntil(timeoutMs = 5_000) { schedulersStarted.none { it.isAlive } }
         }
 
         @Test
@@ -731,5 +914,10 @@ class MetricsBindingsTest {
             assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
             assertThat(registry.meters).anyMatch { it.id.name == MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED }
         }
+    }
+
+    private companion object {
+        /** Thread-name prefix of the scheduler `KafkaClientMetrics.bindTo` starts (`NamedThreadFactory`). */
+        const val KAFKA_METRICS_THREAD_PREFIX = "micrometer-kafka-metrics"
     }
 }
