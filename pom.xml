@@ -123,7 +123,6 @@
         <!-- Third Party Dependencies (not managed by the imported Boot BOM) -->
         <resilience4j.version>2.4.0</resilience4j.version>
         <logstash-encoder.version>9.0</logstash-encoder.version>
-        <testcontainers.version>2.0.5</testcontainers.version>
         <!-- Fuzzing (test scope): Jazzer's JUnit 5 integration - @FuzzTest
              methods run as regression tests in every verify and fuzz for
              real in the scheduled Fuzz workflow (JAZZER_FUZZ=1). -->
@@ -215,17 +214,6 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- Testcontainers is pinned here rather than taken from the Boot BOM;
-                 the BOM keeps the test-only broker-integration modules
-                 lockstep-versioned. -->
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers-bom</artifactId>
-                <version>${testcontainers.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
             <!--
                 Security pin for Jackson 3 (tools.jackson), raised above the 3.1.5 the
                 Boot BOM manages (currently ${jackson3.version}). Jackson 3 arrives only
@@ -275,7 +263,10 @@
             <!--
                 The Spring Boot BOM, last so the pins above take precedence. Managed
                 here: Logback, SLF4J, kafka-clients, Micrometer, Spring, Jackson,
-                JUnit, AssertJ (see the property for the rationale).
+                JUnit, AssertJ and Testcontainers (it imports testcontainers-bom
+                itself; an own import of the same BOM at the same version was an
+                ineffective override and is gone - see the property for the
+                rationale).
             -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
@@ -489,7 +480,7 @@
         <!--
             Test scope: real-broker integration tests (tag "integration",
             excluded from the default run - see surefire.excludedGroups).
-            The version is pinned by the Testcontainers BOM import above.
+            The version comes from the testcontainers-bom the Boot BOM imports.
             Only the Kafka module: the tests start the container by hand
             inside the test method, so the JUnit extension
             (testcontainers-junit-jupiter, @Testcontainers/@Container) is
