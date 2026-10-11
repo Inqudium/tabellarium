@@ -109,7 +109,7 @@
         <project.build.outputTimestamp>2026-09-16T00:00:00Z</project.build.outputTimestamp>
 
         <!-- Kotlin Version -->
-        <kotlin.version>2.4.20</kotlin.version>
+        <kotlin.version>2.4.21</kotlin.version>
 
         <!--
             The Spring Boot dependency BOM, imported (not inherited): it manages
