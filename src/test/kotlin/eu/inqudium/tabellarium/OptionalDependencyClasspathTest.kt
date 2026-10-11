@@ -14,15 +14,16 @@ import java.util.function.Supplier
 
 /**
  * Consumer-classpath evidence for the optional dependencies: the
- * published POM marks `micrometer-core` and `spring-context` optional,
- * so a plain Logback consumer runs the appender without either - while
- * the test classpath always has both, and every other test would stay
- * green if the appender class silently required them again.
+ * published POM marks `micrometer-core`, `spring-context` and
+ * `logstash-logback-encoder` (with its Jackson 3) optional, so a plain
+ * Logback consumer runs the appender without any of them - while the
+ * test classpath always has all three, and every other test would stay
+ * green if the appender class silently required one again.
  *
  * The test therefore re-loads the library, Logback and every other
  * non-JDK class in a [WithoutOptionalDependencies] class loader that
  * hides the optional packages, and drives a Joran configuration
- * entirely inside it ([JoranWithoutMicrometer]).
+ * entirely inside it ([JoranWithoutOptionalDependencies]).
  */
 class OptionalDependencyClasspathTest {
     /**
@@ -73,10 +74,12 @@ class OptionalDependencyClasspathTest {
      * fallback, and reports what happened as plain text (only JDK types
      * cross the loader boundary).
      */
-    class JoranWithoutMicrometer : Supplier<String> {
+    class JoranWithoutOptionalDependencies : Supplier<String> {
         override fun get(): String {
             val micrometerVisible =
                 runCatching { Class.forName("io.micrometer.core.instrument.MeterRegistry") }.isSuccess
+            val logstashVisible =
+                runCatching { Class.forName("net.logstash.logback.encoder.LogstashEncoder") }.isSuccess
             val context = LoggerContext()
             val started: Boolean?
             val fallbackEvents: List<String>?
@@ -101,29 +104,34 @@ class OptionalDependencyClasspathTest {
                 context.statusManager.copyOfStatusList
                     .filter { it.level >= Status.WARN }
                     .joinToString(" | ") { "${it.message} ${it.throwable ?: ""}" }
-            return "micrometerVisible=$micrometerVisible started=$started fallbackEvents=$fallbackEvents problems=[$problems]"
+            return "micrometerVisible=$micrometerVisible logstashVisible=$logstashVisible " +
+                "started=$started fallbackEvents=$fallbackEvents problems=[$problems]"
         }
     }
 
     @Test
-    fun `should configure, start and deliver through Joran without Micrometer on the classpath`() {
+    fun `should configure, start and deliver through Joran without the optional dependencies on the classpath`() {
         // What is to be tested? Whether a consumer that leaves out the
-        //   optional micrometer-core (and spring-context) can configure the
-        //   appender through Joran, start it and log through it.
+        //   optional micrometer-core, spring-context and
+        //   logstash-logback-encoder (with its Jackson 3) can configure
+        //   the appender through Joran with a plain Logback encoder, start
+        //   it and log through it.
         // How will the test case be deemed successful and why? Successful
-        //   if, inside a class loader that hides both packages, the Joran
-        //   run throws nothing, the appender is started, the event reaches
-        //   the fallback through the real (unreachable) producer and the
-        //   status manager holds no warning or error. Joran's bean
+        //   if, inside a class loader that hides all four packages, the
+        //   Joran run throws nothing, the appender is started, the event
+        //   reaches the fallback through the real (unreachable) producer
+        //   and the status manager holds no warning or error. Joran's bean
         //   introspection resolves the parameter types of every public
         //   appender method, so a single Micrometer type in a member
         //   signature fails the run with NoClassDefFoundError before the
-        //   appender exists.
+        //   appender exists; a Logstash or Jackson reference anywhere on
+        //   the hot path would fail the same way.
         // Why is it important to test this test case? It is the README's
-        //   "runs without Micrometer" promise and the default consumer
-        //   mode; the regular suite always has Micrometer on the classpath
-        //   and cannot notice it breaking
-        //   (DEFECT_ANALYSIS-2026-10-10T13-46-50, finding 1).
+        //   "runs without Micrometer" and "any standard Logback encoder"
+        //   promise and the default consumer mode; the regular suite
+        //   always has all three on the classpath and cannot notice one
+        //   becoming required (DEFECT_ANALYSIS-2026-10-10T13-46-50,
+        //   finding 1).
 
         // Given
         val loader = WithoutOptionalDependencies(javaClass.classLoader)
@@ -137,7 +145,7 @@ class OptionalDependencyClasspathTest {
         val report =
             try {
                 loader
-                    .loadClass(JoranWithoutMicrometer::class.java.name)
+                    .loadClass(JoranWithoutOptionalDependencies::class.java.name)
                     .getDeclaredConstructor()
                     .newInstance()
                     .let {
@@ -150,15 +158,16 @@ class OptionalDependencyClasspathTest {
 
         // Then
         assertThat(report).isEqualTo(
-            "micrometerVisible=false started=true fallbackEvents=[delivered without micrometer] problems=[]",
+            "micrometerVisible=false logstashVisible=false started=true " +
+                "fallbackEvents=[delivered without micrometer] problems=[]",
         )
     }
 
     private companion object {
-        val HIDDEN_PACKAGES = listOf("io.micrometer.", "org.springframework.")
+        val HIDDEN_PACKAGES = listOf("io.micrometer.", "org.springframework.", "net.logstash.", "tools.jackson.")
 
-        /** Jar-name fragments of the artifacts that provide [HIDDEN_PACKAGES]. */
-        val HIDDEN_ARTIFACTS = listOf("/micrometer-", "/spring-")
+        /** Jar-path fragments of the artifacts that provide [HIDDEN_PACKAGES]. */
+        val HIDDEN_ARTIFACTS = listOf("/micrometer-", "/spring-", "/logstash-logback-encoder-", "/tools/jackson/")
 
         val XML =
             """
