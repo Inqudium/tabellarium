@@ -355,6 +355,18 @@
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-circuitbreaker</artifactId>
         </dependency>
+        <!--
+            Declared directly because the shipped bytecode references it
+            itself: the breaker event handlers in MetricsBindings are
+            io.github.resilience4j.core.EventConsumer lambdas. The
+            circuitbreaker artifact brings it transitively anyway; the
+            direct declaration only makes the compile-time use explicit
+            (dependency:analyze flags it otherwise).
+        -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-core</artifactId>
+        </dependency>
 
         <!--
             Optional metrics integration.
@@ -390,6 +402,22 @@
             <artifactId>spring-context</artifactId>
             <optional>true</optional>
         </dependency>
+        <!--
+            Same optional Spring integration, declared explicitly: the
+            Kotlin compiler needs spring-beans to resolve Aware, the
+            supertype of ApplicationContextAware that
+            KafkaAppenderMetricsBinding implements. A test-scoped
+            declaration would win over the transitive compile scope from
+            spring-context and break the main compilation. The compiled
+            bytecode only references it from the tests
+            (BeanDefinitionCustomizer in KafkaAppenderMetricsBindingTest),
+            hence the dependency:analyze exemption below.
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-beans</artifactId>
+            <optional>true</optional>
+        </dependency>
 
         <!-- Kotlin stdlib -->
         <dependency>
@@ -413,10 +441,21 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Test scope -->
+        <!--
+            Test scope. The two Jupiter artifacts the tests compile against,
+            not the junit-jupiter aggregate (which has no classes of its own
+            and would be flagged as unused by dependency:analyze). The engine
+            is NOT declared: Surefire resolves junit-jupiter-engine at the
+            version of junit-jupiter-api on the test classpath by itself.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -462,10 +501,18 @@
             <scope>test</scope>
         </dependency>
         <!-- Fuzzing: the @FuzzTest classes under src/test/java (see
-             CONTRIBUTING.md). -->
+             CONTRIBUTING.md). jazzer-junit carries the JUnit integration
+             (@FuzzTest), jazzer-api the FuzzedDataProvider the fuzz
+             targets compile against. -->
         <dependency>
             <groupId>com.code-intelligence</groupId>
             <artifactId>jazzer-junit</artifactId>
+            <version>${jazzer.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.code-intelligence</groupId>
+            <artifactId>jazzer-api</artifactId>
             <version>${jazzer.version}</version>
             <scope>test</scope>
         </dependency>
@@ -598,9 +645,53 @@
         </pluginManagement>
 
         <plugins>
+            <!--
+                Dependency hygiene gate, bound to verify: every class the
+                compiled code references must come from a DIRECTLY declared
+                dependency, every declared dependency must be referenced,
+                and a compile-scoped dependency that only tests reference is
+                an error. The three exemptions below are the cases where
+                the declaration is deliberate and the analyzer cannot know:
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>analyze</id>
+                        <goals>
+                            <goal>analyze-only</goal>
+                        </goals>
+                        <configuration>
+                            <failOnWarning>true</failOnWarning>
+                            <!-- The lz4-java security pin is runtime-scoped on
+                                 purpose: nothing compiles against it (see its
+                                 declaration), so "unused" is expected. -->
+                            <ignoreUnusedRuntime>true</ignoreUnusedRuntime>
+                            <ignoredUsedUndeclaredDependencies>
+                                <!-- The Kotlin compiler writes @NotNull/@Nullable
+                                     from org.jetbrains:annotations into every
+                                     class file; the sources never import it, and
+                                     kotlin-stdlib brings it transitively. -->
+                                <ignoredUsedUndeclaredDependency>org.jetbrains:annotations</ignoredUsedUndeclaredDependency>
+                            </ignoredUsedUndeclaredDependencies>
+                            <ignoredNonTestScopedDependencies>
+                                <!-- The encoder is an OPTIONAL compile dependency
+                                     by design (README: opt-in JSON encoder, see
+                                     OptionalDependencyClasspathTest): the shipped
+                                     code never references it, only the tests
+                                     drive it. The optional declaration documents
+                                     the supported encoder in the published POM. -->
+                                <ignoredNonTestScopedDependency>net.logstash.logback:logstash-logback-encoder</ignoredNonTestScopedDependency>
+                                <!-- Needed by the main compilation as the
+                                     supertype source of ApplicationContextAware
+                                     (see its declaration); the bytecode only
+                                     references it from the tests. -->
+                                <ignoredNonTestScopedDependency>org.springframework:spring-beans</ignoredNonTestScopedDependency>
+                            </ignoredNonTestScopedDependencies>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
