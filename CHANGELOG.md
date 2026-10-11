@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `resilience4j-kotlin` removed from the dependencies: the library never
+  used its coroutine extensions, and the artifact handed every consumer
+  `kotlinx-coroutines-core-jvm` and `kotlin-stdlib-jdk7`/`-jdk8` at the
+  versions it declares (1.6.4 and 1.9.25 for a consumer of 1.1.2, which
+  manages neither). `resilience4j-circuitbreaker` stays; the consumer
+  classpath loses three artifacts and nothing else changes.
 - **`bindMeterRegistry` is now an extension function (Java callers and
   binary compatibility):** it moved from a `KafkaAppender` member to a
   top-level extension in `KafkaAppenderMeterRegistry.kt`. Kotlin source
