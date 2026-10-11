@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-11
+
+Public API (ADR-0002) changes in one place: `bindMeterRegistry` moved
+from a `KafkaAppender` member to a top-level extension function, so
+Java callers use `KafkaAppenderMeterRegistry.bindMeterRegistry(appender,
+registry)` and code compiled against 1.1.x must be recompiled - this is
+what makes Logback configuration work without Micrometer on the
+classpath. Operators must update dashboards and alerts: every meter the
+appender publishes now starts with `kafka.appender.`
+(`resilience4j.circuitbreaker.*` → `kafka.appender.circuitbreaker.*`,
+`kafka.producer.*` → `kafka.appender.producer.*`, see ADR-0005), and
+the appender gains the `kafka.appender.event.size` distribution summary
+and the `kafka.appender.info`/`kafka.appender.topic.info` gauges that
+the shipped dashboards use. `resilience4j-kotlin` is no longer a
+dependency. Start-up now rejects an inconsistent
+`request.timeout.ms`/`delivery.timeout.ms` pair with a named error and
+warns about two running appenders with the same `<component>`. The
+rest is defect fixes, tests, internal structure and build: from this
+release on, the jar on Maven Central and the SLSA-attested jar on the
+GitHub release are byte-identical.
+
 ### Security
 
 - Jackson 3 (`tools.jackson`) pinned to 3.1.7 via its BOM, above the
@@ -200,6 +221,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Thread.join(0)` - wait forever - and a negative value would have
   aborted the close before the queued remainder was accounted. No
   production caller passed such a value; the guard pins the contract.
+
+- The `kafka.appender.info` gauge labelled a fallback appender of an
+  anonymous class with `fallback.type="none"`, the value that means "no
+  fallback, events are dropped"; it now says `anonymous`.
+- A send or fallback worker that observed an interrupt flag set by the
+  delivery itself (a fallback appender or an interceptor calling
+  `Thread.currentThread().interrupt()`) while no close was in progress
+  retired silently, with the dispatcher still accepting events for a
+  worker that no longer existed. The worker now clears the spurious
+  interrupt and keeps delivering; only the close signal retires it.
+- The metrics unbind guards the close of the Kafka producer metrics
+  mirror like its other steps. A failing close no longer skips the
+  breaker-meter removals and the deregistration, which left the
+  appender looking bound and refused every later bind.
 
 ## [1.1.2] - 2026-09-16
 
@@ -759,7 +794,8 @@ optional `KafkaAppenderMetricsBinding`.
   public type. Dokka's API reference now shows exactly the supported
   surface.
 
-[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/Inqudium/tabellarium/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Inqudium/tabellarium/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/Inqudium/tabellarium/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Inqudium/tabellarium/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Inqudium/tabellarium/compare/v1.0.0...v1.1.0
