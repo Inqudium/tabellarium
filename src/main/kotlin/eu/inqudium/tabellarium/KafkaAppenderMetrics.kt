@@ -188,9 +188,9 @@ internal interface KafkaAppenderMetrics {
 
     companion object {
         /**
-         * Singleton no-op implementation. Used by [KafkaAppender] until
-         * an operator calls [bindMeterRegistry] (or
-         * equivalent setter). Allocates nothing on any call.
+         * Singleton no-op implementation: the default of every hook
+         * holder until a bind installs an implementation. Allocates
+         * nothing on any call.
          */
         val NO_OP: KafkaAppenderMetrics = NoOpKafkaAppenderMetrics
     }

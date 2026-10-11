@@ -146,8 +146,12 @@ class KafkaAppender :
      * Enables additional startup diagnostics in the status manager.
      *
      * The flag affects **startup only** - it has no per-event effect.
-     * Operators should consider removing `<debug>true</debug>` from
-     * their configuration.
+     * Leave it off in production: with the flag on, a failed producer
+     * construction is reported with the Kafka client's own message and
+     * stack trace - text built from the producer configuration that may
+     * echo credentials into the status output. The configuration guide's
+     * startup-troubleshooting section and `SECURITY.md` describe its use
+     * for diagnosis.
      */
     var debug: Boolean = false
 
@@ -169,10 +173,8 @@ class KafkaAppender :
      * `<appender-ref ref="FALLBACK_FILE"/>` element pointing at a file
      * appender. Null means "drop events on failure".
      *
-     * The setter is private; the slot is filled either via
-     * [addAppender] (which is what Joran's `AppenderRefAction` calls
-     * when it encounters `<appender-ref>`) or, in tests, by calling
-     * [addAppender] directly.
+     * The setter is private; the slot is filled through [addAppender],
+     * the method Joran's `AppenderRefAction` calls for `<appender-ref>`.
      */
     var fallbackAppender: Appender<ILoggingEvent>? = null
         private set
@@ -237,12 +239,9 @@ class KafkaAppender :
     private val firstHotPathErrorLogged = AtomicBoolean(false)
 
     /**
-     * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP].
-     * Replaced by [installMetrics] when an operator wires the
-     * appender to a Micrometer registry - typically from a Spring
-     * `@PostConstruct` after the application context is ready.
-     * Volatile because the setter may be called from a different
-     * thread than the hot path.
+     * The hot path's metrics hook; [installMetrics] replaces the
+     * [KafkaAppenderMetrics.NO_OP] default. Volatile because the bind
+     * runs on another thread than the hot path.
      */
     @Volatile
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
@@ -485,10 +484,9 @@ class KafkaAppender :
         }
         // Snapshot once so all hooks for this event use the same instance.
         val m = metrics
-        // Determine topic class before the try so we can use it in both
-        // the success and the failure metric. Routing exceptions go to
-        // the catch with topicClass=null and we report the failure
-        // without a class tag (rare; only on malformed marker input).
+        // Declared before the try so the failure metric can carry the
+        // class routing resolved; a failure before routing leaves it
+        // null and the catch falls back to TECHNICAL.
         var topicClassForFailure: TopicClass? = null
         guard.enter()
         try {

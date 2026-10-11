@@ -82,10 +82,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the producer registry - the client ids exist only once the producers
  * do - and whose close is what [close]s the guard: last, after the
  * producers, so their logging during the close is still recognized.
- * One class, no interface: the interface that used to sit in front of
- * it was extracted for a second, process-wide implementation, which was
- * then built into this one (the registry below); the seam that remained
- * served only test substitutions
+ * One class, no interface: a seam that would serve only test
+ * substitutions is refused
  * (`ARCHITECTURE_REVIEW-2026-10-10T22-15-57`, finding 1).
  *
  * @param producerClientIds The effective `client.id` values of this

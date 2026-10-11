@@ -12,9 +12,6 @@ import java.util.concurrent.CountDownLatch
  * freshly constructed [LoggerContext] has no MDC adapter bound, so
  * Logback's lazy initialization in `getMDCPropertyMap()` would otherwise
  * throw NPE on first read.
- *
- * Marked `internal` so it lives only in the test module's compilation
- * unit.
  */
 internal fun newTestLoggingEvent(
     message: String = "test message",

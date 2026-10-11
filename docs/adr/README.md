@@ -32,7 +32,7 @@ draws the line between the supported operator surface and the
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [0001](ADR-0001-comment-prefix-vocabulary.md) | Comment prefix vocabulary | Accepted; also establishes the ADR series as reference target |
+| [0001](ADR-0001-comment-prefix-vocabulary.md) | Comment prefix vocabulary | Accepted; also establishes the ADR series as reference target and, since 2026-10-11, the reference rules |
 | [0003](ADR-0003-fuzz-workflow-is-the-fuzzing-signal.md) | The Fuzz workflow, not the Scorecard score, is the fuzzing signal | Accepted |
 
 ## Superseded

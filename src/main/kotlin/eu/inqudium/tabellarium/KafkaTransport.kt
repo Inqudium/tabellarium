@@ -211,15 +211,10 @@ internal class KafkaTransport private constructor(
                         SendDispatcher(
                             topicClass = topicClass,
                             sendAction = { pending ->
-                                // Invariant: the per-item ownership is shared
-                                // with the dispatcher, so a forced-shutdown
-                                // divert and the sender's own error routing
-                                // never both deliver the same event, and a
-                                // forced shutdown never diverts an event the
-                                // producer already accepted. Rationale: the
-                                // detached ownership object (not the
-                                // PendingSend) is what the Kafka callback
-                                // retains - see DeliveryOwnership.
+                                // The item's ownership is shared with the
+                                // dispatcher, so a forced close and the
+                                // sender's own routing never both deliver
+                                // the same event - see DeliveryOwnership.
                                 sender.send(
                                     topicClass,
                                     pending.topicName,
@@ -320,7 +315,7 @@ internal class KafkaTransport private constructor(
             } catch (e: Exception) {
                 warn("Error closing fallback dispatcher: ${e.message}", e)
             }
-            // Invariant: the guard leaves the process-wide registry LAST -
+            // Safety: the guard leaves the process-wide registry LAST -
             // until here the producers and workers could still log, and
             // their echo must be recognized to the end. Null only in the
             // rollback of a failed guard construction.

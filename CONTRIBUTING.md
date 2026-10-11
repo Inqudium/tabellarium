@@ -96,6 +96,9 @@ JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
   [ADR-0001](docs/adr/ADR-0001-comment-prefix-vocabulary.md). Prefixes
   make the stock greppable (`Workaround:` is a work list on every
   dependency upgrade; `Invariant:` yields a module's invariant catalog).
+  The same ADR fixes three reference rules: a KDoc never lists its
+  callers, a number a constant owns is linked rather than copied, and
+  an analysis report is cited by file name.
 - The appender hot path (`KafkaAppender.append` and everything it calls)
   must stay lock-free: no `synchronized`, no blocking waits. Atomics and
   volatiles only.

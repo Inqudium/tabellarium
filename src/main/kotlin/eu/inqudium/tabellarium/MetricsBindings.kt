@@ -107,11 +107,8 @@ import java.util.IdentityHashMap
  * registry are ever touched), and deregisters the appender's own
  * meters. Without this, every Logback reconfiguration cycle would leak
  * meters and leave gauges reporting a closed dispatcher's queue.
- * The call-event consumers attached to the breakers cannot be
- * deregistered (Resilience4j offers no removal API); they write
- * through per-breaker [CallMeterHolder]s whose meter references
- * [unbind] clears, so events after teardown are discarded and a
- * re-bind swaps in fresh meters without stacking consumers.
+ * The breakers' event consumers stay attached (no removal API) and
+ * write through per-breaker [CallMeterHolder]s that [unbind] clears.
  *
  * @param status Sink for operator-facing warnings/infos (the owning
  *               appender; Logback status manager).
@@ -209,10 +206,7 @@ internal class MetricsBindings(
         if (registry === boundRegistry) {
             unbind()
         }
-        // Invariant: every meter of this appender carries the identical
-        // appender tag value - same derivation as
-        // MicrometerKafkaAppenderMetrics.
-        val appenderTag = appenderName?.takeIf { it.isNotBlank() } ?: "unnamed"
+        val appenderTag = MicrometerKafkaAppenderMetrics.appenderTag(appenderName)
         if (isIdentityBound(registry, commonTags, appenderTag)) {
             status.addWarn(
                 "MeterRegistry already contains the meters of a KafkaAppender tagged appender='$appenderTag' " +
@@ -230,8 +224,8 @@ internal class MetricsBindings(
             MicrometerKafkaAppenderMetrics.register(registry, commonTags, appenderName, info) { message, cause ->
                 status.addWarn(message, cause)
             }
-        // Invariant: the new binding stands; only now replace the
-        // previous one.
+        // Rationale: the new binding stands, so only now is the previous
+        // one replaced.
         unbind()
         boundMetrics = impl
         boundRegistry = registry

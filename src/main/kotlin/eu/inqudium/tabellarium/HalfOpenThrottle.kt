@@ -106,7 +106,7 @@ internal class HalfOpenThrottle(
             // CLOSED or OPEN - throttle is transparent.
             return true
         }
-        // Invariant: the slot is read BEFORE the clock - a racer that
+        // Safety: the slot is read BEFORE the clock - a racer that
         // claims the slot after this read makes the CAS below fail,
         // whatever the clock says - and the test can park callers
         // inside the clock to force exactly that interleaving

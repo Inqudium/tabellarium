@@ -9,11 +9,12 @@ import io.micrometer.core.instrument.Tags
 /**
  * Wires the appender to a Micrometer [MeterRegistry].
  *
- * After this call, the appender publishes counters, timers and
- * gauges for hot-path events; the [ResilientMessageSender] reports
- * dispatch outcomes; the [FallbackDispatcher] reports queue depth
- * and dropped events. See [MicrometerKafkaAppenderMetrics] for the
- * complete metric inventory.
+ * After this call the appender publishes its own meters - events
+ * accepted, dispatched and diverted per topic class, send duration and
+ * payload size, the send and fallback queues, the configuration info
+ * gauges - as `kafka.appender.*`. The complete inventory with tags and
+ * cardinality is the
+ * [metrics guide](https://inqudium.github.io/tabellarium/metrics/metrics-guide/).
  *
  * **Additional bindings:** the circuit-breaker state and
  * call-outcome metrics are bound by the appender's own binder
@@ -29,9 +30,13 @@ import io.micrometer.core.instrument.Tags
  * failing (missing classpath, registry error) is non-fatal and
  * reported via Logback's status manager.
  *
- * **When to call:** typically from a Spring `@PostConstruct` or
- * an `ApplicationReadyEvent` handler, after the application's
- * [MeterRegistry] bean is available.
+ * **When to call:** once the appender is started and the
+ * [MeterRegistry] exists. Spring applications use
+ * [KafkaAppenderMetricsBinding], which calls this on
+ * `ContextRefreshedEvent` for every appender it finds; other callers
+ * invoke it from an equivalent lifecycle point - Kotlin
+ * `appender.bindMeterRegistry(registry)`, Java
+ * `KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry)`.
  * Pre-Spring log events are not captured (they happen before
  * the registry exists), which is acceptable for almost all
  * monitoring needs.
@@ -50,8 +55,6 @@ import io.micrometer.core.instrument.Tags
  * method of [KafkaAppender] while configuring it - a member with a
  * [MeterRegistry] parameter made Logback configuration fail without
  * Micrometer on the classpath (see [KafkaAppender.installMetrics]).
- * Kotlin callers keep writing `appender.bindMeterRegistry(registry)`;
- * Java callers use `KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry)`.
  *
  * @param registry The Micrometer registry to publish to.
  * @param commonTags Tags attached to every metric. Use sparingly.

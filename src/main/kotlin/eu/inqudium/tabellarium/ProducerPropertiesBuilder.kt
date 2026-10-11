@@ -142,12 +142,8 @@ internal class ProducerPropertiesBuilder(
     /**
      * Enforces the class-specific `max.block.ms` **cap** ([TopicClass.maxBlockMsCap]).
      *
-     * `producer.send` may block up to `max.block.ms` waiting for topic
-     * metadata or free buffer space. The send runs on the class's
-     * dedicated `SendDispatcher` worker (never on the logging caller),
-     * so the cap bounds the worker's worst-case stall per event - the
-     * bound that keeps queue drain during an outage and the shutdown
-     * drain budget predictable. Those bounds only hold if this value
+     * The cap bounds the send worker's stall per event - the reason is
+     * on [TopicClass.maxBlockMsCap] - and holds only if the value
      * cannot be raised through `<kafkaProducerProperties>`. Unlike a
      * mandatory override, the cap keeps operator values that *tighten*
      * the bound: a lower value wins, a higher (or unparseable) value is

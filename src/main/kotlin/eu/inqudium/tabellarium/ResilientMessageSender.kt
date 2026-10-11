@@ -23,11 +23,8 @@ import java.util.concurrent.TimeUnit
  * breakers, with an optional fallback Logback appender for when the
  * breaker is open or the producer call fails.
  *
- * Marked `internal`: this class is an implementation detail of
- * [KafkaAppender] and is not intended for direct use from outside the
- * module. The constructor takes a [FallbackDispatcher], which is also
- * internal - exposing both as public API would commit to maintaining a
- * Java-callable surface for which there is no current use case.
+ * Internal per ADR-0002: a building block beneath [KafkaAppender], not
+ * part of the operator surface.
  *
  * ## Resilience model
  *
@@ -163,22 +160,15 @@ internal class ResilientMessageSender(
         }
 
     /**
-     * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP];
-     * replaced by [setMetrics] when an operator wires the appender to
-     * a Micrometer registry. The reference is `@Volatile` because the
-     * setter may be called from a Spring bootstrap thread while the
-     * Kafka I/O callback thread is concurrently reading it for the
-     * send-completion timer.
+     * The sender's metrics hook ([KafkaAppenderMetrics.NO_OP] until
+     * [setMetrics]). Volatile because the bind thread writes it while
+     * the Kafka I/O callback thread reads it for the send-completion
+     * timer.
      */
     @Volatile
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
 
-    /**
-     * Replaces the [KafkaAppenderMetrics] implementation. Called by
-     * [bindMeterRegistry] after the Logback context has
-     * been wired up. Idempotent - multiple calls simply replace the
-     * previous instance.
-     */
+    /** Replaces the metrics implementation; a later call replaces the earlier one. */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
         this.metrics = metrics
     }
@@ -189,18 +179,12 @@ internal class ResilientMessageSender(
      * is enqueued for asynchronous delivery to the fallback appender.
      *
      * @param ownership Who owns this event's outcome, shared with the
-     *        [SendDispatcher] - see [DeliveryOwnership]. Every diversion
-     *        path (throttle, open breaker, synchronous send failure,
-     *        callback error) first wins the transition to diverted and
-     *        diverts only then, so an event a forced dispatcher shutdown
-     *        already diverted (reason `shutdown`) is not routed to the
-     *        fallback a second time when the parked send later unblocks
-     *        with an exception. Conversely, the moment `producer.send`
-     *        returns without a synchronous failure the sender marks the
-     *        hand-off, after which a forced shutdown can no longer
-     *        divert the event. The default is a fresh, unshared
-     *        ownership - correct for direct callers, where no other
-     *        party diverts.
+     *        [SendDispatcher] ([DeliveryOwnership] states the protocol).
+     *        Here: every diversion gate claims the transition before it
+     *        diverts, and the hand-off is marked the moment
+     *        `producer.send` returns without a synchronous failure. The
+     *        default is a fresh, unshared ownership - correct for direct
+     *        callers, where no other party diverts.
      * @throws IllegalStateException if [topicClass] is not active in the
      *                               registry. This is a programming error
      *                               (configuration drift), not a runtime
@@ -218,7 +202,7 @@ internal class ResilientMessageSender(
             circuitBreakersByClass[topicClass]
                 ?: error("Topic class $topicClass is not active in this registry")
         val throttle = throttlesByClass.getValue(topicClass)
-        // Invariant: snapshot the volatile reference once per call so
+        // Rationale: snapshot the volatile reference once per call so
         // all metric hooks for this event use the same implementation,
         // even if setMetrics is called concurrently mid-send.
         val m = metrics
@@ -396,21 +380,21 @@ internal class ResilientMessageSender(
         /**
          * Default circuit-breaker configuration tuned for logging traffic.
          *
-         * Defaults differ from Resilience4j's out-of-the-box config: the
-         * 100-call minimum window is too large for logging, where we want
-         * to trip the breaker quickly once Kafka starts failing. The values
-         * here trip after roughly 10 failures in a 20-call sliding window,
-         * stay open for 30 seconds, and then admit 10 probe calls in
-         * half-open before deciding.
+         * Defaults differ from Resilience4j's out-of-the-box config: its
+         * 100-call minimum window is too large for logging, where the
+         * breaker must trip quickly once Kafka starts failing. The values
+         * are the builder chain below; the configuration guide's
+         * circuit-breaker table restates them and `DocumentationContractTest`
+         * keeps that table in step.
          *
-         * The half-open count of 10 is calibrated for asynchronous I/O:
+         * The half-open count is calibrated for asynchronous I/O:
          * the producer.send callback completes after a network round trip
          * (typically 10-50 ms with a healthy Kafka cluster, longer on
          * congested links). During the probe window all incoming events
          * beyond the permitted count are routed to the fallback. A
          * too-small count would over-route to the fallback whenever the
          * breaker recovered; a too-large count would prolong the period
-         * of uncertainty if the cluster is still degraded. Ten is a
+         * of uncertainty if the cluster is still degraded. The count is a
          * calibration compromise, fixed in code like every breaker
          * threshold (ADR-0002; the configuration guide's section on
          * fixed behavior states why there is no per-deployment override).
@@ -456,7 +440,8 @@ internal class ResilientMessageSender(
          * Default minimum gap between two probe admissions in HALF_OPEN
          * state. Five milliseconds is calibrated against the typical
          * Kafka send round-trip (10-50 ms): the gap is short enough that
-         * 10 probes complete within ~50 ms of wall time, long enough that
+         * the permitted half-open probes complete within about one
+         * round-trip of wall time, long enough that
          * a busy logger producing thousands of events per second is not
          * starved of fallback routing during the probe window.
          */
