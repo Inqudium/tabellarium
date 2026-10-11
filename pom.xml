@@ -446,16 +446,15 @@
         <!--
             Test scope: real-broker integration tests (tag "integration",
             excluded from the default run - see surefire.excludedGroups).
-            Versions are pinned by the Testcontainers BOM import above.
+            The version is pinned by the Testcontainers BOM import above.
+            Only the Kafka module: the tests start the container by hand
+            inside the test method, so the JUnit extension
+            (testcontainers-junit-jupiter, @Testcontainers/@Container) is
+            not needed.
         -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-kafka</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Fuzzing: the @FuzzTest classes under src/test/java (see
