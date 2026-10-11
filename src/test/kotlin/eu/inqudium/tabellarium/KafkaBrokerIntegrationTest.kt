@@ -214,7 +214,8 @@ class KafkaBrokerIntegrationTest {
                 }
                 assertThat(topicMeters() + nodeMeters()).allSatisfy { meter ->
                     assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS)).isEqualTo("technical")
-                    assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isNotBlank()
+                    // The appender is unnamed, so the tag is the exact `unnamed` convention - not a leaked client.id
+                    assertThat(meter.id.getTag(MicrometerKafkaAppenderMetrics.TAG_APPENDER)).isEqualTo("unnamed")
                 }
                 assertThat(registry.meters).noneMatch { it.id.name.startsWith("kafka.producer") }
 

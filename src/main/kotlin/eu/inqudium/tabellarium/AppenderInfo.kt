@@ -21,7 +21,12 @@ import org.apache.kafka.common.utils.AppInfoParser
  * @param fallback Name of the fallback appender, [NONE] without one,
  *                 `unnamed` for one without a name.
  * @param fallbackType Simple class name of the fallback appender, [NONE]
- *                     without one.
+ *                     without one, [ANONYMOUS] for an anonymous class
+ *                     (whose simple name is empty). Never [NONE] while a
+ *                     fallback is attached: `none` is the drop policy, and
+ *                     a label that claims it next to a fallback name would
+ *                     contradict itself on every series it is joined onto
+ *                     (`DEFECT_ANALYSIS-2026-10-11T16-25-57`, finding 25).
  */
 internal class AppenderInfo(
     val fallback: String,
@@ -34,6 +39,9 @@ internal class AppenderInfo(
     companion object {
         /** Label value for an absent fallback appender. */
         const val NONE: String = "none"
+
+        /** Type label for a fallback appender whose class has no simple name (an anonymous class). */
+        const val ANONYMOUS: String = "anonymous"
 
         /**
          * Collects the info of a started appender: its fallback slot, its
@@ -49,7 +57,7 @@ internal class AppenderInfo(
         ): AppenderInfo =
             AppenderInfo(
                 fallback = fallbackAppender?.let { it.name?.takeIf(String::isNotBlank) ?: "unnamed" } ?: NONE,
-                fallbackType = fallbackAppender?.javaClass?.simpleName?.takeIf(String::isNotBlank) ?: NONE,
+                fallbackType = fallbackAppender?.let { it.javaClass.simpleName.takeIf(String::isNotBlank) ?: ANONYMOUS } ?: NONE,
                 debug = debug,
                 topics =
                     topics.entries

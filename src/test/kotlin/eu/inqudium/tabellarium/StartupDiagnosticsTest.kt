@@ -260,5 +260,102 @@ class StartupDiagnosticsTest {
                 .contains("${ProducerConfig.ACKS_CONFIG}=all")
             assertThat(messages).noneMatch { it.contains("s3cr3t") }
         }
+
+        @Test
+        fun `should list an enforced value that overruled the operator's own`() {
+            // What is to be tested? The diff semantics of the generated
+            //   settings: a key the operator supplied whose effective value
+            //   DIFFERS from theirs (AUDIT's mandatory acks=all over an
+            //   operator acks=1) is listed with the enforced value, while a
+            //   key whose value the builder left untouched is not.
+            // How will the test case be deemed successful and why? Successful
+            //   if the AUDIT line contains acks=all and neither acks=1 nor
+            //   bootstrap.servers. The sibling test uses base properties the
+            //   builder never changes, so a filter that merely excludes
+            //   operator-supplied keys stays green there
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 30).
+            // Why is it important to test this test case? An overruled value
+            //   is the one the operator most needs to see in the diagnostic -
+            //   it is the reason their producer behaves differently from the
+            //   configuration they wrote.
+
+            // Given: an operator acks that AUDIT overrules
+            val text =
+                """
+                bootstrap.servers=localhost:9092
+                acks=1
+                """.trimIndent()
+            val registry = newRegistry(setOf(TopicClass.AUDIT), parseKafkaProducerProperties(text))
+
+            // When
+            val messages = debugMessages(registry, fallbackAppender = null, kafkaProducerProperties = text)
+
+            // Then
+            val auditLine = messages.single { it.startsWith("Generated producer settings [audit]") }
+            assertThat(auditLine)
+                .contains("${ProducerConfig.ACKS_CONFIG}=all")
+                .doesNotContain("${ProducerConfig.ACKS_CONFIG}=1")
+                .doesNotContain(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG)
+        }
+    }
+
+    @Nested
+    inner class `Shared client id warning` {
+        @Test
+        fun `should name the client id another live instance holds`() {
+            // What is to be tested? The message function itself: with a
+            //   registry whose derived client.id is also held by another
+            //   live guard, the warning names that id and the remedy.
+            // How will the test case be deemed successful and why? Successful
+            //   if the text contains the id, "another running KafkaAppender"
+            //   and both remedies (<component>, client.id). The function had
+            //   substring coverage through the appender only
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 30).
+            // Why is it important to test this test case? The message is the
+            //   only place the JMX collision becomes visible; a field missing
+            //   here leaves the operator with colliding MBeans and no lead.
+
+            // Given: this instance's guard and another live instance holding the same id
+            val registry = newRegistry(setOf(TopicClass.AUDIT))
+            val clientId = registry.clientIds.single()
+            val ownGuard = SelfLoggingGuard(setOf(clientId))
+            val otherInstance = SelfLoggingGuard(setOf(clientId))
+            try {
+                // When
+                val message = sharedClientIdWarning(registry)
+
+                // Then
+                assertThat(message)
+                    .isNotNull()
+                    .contains(clientId)
+                    .contains("another running KafkaAppender")
+                    .contains("<component>")
+                    .contains(ProducerConfig.CLIENT_ID_CONFIG)
+            } finally {
+                otherInstance.close()
+                ownGuard.close()
+            }
+        }
+
+        @Test
+        fun `should stay silent when only this instance holds its client ids`() {
+            // What is to be tested? The negative half: an id held once (by
+            //   this instance's own guard) is not shared.
+            // How will the test case be deemed successful and why? Successful
+            //   if null is returned - no message, nothing for the appender to
+            //   report.
+            // Why is it important to test this test case? A warning on every
+            //   start would train operators to ignore the one that matters.
+
+            // Given
+            val registry = newRegistry(setOf(TopicClass.AUDIT))
+            val ownGuard = SelfLoggingGuard(registry.clientIds)
+            try {
+                // When / Then
+                assertThat(sharedClientIdWarning(registry)).isNull()
+            } finally {
+                ownGuard.close()
+            }
+        }
     }
 }

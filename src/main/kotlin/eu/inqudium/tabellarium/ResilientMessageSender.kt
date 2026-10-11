@@ -118,9 +118,11 @@ import java.util.concurrent.TimeUnit
  *                         breaker). See [HalfOpenThrottle] for the
  *                         rationale.
  * @param nanoTimeSource Monotonic time source used by the per-class
- *                       [HalfOpenThrottle] instances. Defaults to
- *                       [System.nanoTime]; tests inject a deterministic
- *                       source.
+ *                       [HalfOpenThrottle] instances and for the send
+ *                       duration (`send.duration` and the breaker's
+ *                       slow-call input). Defaults to [System.nanoTime];
+ *                       tests inject a deterministic source so a recorded
+ *                       duration can be asserted at value level.
  * @param isolateHeaders Whether every record gets its own copies of
  *                       the enrichment headers instead of the shared
  *                       pre-built ones. The shared headers are the
@@ -146,7 +148,7 @@ internal class ResilientMessageSender(
     val circuitBreakerRegistry: CircuitBreakerRegistry,
     private val fallbackDispatcher: FallbackDispatcher?,
     halfOpenProbeGap: Duration = DEFAULT_HALF_OPEN_PROBE_GAP,
-    nanoTimeSource: () -> Long = System::nanoTime,
+    private val nanoTimeSource: () -> Long = System::nanoTime,
     private val isolateHeaders: Boolean = false,
 ) {
     private val circuitBreakersByClass: Map<TopicClass, CircuitBreaker> =
@@ -267,7 +269,7 @@ internal class ResilientMessageSender(
             // KafkaException. (ApiExceptions - metadata timeout, buffer
             // exhausted, record too large - do not arrive here; the client
             // reports them through the callback, see the class KDoc.)
-            val elapsed = System.nanoTime() - callback.startNanos
+            val elapsed = nanoTimeSource() - callback.startNanos
             circuitBreaker.onError(elapsed, TimeUnit.NANOSECONDS, e)
             m.sendCompleted(topicClass, KafkaAppenderMetrics.SendOutcome.ERROR, Duration.ofNanos(elapsed))
             if (ownership.tryDivert()) {
@@ -294,7 +296,7 @@ internal class ResilientMessageSender(
         private val originalEvent: ILoggingEvent,
         private val ownership: DeliveryOwnership,
     ) : Callback {
-        val startNanos: Long = System.nanoTime()
+        val startNanos: Long = nanoTimeSource()
 
         /**
          * True once this callback has reported an error. Read on the
@@ -320,7 +322,7 @@ internal class ResilientMessageSender(
             metadata: RecordMetadata?,
             exception: Exception?,
         ) {
-            val elapsed = System.nanoTime() - startNanos
+            val elapsed = nanoTimeSource() - startNanos
             val elapsedDuration = Duration.ofNanos(elapsed)
             if (exception != null) {
                 errorReported = true

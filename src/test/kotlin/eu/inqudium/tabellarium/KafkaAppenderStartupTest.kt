@@ -2,6 +2,7 @@ package eu.inqudium.tabellarium
 
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.encoder.EncoderBase
+import ch.qos.logback.core.status.Status
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import org.apache.kafka.clients.producer.ProducerConfig
@@ -55,9 +56,15 @@ class KafkaAppenderStartupTest : KafkaAppenderTestBase() {
             // How will the test case be deemed successful and why? Successful
             //   if the error names the exception class and points at the
             //   debug flag, while the exception's own message text does not
-            //   appear. That text is built by the Kafka client from
+            //   appear - and the status entry carries NO throwable: a status
+            //   printer renders an attached throwable with its message and
+            //   stack trace, so the message assertion alone would stay green
+            //   with the cause attached (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 5). That text is built by the Kafka client from
             //   credential-bearing configuration and is not under this
-            //   appender's control.
+            //   appender's control. The encoder started ahead of the
+            //   pipeline must be released on this Exception path too
+            //   (same report, finding 6).
             // Why is it important to test this test case? SECURITY.md names
             //   credential leakage through status output as an in-scope
             //   concern for this appender; this is the one path where
@@ -67,22 +74,26 @@ class KafkaAppenderStartupTest : KafkaAppenderTestBase() {
             //   configuration-derived text
             val failingFactory =
                 ProducerFactory { _ -> throw IllegalStateException("secret-bearing-detail") }
-            val appender = newAppender(producerFactory = failingFactory, debug = false)
+            val encoder = RecordingEncoder()
+            val appender = newAppender(encoder = encoder, producerFactory = failingFactory, debug = false)
 
             // When
             appender.start()
 
             // Then: refused to start, class and cause type reported, cause withheld
             assertThat(appender.isStarted).isFalse()
-            assertThat(appender.statusMessages())
-                .anyMatch {
-                    it.contains("Failed to build KafkaAppender pipeline") &&
-                        it.contains("Kafka producer for TECHNICAL could not be constructed") &&
-                        it.contains("java.lang.IllegalStateException") &&
-                        it.contains("<debug>true</debug>")
-                }
+            val pipelineError = appender.statusEntries().single { it.message.contains("Failed to build KafkaAppender pipeline") }
+            assertThat(pipelineError.level).isEqualTo(Status.ERROR)
+            assertThat(pipelineError.message)
+                .contains("Kafka producer for TECHNICAL could not be constructed")
+                .contains("java.lang.IllegalStateException")
+                .contains("<debug>true</debug>")
+            assertThat(pipelineError.throwable).isNull()
             assertThat(appender.statusMessages())
                 .noneMatch { it.contains("secret-bearing-detail") }
+
+            // And: the encoder started ahead of the pipeline was released
+            assertThat(encoder.isStarted).isFalse()
         }
 
         @Test
@@ -92,7 +103,11 @@ class KafkaAppenderStartupTest : KafkaAppenderTestBase() {
             //   that the non-debug path deliberately withholds.
             // How will the test case be deemed successful and why? Successful
             //   if the status error contains the injected "diagnostic-detail"
-            //   cause. Together with the previous test this pins the two-tier
+            //   cause AND the entry carries the construction exception whose
+            //   cause is the very injected failure - the stack trace half of
+            //   the promise lives in the attached throwable, not in the
+            //   message text (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding
+            //   31). Together with the previous test this pins the two-tier
             //   reporting: type only by default, message and stack trace behind
             //   the explicit flag.
             // Why is it important to test this test case? The withheld message
@@ -101,16 +116,19 @@ class KafkaAppenderStartupTest : KafkaAppenderTestBase() {
             //   all to diagnose a refused start.
 
             // Given
-            val failingFactory =
-                ProducerFactory { _ -> throw IllegalStateException("diagnostic-detail") }
+            val failure = IllegalStateException("diagnostic-detail")
+            val failingFactory = ProducerFactory { _ -> throw failure }
             val appender = newAppender(producerFactory = failingFactory, debug = true)
 
             // When
             appender.start()
 
-            // Then: operators who opt in get the full cause
-            assertThat(appender.statusMessages())
-                .anyMatch { it.contains("diagnostic-detail") }
+            // Then: operators who opt in get the full cause, message and throwable
+            val pipelineError = appender.statusEntries().single { it.message.contains("Failed to build KafkaAppender pipeline") }
+            assertThat(pipelineError.message).contains("diagnostic-detail")
+            val attached = pipelineError.throwable
+            assertThat(attached).isInstanceOf(ProducerConstructionException::class.java)
+            assertThat(attached!!.cause).isSameAs(failure)
         }
     }
 

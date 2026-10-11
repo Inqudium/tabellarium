@@ -445,35 +445,54 @@ class FallbackDispatcherTest {
             //   the dispatcher swallows the exception (log-storm safety),
             //   but the loss itself must reach the operator's counter.
             // How will the test case be deemed successful and why? Successful
-            //   if the dropped count reaches exactly 1 for one failed
-            //   event and the dispatcher keeps working afterwards.
+            //   if the dropped count reaches exactly 1 for the one failed
+            //   event AND the next event is delivered by the same worker -
+            //   the survival half is observed, not promised: a worker that
+            //   died on the exception would reject the second event through
+            //   the death handler and never deliver it
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 16).
             // Why is it important to test this test case? Before this
             //   contract existed, a fallback appender that throws (full
             //   disk, closed stream) lost every event without any trace
             //   in droppedEventCount - the loss metric lied precisely in
-            //   the scenario it exists for.
+            //   the scenario it exists for. And a transient failure must
+            //   cost one event, not the worker.
 
-            // Given: a STARTED appender whose doAppend always throws. It
-            //   overrides doAppend directly because AppenderBase.doAppend
-            //   would swallow exceptions from append() before the
-            //   dispatcher could see them. Started, because the dispatcher
-            //   refuses a not-started appender before calling doAppend -
-            //   an unstarted one would produce the asserted drop through
-            //   that refusal and never reach the throw
-            //   (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 23).
+            // Given: a STARTED appender whose doAppend throws once, then
+            //   records. It overrides doAppend directly because
+            //   AppenderBase.doAppend would swallow exceptions from
+            //   append() before the dispatcher could see them. Started,
+            //   because the dispatcher refuses a not-started appender
+            //   before calling doAppend - an unstarted one would produce
+            //   the asserted drop through that refusal and never reach the
+            //   throw (DEFECT_ANALYSIS-2026-10-10T19-11-11, finding 23).
+            val delivered = Collections.synchronizedList(mutableListOf<String>())
+            val throwOnce = AtomicBoolean(true)
             val throwingAppender =
                 object : AppenderBase<ILoggingEvent>() {
-                    override fun doAppend(eventObject: ILoggingEvent): Unit = throw RuntimeException("simulated fallback failure")
+                    override fun doAppend(eventObject: ILoggingEvent) {
+                        if (throwOnce.getAndSet(false)) {
+                            throw RuntimeException("simulated fallback failure")
+                        }
+                        delivered += eventObject.formattedMessage
+                    }
 
                     override fun append(event: ILoggingEvent) = error("unreachable")
                 }.apply { start() }
             val dispatcher = FallbackDispatcher(throwingAppender)
             try {
-                // When
+                // When: the first delivery fails
                 dispatcher.enqueue(newTestLoggingEvent(message = "doomed"))
 
                 // Then: the failed delivery is counted as a drop
                 pollUntil { dispatcher.droppedEventCount == 1L }
+
+                // When: a second event follows
+                assertThat(dispatcher.enqueue(newTestLoggingEvent(message = "survivor"))).isTrue()
+
+                // Then: the same worker delivers it - it did not die on the throw
+                pollUntil { delivered.isNotEmpty() }
+                assertThat(delivered).containsExactly("survivor")
             } finally {
                 dispatcher.close()
             }

@@ -3,6 +3,8 @@ package eu.inqudium.tabellarium
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
+import ch.qos.logback.core.encoder.EncoderBase
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.Producer
@@ -17,6 +19,7 @@ import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The stop sequence of [KafkaAppender]: producer and encoder release,
@@ -77,26 +80,169 @@ class KafkaAppenderShutdownTest : KafkaAppenderTestBase() {
         }
 
         @Test
-        fun `should not throw when stopping an appender that never started`() {
-            // What is to be tested? Whether stop() is safe to call on an
-            //   appender whose start() either was not called or failed - the
-            //   plan and transport fields are null in that case.
+        fun `should release the encoder and the fallback when stopping an appender that never started`() {
+            // What is to be tested? Whether stop() on an appender whose
+            //   start() was refused (the plan and transport fields are null)
+            //   returns normally AND still does the one piece of work the
+            //   null-transport branch owns: stopping the encoder and the
+            //   fallback appender that Joran started before the refused
+            //   start - on a context reset nothing else reaches them.
             // How will the test case be deemed successful and why? Successful
-            //   if stop() returns normally: the null-transport branch of
-            //   stop() (Logback state, fallback and encoder only; nothing to
-            //   close) is the contract under test.
+            //   if stop() returns normally and both the encoder and the
+            //   fallback report isStarted=false afterwards. The former
+            //   version asserted nothing after stop() and attached neither,
+            //   so deleting the release call stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 6).
             // Why is it important to test this test case? Logback's context
-            //   shutdown invokes stop() on all registered appenders. If our
-            //   stop() threw on a never-started appender, it would break the
-            //   orderly shutdown of other appenders too.
+            //   shutdown invokes stop() on all registered appenders: a throw
+            //   would break the orderly shutdown of the others, and a skipped
+            //   release leaves the fallback's file handles and worker threads
+            //   and the encoder's resources behind a refused start.
 
-            // Given: an appender that was never started (e.g. config invalid)
-            val appender = newAppender(encoder = null)
-            appender.start() // will refuse to start
+            // Given: Joran-started encoder and fallback, then a refused start
+            val encoder = RecordingEncoder().apply { start() }
+            val fallback = RecordingAppender()
+            val appender = newAppender(encoder = encoder, component = " ", fallback = fallback)
+            appender.start() // refused: blank <component>
             assertThat(appender.isStarted).isFalse()
+            assertThat(encoder.isStarted).isTrue()
+            assertThat(fallback.isStarted).isTrue()
 
-            // When / Then: must not throw
+            // When: must not throw
             appender.stop()
+
+            // Then: both released, the fallback still inspectable
+            assertThat(encoder.isStarted).isFalse()
+            assertThat(fallback.isStarted).isFalse()
+            assertThat(appender.fallbackAppender).isSameAs(fallback)
+        }
+
+        @Test
+        fun `should still stop the encoder and warn when the fallback appender fails to stop`() {
+            // What is to be tested? The failure branches of the final
+            //   release step: a fallback appender whose stop() throws must
+            //   be reported as a status warning, and the encoder stop that
+            //   follows must still run - one failing release must not skip
+            //   the other, and stop() itself must return normally.
+            // How will the test case be deemed successful and why? Successful
+            //   if stop() returns, a WARN names "Error stopping fallback
+            //   appender" with the exception's message, and the encoder is
+            //   stopped. Nothing pinned either guard before
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 14).
+            // Why is it important to test this test case? A fallback that
+            //   throws at stop (a file appender whose flush fails on a full
+            //   disk) is exactly the shutdown an operator later investigates;
+            //   an escaped exception would abort Logback's teardown of the
+            //   other appenders, and a skipped encoder stop leaks its
+            //   resources quietly.
+
+            // Given: a started fallback whose stop() throws
+            val encoder = RecordingEncoder()
+            val brokenStopFallback =
+                object : AppenderBase<ILoggingEvent>() {
+                    init {
+                        context = LoggerContext()
+                        name = "BROKEN_STOP"
+                        start()
+                    }
+
+                    override fun append(eventObject: ILoggingEvent) = Unit
+
+                    override fun stop(): Unit = throw IllegalStateException("simulated fallback stop failure")
+                }
+            val appender = newAppender(encoder = encoder, fallback = brokenStopFallback)
+            appender.start()
+
+            // When: stop() must complete
+            appender.stop()
+
+            // Then: reported, and the encoder was released regardless
+            assertThat(appender.isStarted).isFalse()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("Error stopping fallback appender") && it.contains("simulated fallback stop failure") }
+            assertThat(encoder.isStarted).isFalse()
+        }
+
+        @Test
+        fun `should divert an append that passed the gate before stop as a shutdown remainder`() {
+            // What is to be tested? The one race the teardown documents and
+            //   tolerates: an append that passed Logback's started gate
+            //   before stop() flipped it and is still inside the hot path
+            //   (here: parked in the encoder) when the teardown completes.
+            //   Its late hand-off must meet a closed send dispatcher, be
+            //   diverted with reason `shutdown`, meet the closed fallback
+            //   dispatcher and be counted as dropped - never throw on the
+            //   logging thread, never vanish from the accounting.
+            // How will the test case be deemed successful and why? Successful
+            //   if the helper thread's doAppend returns without a throwable,
+            //   the shutdown-fallback counter and the fallback-dropped
+            //   counter (captured before stop(); the transport's recorders
+            //   stay bound after it, see the pinned-send test) each read 1,
+            //   and the fallback recorder holds nothing. The interleaving is
+            //   forced with a latch in the encoder, so the window is not
+            //   left to scheduling (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 7).
+            // Why is it important to test this test case? A stop during
+            //   logging is every graceful shutdown; the post-close accounting
+            //   is what keeps accepted = dispatched + fallback conserved over
+            //   it, and no test drove an append across stop() before.
+
+            // Given: an encoder that parks inside encode until released
+            val encodeEntered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val parkedEncoder =
+                object : EncoderBase<ILoggingEvent>() {
+                    override fun encode(event: ILoggingEvent): ByteArray {
+                        encodeEntered.countDown()
+                        release.await()
+                        return event.formattedMessage.toByteArray(Charsets.UTF_8)
+                    }
+
+                    override fun headerBytes(): ByteArray = ByteArray(0)
+
+                    override fun footerBytes(): ByteArray = ByteArray(0)
+                }
+            val fallback = RecordingAppender()
+            val appender = newAppender(encoder = parkedEncoder, fallback = fallback)
+            appender.start()
+            val registry = SimpleMeterRegistry()
+            appender.bindMeterRegistry(registry)
+            val shutdownFallbacks =
+                registry.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
+                    MicrometerKafkaAppenderMetrics.TAG_REASON to "shutdown",
+                )
+            val dropped = registry.requireCounter(MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED)
+            val failure = AtomicReference<Throwable?>()
+            val logger =
+                Thread {
+                    try {
+                        appender.doAppend(newTestLoggingEvent(message = "in flight at stop"))
+                    } catch (t: Throwable) {
+                        failure.set(t)
+                    }
+                }
+            try {
+                logger.start()
+                assertThat(encodeEntered.await(2, TimeUnit.SECONDS)).isTrue()
+
+                // When: the teardown runs to completion while the append is parked past the gate
+                appender.stop()
+                assertThat(appender.isStarted).isFalse()
+                release.countDown()
+                logger.join(5000)
+                assertThat(logger.isAlive).isFalse()
+
+                // Then: no throw on the logging thread, one shutdown diversion, one drop, nothing written
+                assertThat(failure.get()).isNull()
+                assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
+                assertThat(dropped.count()).isEqualTo(1.0)
+                assertThat(fallback.events).isEmpty()
+            } finally {
+                release.countDown()
+                logger.join(2000)
+            }
         }
 
         @Test

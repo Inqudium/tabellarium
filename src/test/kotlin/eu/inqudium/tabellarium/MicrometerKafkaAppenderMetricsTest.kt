@@ -11,6 +11,7 @@ import io.micrometer.core.instrument.distribution.pause.PauseDetector
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatCode
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.assertj.core.data.Offset
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -740,6 +741,58 @@ class MicrometerKafkaAppenderMetricsTest {
         }
 
         @Test
+        fun `should attach a failing constructor rollback as suppressed and keep removing the rest`() {
+            // What is to be tested? The failure of the failure path in the
+            //   companion `register`: when the constructor throws halfway (a
+            //   registry rejecting the third counter) and the rollback's
+            //   `remove` of an already registered counter throws as well,
+            //   the original failure must still be the one that propagates,
+            //   with the removal failure attached as suppressed, and the
+            //   rollback must go on to remove the other registered meter.
+            // How will the test case be deemed successful and why? Successful
+            //   if register throws the registration failure, that exception
+            //   carries exactly one suppressed exception with the removal
+            //   failure's message, and the registry holds exactly one meter
+            //   afterwards - the one whose removal threw. The identical
+            //   branch of registerAllOrNone is pinned by the test below; the
+            //   companion's own try/catch around the rollback had no test, so
+            //   deleting it (the removal failure then replaces the cause and
+            //   aborts the rollback) stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 19).
+            // Why is it important to test this test case? The operator reads
+            //   the exception of a failed bind in the Spring binding's
+            //   warning; a removal failure in its place hides why the
+            //   registry rejected the meters, and an aborted rollback leaves
+            //   the events.accepted counter behind for the identity probe to
+            //   mistake for a live instance.
+
+            // Given: a registry that rejects the third counter and fails the first removal
+            val registry =
+                object : SimpleMeterRegistry() {
+                    private val counters = AtomicInteger()
+                    private val removals = AtomicInteger()
+
+                    override fun newCounter(id: Meter.Id): Counter {
+                        if (counters.incrementAndGet() == 3) throw IllegalStateException("simulated counter registration failure")
+                        return super.newCounter(id)
+                    }
+
+                    override fun remove(mappedId: Meter.Id): Meter? {
+                        if (removals.getAndIncrement() == 0) throw IllegalStateException("transient removal failure")
+                        return super.remove(mappedId)
+                    }
+                }
+
+            // When / Then: the registration failure propagates, the removal failure travels with it
+            assertThatThrownBy { MicrometerKafkaAppenderMetrics.register(registry, Tags.empty(), "flaky", info = null) }
+                .hasMessage("simulated counter registration failure")
+                .satisfies({ e -> assertThat(e.suppressed.map { it.message }).containsExactly("transient removal failure") })
+
+            // And: the rollback continued past the failed removal
+            assertThat(appenderMeters(registry)).hasSize(1)
+        }
+
+        @Test
         fun `should keep a meter whose rollback removal failed tracked and report the removal failure`() {
             // What is to be tested? The failure of the failure path: when a
             //   group registration throws and the rollback's `remove` of an
@@ -905,43 +958,53 @@ class MicrometerKafkaAppenderMetricsTest {
             // What is to be tested? Whether EVERY meter the implementation can
             //   register - the four counters, the timer, the two fallback queue
             //   gauges and the two send queue gauges - carries the appender tag
-            //   plus exactly its documented dimensions, checked over the
-            //   registry's meters rather than over a hand-picked subset.
+            //   and the common tag plus exactly its documented dimensions,
+            //   checked over the registry's meters rather than over a
+            //   hand-picked subset.
             // How will the test case be deemed successful and why? Successful
             //   if, after every hook was called once, the set of registered
             //   kafka.appender.* names equals the inventory and each meter's
             //   tag keys equal the expected keys for its name, with the
-            //   appender tag's value the configured name. The subset test
-            //   above covers 4 of 9 meters; registerSendQueueGauges was
-            //   asserted against a real registry nowhere
+            //   appender tag's value the configured name and the common tag's
+            //   value the configured one. The subset test above covers 4 of 9
+            //   meters; registerSendQueueGauges was asserted against a real
+            //   registry nowhere
             //   (docs/assessment/CODE_ANALYSIS-2026-09-15T21-09-11.md, finding 5).
+            //   The common tag is part of the full-inventory check because the
+            //   `Common tags` test value-asserts it on two meters only: a
+            //   send-queue gauge or a send timer built from
+            //   Tags.of(TAG_APPENDER, ...) instead of tagsWith(...) keeps the
+            //   appender tag and loses the common tag with the suite green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 19).
             // Why is it important to test this test case? With the tag dropped
             //   from the send-queue gauges, Micrometer returns the first
             //   appender's gauge to a second appender bound to the same
             //   registry (registration is idempotent on the meter id), so one
             //   appender's queue depth is silently reported for both - at the
-            //   gauge that shows an outage building up.
+            //   gauge that shows an outage building up; and a meter without
+            //   the common tag vanishes from every dashboard scoped by it.
 
-            // Given: the documented tag keys per metric
+            // Given: the documented tag keys per metric, plus the common tag
             val appender = MicrometerKafkaAppenderMetrics.TAG_APPENDER
             val topicClass = MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS
+            val common = "service"
             val expectedTagKeys =
                 mapOf(
-                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED to setOf(appender, topicClass),
-                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED to setOf(appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED to setOf(common, appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED to setOf(common, appender, topicClass),
                     MicrometerKafkaAppenderMetrics.METRIC_EVENTS_FALLBACK to
-                        setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_REASON),
+                        setOf(common, appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_REASON),
                     MicrometerKafkaAppenderMetrics.METRIC_SEND_DURATION to
-                        setOf(appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_OUTCOME),
-                    MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE to setOf(appender, topicClass),
-                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to setOf(appender),
-                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to setOf(appender),
-                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to setOf(appender),
-                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE to setOf(appender, topicClass),
-                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY to setOf(appender, topicClass),
+                        setOf(common, appender, topicClass, MicrometerKafkaAppenderMetrics.TAG_OUTCOME),
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENT_SIZE to setOf(common, appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_DROPPED to setOf(common, appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_SIZE to setOf(common, appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_FALLBACK_QUEUE_CAPACITY to setOf(common, appender),
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_SIZE to setOf(common, appender, topicClass),
+                    MicrometerKafkaAppenderMetrics.METRIC_SEND_QUEUE_CAPACITY to setOf(common, appender, topicClass),
                 )
             val registry = newRegistry()
-            val metrics = MicrometerKafkaAppenderMetrics(registry, appenderName = "audit-appender")
+            val metrics = MicrometerKafkaAppenderMetrics(registry, Tags.of(common, "payment-service"), appenderName = "audit-appender")
 
             // When: every hook once
             exerciseEveryHook(metrics)
@@ -959,6 +1022,9 @@ class MicrometerKafkaAppenderMetricsTest {
                 assertThat(meter.id.getTag(appender))
                     .`as`("appender tag of %s", meter.id)
                     .isEqualTo("audit-appender")
+                assertThat(meter.id.getTag(common))
+                    .`as`("common tag of %s", meter.id)
+                    .isEqualTo("payment-service")
             }
         }
 

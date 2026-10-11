@@ -318,8 +318,10 @@ class SendDispatcherTest {
             }
             dispatcher.close()
 
-            // Then
+            // Then: everything was sent; the fallback dispatcher is closed
+            //   first (its close drains), so "nothing landed" is final
             assertThat(sent.get()).isEqualTo(4)
+            openFallbacks.forEach { it.close() }
             assertThat(recorder.events).isEmpty()
         }
 
@@ -462,12 +464,16 @@ class SendDispatcherTest {
             //   in-flight and queued items are still accounted for, and the
             //   caller's interrupt flag is restored.
             // How will the test case be deemed successful and why? Successful
-            //   if close() returns although the drain budget is a minute and
-            //   the worker stays pinned, every item reaches the fallback
-            //   exactly once as SHUTDOWN, and the calling thread is still
-            //   interrupted afterwards. Dropping the flag restore turns the
-            //   last assertion red; letting the interrupt abort the
-            //   accounting loses the items
+            //   if close() returns within seconds although the drain budget
+            //   is a minute and the worker stays pinned, every item reaches
+            //   the fallback exactly once as SHUTDOWN, and the calling thread
+            //   is still interrupted afterwards. close() runs on a helper
+            //   thread with a bounded join, so a close that consumes the
+            //   flag and waits the full budget is a red assertion, not a
+            //   slow green inside the method timeout
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 15). Dropping
+            //   the flag restore turns the interrupt assertion red; letting
+            //   the interrupt abort the accounting loses the items
             //   (docs/assessment/DEFECT_ANALYSIS-2026-10-10T15-19-31.md,
             //   finding 5).
             // Why is it important to test this test case? Swallowing the
@@ -498,14 +504,21 @@ class SendDispatcherTest {
             dispatcher.dispatchEvent("queued-1")
             dispatcher.dispatchEvent("queued-2")
 
-            // When: closed from an interrupted thread
-            Thread.currentThread().interrupt()
-            dispatcher.close()
-            val interruptKept = Thread.interrupted()
+            // When: closed from an interrupted helper thread
+            val interruptKept = AtomicBoolean(false)
+            val closer =
+                Thread({
+                    Thread.currentThread().interrupt()
+                    dispatcher.close()
+                    interruptKept.set(Thread.interrupted())
+                }, "interrupted-closer").apply { start() }
+            closer.join(5_000)
 
-            // Then: the interrupt survived, everything was accounted once
+            // Then: close returned early, the interrupt survived, everything
+            //   was accounted once
             try {
-                assertThat(interruptKept).isTrue()
+                assertThat(closer.isAlive).withFailMessage("close() did not return early on an interrupted thread").isFalse()
+                assertThat(interruptKept.get()).isTrue()
                 pollUntil { recorder.events.size == 3 }
                 assertThat(recorder.events.map { it.formattedMessage })
                     .containsExactlyInAnyOrder("in-flight", "queued-1", "queued-2")

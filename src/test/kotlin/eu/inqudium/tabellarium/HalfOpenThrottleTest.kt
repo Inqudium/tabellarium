@@ -194,9 +194,12 @@ class HalfOpenThrottleTest {
             //   over time so the breaker can make its decision while
             //   probes are still being dispatched.
             // How will the test case be deemed successful and why? Successful
-            //   if exactly 10 probes are admitted across 50ms of
-            //   simulated time with a 5ms gap - one probe per 5ms slot.
-            //   This is the actual contract.
+            //   if exactly 10 of 50 attempts, one every millisecond over
+            //   50 ms of simulated time with a 5 ms gap, are admitted - one
+            //   per 5 ms slot, at the slot boundaries. Calling at a fraction
+            //   of the gap is what makes this a throttling test: a throttle
+            //   that admits everything after the state check admits 50
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 18).
             // Why is it important to test this test case? Pins down the
             //   real-world behavior under load, which is the entire
             //   motivation for the class.
@@ -208,16 +211,15 @@ class HalfOpenThrottleTest {
             val gap = Duration.ofMillis(5)
             val (throttle, clock) = newThrottle(breaker = breaker, gap = gap)
 
-            // When: 10 probe attempts every 5ms over 50ms
-            var admitted = 0
-            repeat(10) {
-                if (throttle.mayAttemptProbe()) admitted++
-                clock.advance(gap)
+            // When: 50 probe attempts, one every millisecond over 50ms
+            val admittedAt = mutableListOf<Long>()
+            repeat(50) { i ->
+                if (throttle.mayAttemptProbe()) admittedAt += i.toLong()
+                clock.advance(Duration.ofMillis(1))
             }
 
-            // Then: every attempt was admitted because each came
-            //   exactly one gap after the previous one
-            assertThat(admitted).isEqualTo(10)
+            // Then: one admission per gap, exactly at the slot boundaries
+            assertThat(admittedAt).containsExactly(0, 5, 10, 15, 20, 25, 30, 35, 40, 45)
         }
 
         @Test

@@ -139,8 +139,9 @@ class KafkaAppenderDispatchTest : KafkaAppenderTestBase() {
                 secondCaller.start()
 
                 // Then: the caller returned although the send is parked
+                //   (the latch is released only in the finally below, so
+                //   the two awaits above are the whole proof)
                 assertThat(secondAppendReturned.await(2, TimeUnit.SECONDS)).isTrue()
-                assertThat(factory.release.count).isEqualTo(1)
             } finally {
                 factory.release.countDown()
                 firstCaller.join(2000)
@@ -323,28 +324,36 @@ class KafkaAppenderDispatchTest : KafkaAppenderTestBase() {
                     MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to "technical",
                     MicrometerKafkaAppenderMetrics.TAG_OUTCOME to "error",
                 )
-            appender.doAppend(newTestLoggingEvent(message = "pinned"))
-            assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
+            // Safety: the release lives in a finally - a red assertion
+            //   before it would otherwise leave the send worker parked in
+            //   awaitUninterruptibly for the rest of the fork
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 12).
+            try {
+                appender.doAppend(newTestLoggingEvent(message = "pinned"))
+                assertThat(sendEntered.await(2, TimeUnit.SECONDS)).isTrue()
 
-            // When: stop() claims and diverts the pinned event (reason
-            //   shutdown), then the send unblocks and fails; joining the
-            //   worker proves the sender's error routing has completed
-            appender.stop()
-            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
-            assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
-            release.countDown()
-            val worker = checkNotNull(sendWorker.get()) { "the producer double never captured the send worker" }
-            worker.join(5000)
-            assertThat(worker.isAlive).isFalse()
+                // When: stop() claims and diverts the pinned event (reason
+                //   shutdown), then the send unblocks and fails; joining the
+                //   worker proves the sender's error routing has completed
+                appender.stop()
+                assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
+                assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
+                release.countDown()
+                val worker = checkNotNull(sendWorker.get()) { "the producer double never captured the send worker" }
+                worker.join(5000)
+                assertThat(worker.isAlive).isFalse()
 
-            // Then: the late failure was observed (send.duration error),
-            //   but the sender's error routing found the diversion already
-            //   claimed - no second fallback of any reason, and still
-            //   exactly one copy in the recorder
-            assertThat(sendErrors.count()).isEqualTo(1L)
-            assertThat(sendErrorFallbacks.count()).isEqualTo(0.0)
-            assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
-            assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
+                // Then: the late failure was observed (send.duration error),
+                //   but the sender's error routing found the diversion already
+                //   claimed - no second fallback of any reason, and still
+                //   exactly one copy in the recorder
+                assertThat(sendErrors.count()).isEqualTo(1L)
+                assertThat(sendErrorFallbacks.count()).isEqualTo(0.0)
+                assertThat(shutdownFallbacks.count()).isEqualTo(1.0)
+                assertThat(fallback.events.map { it.formattedMessage }).containsExactly("pinned")
+            } finally {
+                release.countDown()
+            }
         }
     }
 
@@ -418,6 +427,8 @@ class KafkaAppenderDispatchTest : KafkaAppenderTestBase() {
             val startLatch = CountDownLatch(1)
             val doneLatch = CountDownLatch(threadCount)
             val failures = AtomicInteger(0)
+            // The first throwable, so a red run names its cause instead of a bare count
+            val firstFailure = AtomicReference<Throwable?>()
             val executor = Executors.newFixedThreadPool(threadCount)
             try {
                 // When: all threads hammer the asynchronous dispatch
@@ -433,8 +444,9 @@ class KafkaAppenderDispatchTest : KafkaAppenderTestBase() {
                                     ),
                                 )
                             }
-                        } catch (_: Throwable) {
+                        } catch (t: Throwable) {
                             failures.incrementAndGet()
+                            firstFailure.compareAndSet(null, t)
                         } finally {
                             doneLatch.countDown()
                         }
@@ -444,6 +456,7 @@ class KafkaAppenderDispatchTest : KafkaAppenderTestBase() {
                 assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue()
 
                 // Then: the worker delivers everything, nothing diverted
+                assertThat(firstFailure.get()).isNull()
                 assertThat(failures.get()).isZero()
                 pollUntil(timeoutMs = 10_000) { factory.historySize() == threadCount * eventsPerThread }
                 assertThat(fallback.events).isEmpty()

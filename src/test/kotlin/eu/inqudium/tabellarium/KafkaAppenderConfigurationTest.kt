@@ -98,6 +98,39 @@ class KafkaAppenderConfigurationTest : KafkaAppenderTestBase() {
         }
 
         @Test
+        fun `should refuse to start when the send queue capacity is not positive`() {
+            // What is to be tested? Whether a non-positive <sendQueueCapacity>
+            //   is refused by validateConfiguration with a named error before
+            //   any producer is built.
+            // How will the test case be deemed successful and why? Successful
+            //   if the appender stays unstarted, the factory created no
+            //   producer and a status error names <sendQueueCapacity> with
+            //   the offending value. Without the gate the start still fails,
+            //   but late - after the producers were built and rolled back -
+            //   and with the queue's generic IllegalArgumentException under
+            //   the generic pipeline message (DEFECT_ANALYSIS-2026-10-11T16-25-57,
+            //   finding 14).
+            // Why is it important to test this test case? The capacity is the
+            //   one numeric element of the configuration; a typo there must
+            //   point at the element, not at a queue class the operator has
+            //   never heard of.
+
+            // Given
+            val factory = RecordingProducerFactory()
+            val appender = newAppender(producerFactory = factory)
+            appender.sendQueueCapacity = 0
+
+            // When
+            appender.start()
+
+            // Then
+            assertThat(appender.isStarted).isFalse()
+            assertThat(factory.createdProducers).isEmpty()
+            assertThat(appender.statusMessages())
+                .anyMatch { it.contains("<sendQueueCapacity> must be positive") && it.contains("(was 0)") }
+        }
+
+        @Test
         fun `should refuse to start when environment is blank`() {
             // What is to be tested? Whether a blank <environment> is rejected
             //   by validateConfiguration before the pipeline is built.

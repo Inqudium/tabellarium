@@ -147,8 +147,8 @@ class KafkaProducerPropertiesParserTest {
             // When
             val result = parseKafkaProducerProperties(text)
 
-            // Then
-            assertThat(result).hasSize(2)
+            // Then: exactly the two properties, no blank-line entry
+            assertThat(result).containsExactlyInAnyOrderEntriesOf(mapOf("acks" to "all", "retries" to "10"))
         }
 
         @Test
@@ -226,6 +226,30 @@ class KafkaProducerPropertiesParserTest {
         }
 
         @Test
+        fun `should parse a key-only line as an empty value`() {
+            // What is to be tested? The documented leniency of Properties.load
+            //   for a line without any separator: it is a key with an empty
+            //   value, not an error and not dropped.
+            // How will the test case be deemed successful and why? Successful
+            //   if "bootstrap.servers=localhost:9092\nenable.idempotence" yields
+            //   exactly the two entries with enable.idempotence mapped to "".
+            //   The case had a fuzz seed only; this is the unit-level pin
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 24).
+            // Why is it important to test this test case? The parser KDoc
+            //   promises that structural slips surface as Kafka's own
+            //   configuration errors, which requires the key to reach Kafka
+            //   rather than vanish in the parser.
+
+            // Given / When
+            val result = parseKafkaProducerProperties("bootstrap.servers=localhost:9092\nenable.idempotence")
+
+            // Then
+            assertThat(result).containsExactlyInAnyOrderEntriesOf(
+                mapOf("bootstrap.servers" to "localhost:9092", "enable.idempotence" to ""),
+            )
+        }
+
+        @Test
         fun `should return an empty map for whitespace-only input`() {
             // What is to be tested? Whether an element containing only newlines and spaces
             //   parses to an empty map instead of throwing or yielding a blank key.
@@ -272,13 +296,17 @@ class KafkaProducerPropertiesParserTest {
             // When
             val result = parseKafkaProducerProperties(text)
 
-            // Then: one property; the value contains all four parts of the line
-            assertThat(result).hasSize(1)
-            assertThat(result["sasl.jaas.config"])
-                .contains("PlainLoginModule")
-                .contains("required")
-                .contains("username=\"serviceuser\"")
-                .contains("password=\"topsecret\";")
+            // Then: one property whose value is the four parts joined by single
+            //   spaces - no continuation backslash and no indentation survives
+            //   (a value keeping either would pass a fragment check but be
+            //   rejected by the JAAS parser)
+            assertThat(result).containsExactlyInAnyOrderEntriesOf(
+                mapOf(
+                    "sasl.jaas.config" to
+                        "org.apache.kafka.common.security.plain.PlainLoginModule required " +
+                        "username=\"serviceuser\" password=\"topsecret\";",
+                ),
+            )
         }
 
         @Test

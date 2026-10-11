@@ -133,7 +133,7 @@ renamed fallback appender is a new series.
 | Label                  | Value                                                                                   |
 | ---------------------- | --------------------------------------------------------------------------------------- |
 | `fallback`             | Name of the fallback appender (`<appender-ref ref="...">`); `none` without one, `unnamed` for one without a name. `fallback="none"` marks the appenders whose `events.fallback` are dropped events |
-| `fallback.type`        | Simple class name of the fallback appender (e.g. `RollingFileAppender`); `none` without one |
+| `fallback.type`        | Simple class name of the fallback appender (e.g. `RollingFileAppender`); `anonymous` for an anonymous class; `none` without one |
 | `appender.version`     | tabellarium version (the same value as the `meta.agent.version` record header). Not `version`, so that a `version` common tag for the application is not overridden on the info series |
 | `kafka.client.version` | Version of the Kafka client on the classpath - often chosen by the application's dependency management, not by tabellarium |
 | `debug`                | `true` or `false`, the `<debug>` setting                                                |

@@ -227,6 +227,112 @@ class KafkaAppenderMetricsLifecycleTest : KafkaAppenderTestBase() {
         }
 
         @Test
+        fun `should keep recording into the first registry when a re-bind to another registry throws`() {
+            // What is to be tested? The appender-level half of the re-bind
+            //   ordering: when a bind to a SECOND registry throws, the
+            //   binding to the first registry stays - and so do the hot
+            //   path's and the transport's recorders, which installMetrics
+            //   must not reset to NO_OP for a binding that is still intact.
+            // How will the test case be deemed successful and why? Successful
+            //   if the failure propagates, the appender still reports itself
+            //   bound, and one appended event advances the first registry's
+            //   accepted counter (recorded by the hot path) and dispatched
+            //   counter (recorded by the send worker through the transport).
+            //   MetricsBindingsTest proves isBoundTo(first) at binding level
+            //   but cannot see the appender's metrics field; dropping the
+            //   `if (!bindings.isBound)` guard in installMetrics installs
+            //   NO_OP on every throwing bind and stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 2).
+            // Why is it important to test this test case? isMeterRegistryBound
+            //   true while the hot path records nothing is monitoring dark
+            //   with a green suite - the symptom of
+            //   DEFECT_ANALYSIS-2026-10-10T15-19-31, finding 6.
+
+            // Given: bound to a first registry; a second registry that rejects counters
+            val first = SimpleMeterRegistry()
+            val counterRejectingRegistry =
+                object : SimpleMeterRegistry() {
+                    override fun newCounter(id: Meter.Id): Counter = throw IllegalStateException("simulated counter registration failure")
+                }
+            val appender = newAppender()
+            appender.start()
+            assertThat(appender.bindMeterRegistry(first)).isTrue()
+            val accepted =
+                first.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+            val dispatched =
+                first.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED,
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+
+            // When: the re-bind to the second registry fails, then one event
+            assertThatThrownBy { appender.bindMeterRegistry(counterRejectingRegistry) }
+                .hasMessageContaining("simulated counter registration failure")
+            appender.doAppend(newTestLoggingEvent(message = "after the failed re-bind"))
+
+            // Then: still bound, and both recorders still feed the first registry
+            assertThat(appender.isMeterRegistryBound).isTrue()
+            assertThat(accepted.count()).isEqualTo(1.0)
+            pollUntil { dispatched.count() == 1.0 }
+        }
+
+        @Test
+        fun `should keep recording into the first registry when a re-bind to another registry is refused`() {
+            // What is to be tested? The refused variant of the case above: a
+            //   bind to a SECOND registry that already holds a same-named
+            //   sibling's live binding is refused, and the appender keeps
+            //   both its binding to the first registry and its recorders.
+            // How will the test case be deemed successful and why? Successful
+            //   if the refused bind returns false, the appender still reports
+            //   itself bound, and one appended event advances the first
+            //   registry's accepted and dispatched counters. The only
+            //   appender-level refusal in this class refuses an appender that
+            //   was never bound; installing NO_OP before the `return false` in
+            //   installMetrics stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 2).
+            // Why is it important to test this test case? Same as above: a
+            //   refusal that silently turns working monitoring dark is worse
+            //   than the refusal it reports.
+
+            // Given: A bound to the first registry, a same-named B to the second
+            val first = SimpleMeterRegistry()
+            val second = SimpleMeterRegistry()
+            val appenderA = newAppender()
+            appenderA.name = "KAFKA"
+            val appenderB = newAppender()
+            appenderB.name = "KAFKA"
+            appenderA.start()
+            appenderB.start()
+            assertThat(appenderA.bindMeterRegistry(first)).isTrue()
+            assertThat(appenderB.bindMeterRegistry(second)).isTrue()
+            val accepted =
+                first.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_ACCEPTED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+            val dispatched =
+                first.requireCounter(
+                    MicrometerKafkaAppenderMetrics.METRIC_EVENTS_DISPATCHED,
+                    MicrometerKafkaAppenderMetrics.TAG_APPENDER to "KAFKA",
+                    MicrometerKafkaAppenderMetrics.TAG_TOPIC_CLASS to TopicClass.TECHNICAL.tag,
+                )
+
+            // When: A's re-bind to the second registry is refused, then one event
+            assertThat(appenderA.bindMeterRegistry(second)).isFalse()
+            assertThat(appenderA.statusMessages()).anyMatch { it.contains("Metrics binding refused") }
+            appenderA.doAppend(newTestLoggingEvent(message = "after the refused re-bind"))
+
+            // Then: still bound to the first registry, both recorders still feed it
+            assertThat(appenderA.isMeterRegistryBound).isTrue()
+            assertThat(accepted.count()).isEqualTo(1.0)
+            pollUntil { dispatched.count() == 1.0 }
+        }
+
+        @Test
         fun `should record breaker call outcomes through the appender-tagged timers`() {
             // What is to be tested? Whether the event-driven call meters
             //   actually receive the breaker's outcomes - the own binder

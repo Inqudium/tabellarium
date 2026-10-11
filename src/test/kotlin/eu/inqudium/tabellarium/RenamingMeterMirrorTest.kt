@@ -289,6 +289,44 @@ class RenamingMeterMirrorTest {
         }
 
         @Test
+        fun `should swallow a failing removal on the target and still close`() {
+            // What is to be tested? Whether a target registry whose `remove`
+            //   throws neither breaks the source-side removal (the binder's
+            //   refresh thread removing a vanished client metric) nor the
+            //   mirror's close - the one step of MetricsBindings.unbind that
+            //   relies on this swallow.
+            // How will the test case be deemed successful and why? Successful
+            //   if removing a source meter and closing the mirror both return
+            //   normally against a target that throws on every removal, the
+            //   mirror map is empty afterwards, and the source is closed.
+            //   The throwing-remove registries elsewhere in the suite serve
+            //   other classes; deleting this try/catch stayed green
+            //   (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 27).
+            // Why is it important to test this test case? An exception
+            //   escaping the removal listener would surface in KafkaMetrics'
+            //   refresh, and one escaping close() would abort the appender's
+            //   unbind halfway.
+
+            // Given: a target that refuses every removal
+            val target =
+                object : SimpleMeterRegistry() {
+                    override fun remove(mappedId: Meter.Id): Meter? = throw IllegalStateException("simulated removal failure")
+                }
+            val mirror = mirrorInto(target)
+            val removedBySource = Gauge.builder("kafka.producer.a") { 1.0 }.register(mirror.source)
+            Gauge.builder("kafka.producer.b") { 2.0 }.register(mirror.source)
+            assertThat(mirror.mirroredNames).containsExactlyInAnyOrder("kafka.appender.producer.a", "kafka.appender.producer.b")
+
+            // When / Then: neither path throws
+            assertThatCode { mirror.source.remove(removedBySource) }.doesNotThrowAnyException()
+            assertThat(mirror.mirroredNames).containsExactly("kafka.appender.producer.b")
+            assertThatCode { mirror.close() }.doesNotThrowAnyException()
+            assertThat(mirror.mirroredNames).isEmpty()
+            assertThat(mirror.source.isClosed).isTrue()
+            assertThat(warnings).isEmpty()
+        }
+
+        @Test
         fun `should swallow a failing registration and report only the first`() {
             // What is to be tested? Whether a target that rejects a registration
             //   neither breaks the source registration (the binder's thread) nor

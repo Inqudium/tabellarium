@@ -117,7 +117,8 @@ class OptionalDependencyClasspathTest {
         //   the appender through Joran with a plain Logback encoder, start
         //   it and log through it.
         // How will the test case be deemed successful and why? Successful
-        //   if, inside a class loader that hides all four packages, the
+        //   if, inside a class loader that hides all four packages (and
+        //   Jackson 2, a test-scope artifact no consumer has either), the
         //   Joran run throws nothing, the appender is started, the event
         //   reaches the fallback through the real (unreachable) producer
         //   and the status manager holds no warning or error. Joran's bean
@@ -164,10 +165,18 @@ class OptionalDependencyClasspathTest {
     }
 
     private companion object {
-        val HIDDEN_PACKAGES = listOf("io.micrometer.", "org.springframework.", "net.logstash.", "tools.jackson.")
+        /**
+         * The optional packages plus Jackson 2 (`com.fasterxml.jackson`),
+         * which is on the test classpath only: a production reference to it
+         * would otherwise pass this check although no consumer POM pulls it
+         * in (DEFECT_ANALYSIS-2026-10-11T16-25-57, finding 24).
+         */
+        val HIDDEN_PACKAGES =
+            listOf("io.micrometer.", "org.springframework.", "net.logstash.", "tools.jackson.", "com.fasterxml.jackson.")
 
         /** Jar-path fragments of the artifacts that provide [HIDDEN_PACKAGES]. */
-        val HIDDEN_ARTIFACTS = listOf("/micrometer-", "/spring-", "/logstash-logback-encoder-", "/tools/jackson/")
+        val HIDDEN_ARTIFACTS =
+            listOf("/micrometer-", "/spring-", "/logstash-logback-encoder-", "/tools/jackson/", "/com/fasterxml/jackson/")
 
         val XML =
             """

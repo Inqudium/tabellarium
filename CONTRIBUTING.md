@@ -100,8 +100,9 @@ JAZZER_FUZZ=1 mvn -Dtest=TopicRouterFuzzTest test
   callers, a number a constant owns is linked rather than copied, and
   an analysis report is cited by file name.
 - The appender hot path (`KafkaAppender.append` and everything it calls)
-  must stay lock-free: no `synchronized`, no blocking waits. Atomics and
-  volatiles only.
+  must stay free of `synchronized` and of blocking waits: atomics,
+  volatiles and the bounded queue's non-blocking `offer` (a brief
+  `ReentrantLock`, the one lock on the path) only.
 
 ## Tests
 
