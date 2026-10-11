@@ -341,14 +341,15 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Resilience4j: circuit breaker + Kotlin extensions -->
+        <!--
+            Resilience4j: the circuit breaker only. resilience4j-kotlin is
+            deliberately absent - nothing here uses its coroutine
+            extensions, and it would hand every consumer kotlinx-coroutines
+            and kotlin-stdlib-jdk7/jdk8 at the versions it declares.
+        -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-circuitbreaker</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-kotlin</artifactId>
         </dependency>
 
         <!--
