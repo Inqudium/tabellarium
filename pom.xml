@@ -640,6 +640,27 @@
                     <groupId>org.codehaus.mojo</groupId>
                     <artifactId>versions-maven-plugin</artifactId>
                     <version>${versions-maven-plugin.version}</version>
+                    <configuration>
+                        <!--
+                            Stable target versions only: the display-* and use-*
+                            goals ignore pre-release qualifiers in every spelling
+                            (case, and the separators -, _, . or none). Verified
+                            against this project's tree on 2026-10-11: the regex
+                            drops M1/M2, Alpha, Beta, Dev01 and alpha/beta targets
+                            and keeps .Final, .RELEASE, -jdk5 and .jre11, which
+                            are final releases. ignoreVersions filters the TARGET
+                            versions; dependencyExcludes would only hide what is
+                            already in use.
+                        -->
+                        <ruleSet>
+                            <ignoreVersions>
+                                <ignoreVersion>
+                                    <type>regex</type>
+                                    <version>(?i).*[-_.](alpha|beta|rc|cr|m|ea|pre|preview|dev|snapshot)[-_.]?\d*</version>
+                                </ignoreVersion>
+                            </ignoreVersions>
+                        </ruleSet>
+                    </configuration>
                 </plugin>
             </plugins>
         </pluginManagement>
