@@ -42,8 +42,8 @@ internal class ProducerRegistry private constructor(
      * The effective `client.id` values of all created producers, for the
      * appender's self-logging guard: the Kafka client names its internal
      * threads after the client.id, and log events from those threads must
-     * not be routed back into the producer. Blank ids are excluded (a
-     * blank id would match every thread name).
+     * not be routed back into the producer. Blank ids are excluded;
+     * [SelfLoggingGuard] states why.
      */
     val clientIds: Set<String>,
     /**
@@ -91,8 +91,8 @@ internal class ProducerRegistry private constructor(
      * Closes all producers **in parallel**, bounded by the configured
      * [closeTimeout] as an overall budget rather than a per-producer one.
      *
-     * Sequential closing would stack the timeouts (`N * closeTimeout` -
-     * up to 40 seconds with four active classes), easily exceeding a
+     * Sequential closing would stack the timeouts (`N * closeTimeout`,
+     * four active classes at [DEFAULT_CLOSE_TIMEOUT] each), easily exceeding a
      * Kubernetes `terminationGracePeriodSeconds: 30` and getting the
      * later producers plus the fallback drain killed mid-flight. Each
      * producer therefore gets its own closer thread with the full

@@ -102,10 +102,10 @@ class KafkaAppenderShutdownTest : KafkaAppenderTestBase() {
         @Test
         fun `should stop the attached fallback appender when stopping the KafkaAppender`() {
             // What is to be tested? Whether stop() releases the fallback
-            //   appender's resources (file handles, worker threads). This
-            //   guards against a resource leak: the AppenderAttachable
-            //   contract requires detachAndStopAllAppenders to run on
-            //   shutdown.
+            //   appender's resources (file handles, worker threads) while
+            //   keeping it attached: the appender owns the fallback's
+            //   lifecycle (addAppender KDoc) and stops it without
+            //   clearing the slot, so it stays inspectable.
             // How will the test case be deemed successful and why? Successful
             //   if the fallback appender reports isStarted=false after the
             //   KafkaAppender's stop() returns. This pins the lifecycle

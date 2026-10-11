@@ -3,13 +3,12 @@ package eu.inqudium.tabellarium
 /**
  * Runs independent close tasks concurrently and waits for all of them
  * within one overall budget - the shape both parallel teardowns of the
- * pipeline need ([ProducerRegistry.close] for the producers,
- * [KafkaAppender.stop] for the send dispatchers), written once. A
- * top-level function, like the module's other stateless helper
- * ([parseKafkaProducerProperties]).
+ * pipeline need, written once. A top-level function, like the module's
+ * other stateless helper ([parseKafkaProducerProperties]).
  *
  * Rationale: closing N resources sequentially stacks their individual
- * timeouts (`N × timeout`, up to 40 s for four producers), which
+ * timeouts (`N × timeout` - four producers at
+ * [ProducerRegistry.DEFAULT_CLOSE_TIMEOUT] each), which
  * overruns a Kubernetes `terminationGracePeriodSeconds: 30` and gets
  * the later closes killed mid-flight. One closer thread per resource
  * with a single shared deadline keeps the total at one timeout plus

@@ -430,7 +430,8 @@ class KafkaAppenderMetricsBindingTest {
             //   the class KDoc for the deferral branch.
             // Why is it important to test this test case? A regression
             //   that turned "defer" into "skip permanently" (the shape of
-            //   finding R2-4 in the 2026-09-07 follow-up analysis) would
+            //   finding R2-4 in
+            //   docs/assessment/CODE_ANALYSIS-2026-09-07T19-09-00.R2.md) would
             //   leave every appender that starts after the context
             //   refresh without metrics, with no error anywhere.
 

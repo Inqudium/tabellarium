@@ -61,9 +61,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * @param fallbackAppender The appender to which events are dispatched.
  * @param queueCapacity Passed through to [BoundedWorkerDispatcher];
- *                      the default of 1024 balances memory (each event
- *                      holds MDC, throwable, ...) against tolerance for
- *                      brief fallback slowness.
+ *                      the default ([DEFAULT_QUEUE_CAPACITY]) balances
+ *                      memory (each event holds MDC, throwable, ...)
+ *                      against tolerance for brief fallback slowness.
  * @param drainTimeoutMs Passed through to [BoundedWorkerDispatcher]
  *                       as its drain budget; here the drain means
  *                       delivering to the fallback appender.
@@ -87,21 +87,14 @@ internal class FallbackDispatcher(
     private val droppedCount = AtomicLong(0)
 
     /**
-     * Pluggable metrics hook. Defaults to [KafkaAppenderMetrics.NO_OP];
-     * the appender replaces it via [setMetrics] when a Micrometer
-     * registry is bound. Volatile because the setter may be called
-     * from a Spring bootstrap thread while the worker thread is
-     * concurrently dropping queued events.
+     * The dispatcher's metrics hook ([KafkaAppenderMetrics.NO_OP] until
+     * [setMetrics]). Volatile because the bind thread writes it while
+     * the worker thread records drops.
      */
     @Volatile
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
 
-    /**
-     * Replaces the metrics implementation and re-registers the queue
-     * gauges with the new one. Idempotent - multiple calls simply
-     * replace the previous instance and re-register the gauges with
-     * the latest one.
-     */
+    /** Replaces the metrics implementation and registers the fallback queue gauges with it. */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
         this.metrics = metrics
         metrics.registerFallbackQueueGauges(queueSize = ::queueSize, capacity = queueCapacity)

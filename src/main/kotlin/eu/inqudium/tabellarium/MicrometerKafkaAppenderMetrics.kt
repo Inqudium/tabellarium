@@ -18,12 +18,10 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * ## Metric inventory
  *
- * All metrics carry an `appender` tag derived from the
- * [KafkaAppender]'s Logback name (or `"unnamed"` if not set). This
- * disambiguates the rare case of multiple appender instances binding
- * to the same registry; two instances with the same name would get
- * the same meter objects, so [MetricsBindings] refuses the second
- * binding instead.
+ * All metrics carry an `appender` tag ([appenderTag]) so that several
+ * appender instances can bind to one registry; two instances with the
+ * same name would get the same meter objects, so [MetricsBindings]
+ * refuses the second binding instead.
  *
  * The inventory - names, tags, cardinality - is canonical in
  * `docs/metrics/metrics-guide.md`, and `DocumentationContractTest`
@@ -92,32 +90,19 @@ internal class MicrometerKafkaAppenderMetrics(
     private val warn: (String, Throwable) -> Unit = { _, _ -> },
 ) : KafkaAppenderMetrics {
     /**
-     * The full set of tags applied to every metric this instance
-     * publishes. Combines the user-supplied [commonTags] constructor
-     * parameter with the [appenderName]-derived `appender` tag, which
-     * disambiguates the (rare) case of two or more [KafkaAppender]
-     * instances binding to the same registry.
+     * The tags applied to every metric this instance publishes: the
+     * [commonTags] constructor parameter plus the `appender` tag.
      *
-     * The property is named [fullTags] rather than `commonTags` to
-     * avoid a Kotlin shadowing pitfall: a property with the same name
-     * as a non-`val` constructor parameter compiles, but in other
-     * property initializers in the same class body the unqualified
-     * identifier resolves to the constructor parameter - silently
-     * dropping the `appender` tag from any metric that uses the
-     * shorter form. Renaming the property makes the resolution
-     * unambiguous.
-     *
-     * The `appender` tag value is the Logback appender name, or
-     * `"unnamed"` if the operator never set one. Cardinality cost is
-     * +1 series per appender instance, which is the natural
-     * dimensionality of the metric: an operator with two appenders
-     * wants their fallback queues distinguishable, an operator with
-     * one appender pays for a single tag value across all series.
+     * CAUTION: named `fullTags`, not `commonTags` - a property shadowing
+     * the non-`val` constructor parameter of the same name compiles, but
+     * the other property initializers would silently resolve to the
+     * parameter and drop the `appender` tag (`DocumentationContractTest`
+     * pins the tag on every meter).
      */
     private val fullTags: Tags =
         Tags
             .of(commonTags)
-            .and(TAG_APPENDER, appenderName?.takeIf { it.isNotBlank() } ?: "unnamed")
+            .and(TAG_APPENDER, appenderTag(appenderName))
 
     private val accepted: Map<TopicClass, Counter> =
         TopicClass.entries.associateWith { tc ->
@@ -141,11 +126,7 @@ internal class MicrometerKafkaAppenderMetrics(
             )
         }
 
-    /**
-     * Counters indexed by (topicClass, reason). Pre-resolved to avoid
-     * a registry lookup per fallback event. Nested map: outer key
-     * topic class, inner key reason.
-     */
+    /** Pre-resolved per (topic class, reason). */
     private val fallback: Map<TopicClass, Map<KafkaAppenderMetrics.FallbackReason, Counter>> =
         TopicClass.entries.associateWith { tc ->
             KafkaAppenderMetrics.FallbackReason.entries.associateWith { reason ->
@@ -239,11 +220,11 @@ internal class MicrometerKafkaAppenderMetrics(
     }
 
     /**
-     * Removes every meter this instance registered from [registry].
-     * Called by [KafkaAppender.stop] (and before a repeated bind) so
-     * that reconfiguration cycles do not accumulate meters or leave
-     * gauges reading a closed dispatcher's queue. Safe to call more
-     * than once. Removes only meters this instance registered - and
+     * Removes every meter this instance registered from [registry] -
+     * when the appender stops and before a repeated bind - so that
+     * reconfiguration cycles do not accumulate meters or leave gauges
+     * reading a closed dispatcher's queue. Safe to call more than once.
+     * Removes only meters this instance registered - and
      * since [MetricsBindings] refuses a second binding with the same
      * name+tags on one registry, no other live instance shares them.
      */
@@ -481,6 +462,14 @@ internal class MicrometerKafkaAppenderMetrics(
 
         /** The [registerAllOrNone] consequence of a failed queue gauge pair. */
         private const val QUEUE_UNOBSERVED: String = "queue saturation will be unobserved"
+
+        /**
+         * The `appender` tag value for [appenderName]: the Logback name,
+         * or `unnamed` when blank or unset. The one derivation for the
+         * meters registered here and for the identity probe in
+         * [MetricsBindings], which must look for exactly this value.
+         */
+        fun appenderTag(appenderName: String?): String = appenderName?.takeIf { it.isNotBlank() } ?: "unnamed"
 
         const val METRIC_EVENTS_ACCEPTED: String = "kafka.appender.events.accepted"
         const val METRIC_EVENTS_DISPATCHED: String = "kafka.appender.events.dispatched"

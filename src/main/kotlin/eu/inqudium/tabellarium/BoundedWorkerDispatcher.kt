@@ -203,7 +203,7 @@ internal abstract class BoundedWorkerDispatcher<T : Any>(
         // Phase 1: graceful drain. The worker's poll(WORKER_POLL_MS) wakes up on
         // its next timeout, sees running=false, enters the drain loop and
         // keeps delivering until the queue is empty.
-        // Invariant: the drain gets the whole budget before any interrupt
+        // Safety: the drain gets the whole budget before any interrupt
         // - the interrupt ends the drain (see the class KDoc).
         var interrupted = false
         try {

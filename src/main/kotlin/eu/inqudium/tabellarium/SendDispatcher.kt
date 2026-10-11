@@ -12,12 +12,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent
  * ## Why this exists
  *
  * `KafkaProducer.send` is allowed to block the calling thread for up
- * to `max.block.ms` while waiting for topic metadata or free buffer
- * space. The appender caps that value per topic class (500 ms; 200 ms
- * for PERFORMANCE), which bounds the wait but does not eliminate it:
- * during a broker outage, every logging thread could still stall for
- * the full cap per event until the circuit breaker opens. This
- * dispatcher removes the caller from the send path entirely:
+ * to `max.block.ms`. The appender caps that value per topic class
+ * ([TopicClass.maxBlockMsCap]), which bounds the wait but does not
+ * eliminate it: during a broker outage, every logging thread could
+ * still stall for the full cap per event until the circuit breaker
+ * opens. This dispatcher removes the caller from the send path entirely:
  *
  * - The **caller** ([KafkaAppender.append]) does only CPU-bound work -
  *   routing, encoding, enrichment - and then [dispatch]es the finished
@@ -43,11 +42,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent
  * the producer registry; a send parked in `max.block.ms` unblocks on
  * the interrupt with an `InterruptException`, which the sender's error
  * path routes itself); a worker death, a failed delivery, and a
- * dispatch after a death are `send.error`. Every diversion is
- * accounted exactly once via [PendingSend.ownership], shared with the
- * sender's own diversion paths - and a rejection stands down for an
- * event the sender already handed to the producer, so the remainder of
- * a forced close never includes a record that is on its way to Kafka.
+ * dispatch after a death are `send.error`. Every diversion claims
+ * [PendingSend.ownership] first, so it is accounted exactly once and
+ * stands down for an event the sender already handed to the producer.
  *
  * ## Threading and self-logging
  *
@@ -108,16 +105,9 @@ internal class SendDispatcher(
         val originalEvent: ILoggingEvent,
     ) {
         /**
-         * Who owns this event's outcome - see [DeliveryOwnership] for
-         * the states. Shared between the dispatcher (overflow, shutdown,
-         * worker death) and [ResilientMessageSender]'s own paths
-         * (throttle, open breaker, send failure, callback): whoever
-         * wins a transition accounts for the event; everyone else
-         * stands down. Without it, a forced shutdown could route the
-         * in-flight event to the fallback twice - once as `shutdown` by
-         * close(), once as `send.error` by the sender when the parked
-         * send later unblocks with an exception - or divert an event
-         * `producer.send` had already accepted.
+         * Who owns this event's outcome - shared with
+         * [ResilientMessageSender]'s own gates and callback;
+         * [DeliveryOwnership] states the protocol.
          *
          * Held as a detached object so the sender can hand exactly this
          * to the Kafka callback without keeping the whole [PendingSend]
@@ -130,10 +120,7 @@ internal class SendDispatcher(
     @Volatile
     private var metrics: KafkaAppenderMetrics = KafkaAppenderMetrics.NO_OP
 
-    /**
-     * Replaces the metrics implementation and registers the queue
-     * gauges with it. Called by [bindMeterRegistry].
-     */
+    /** Replaces the metrics implementation and registers the send queue gauges with it. */
     fun setMetrics(metrics: KafkaAppenderMetrics) {
         this.metrics = metrics
         metrics.registerSendQueueGauges(topicClass, queueSize = ::queueSize, capacity = queueCapacity)

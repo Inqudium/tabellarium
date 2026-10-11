@@ -50,6 +50,15 @@ import java.util.IdentityHashMap
  * appender's pom). Operators who want Spring-side metrics binding
  * opt in with one line.
  *
+ * ## Extension point
+ *
+ * The class and its two event hooks ([bindAppenders], [unbindAppenders])
+ * are `open`: the one supported extension point of the operator surface
+ * (ADR-0002), for an application whose readiness or shutdown signal is
+ * not the Spring context event. A subclass overrides the trigger and
+ * delegates to the hook; it carries the same compatibility commitment
+ * as the rest of the surface.
+ *
  * ## Lifecycle
  *
  * The binding runs on [ContextRefreshedEvent], which fires after the
@@ -133,10 +142,8 @@ open class KafkaAppenderMetricsBinding(
     /**
      * Triggered when the Spring context finishes wiring. Walks the
      * Logback `LoggerContext`, discovers all [KafkaAppender] instances,
-     * and binds each to the configured [meterRegistry].
-     *
-     * Open so application code can extend the class and override the
-     * trigger if needed (e.g. listen to a different event type).
+     * and binds each to the configured [meterRegistry]. Open as the
+     * surface's extension point (see the class KDoc).
      */
     @EventListener(ContextRefreshedEvent::class)
     open fun bindAppenders() {
@@ -145,7 +152,8 @@ open class KafkaAppenderMetricsBinding(
             log.warn(
                 "ILoggerFactory is not a Logback LoggerContext (got {}); " +
                     "cannot auto-bind KafkaAppender metrics. " +
-                    "Bind manually via KafkaAppender.bindMeterRegistry.",
+                    "Bind manually: KafkaAppenderMeterRegistry.bindMeterRegistry(appender, registry) " +
+                    "from Java, appender.bindMeterRegistry(registry) from Kotlin.",
                 LoggerFactory.getILoggerFactory().javaClass.name,
             )
             return
@@ -205,6 +213,7 @@ open class KafkaAppenderMetricsBinding(
      * Triggered when an application context closes. Unbinds every
      * [KafkaAppender] bound to [meterRegistry] when the closing context
      * is this binding's own (see "Context close" in the class KDoc).
+     * Open like [bindAppenders].
      */
     @EventListener(ContextClosedEvent::class)
     open fun unbindAppenders(event: ContextClosedEvent) {
