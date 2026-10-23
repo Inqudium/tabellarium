@@ -130,7 +130,7 @@
         <!-- Security pin; see the direct lz4-java dependency for the rationale. -->
         <lz4-java.version>1.12.0</lz4-java.version>
         <!-- Security pin; see the jackson-bom import in dependencyManagement. -->
-        <jackson3.version>3.2.3</jackson3.version>
+        <jackson3.version>3.2.4</jackson3.version>
 
         <!--
             JUnit tags excluded from the default test run. The external-contract
@@ -176,9 +176,9 @@
         <dokka-maven-plugin.version>2.2.0</dokka-maven-plugin.version>
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
         <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
-        <versions-maven-plugin.version>2.22.0</versions-maven-plugin.version>
+        <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
-        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
 
         <!--
             Default for the late-bound @{argLine} reference in the Surefire
@@ -907,7 +907,7 @@
                     <dependency>
                         <groupId>org.cyclonedx</groupId>
                         <artifactId>cyclonedx-core-java</artifactId>
-                        <version>13.2.0</version>
+                        <version>13.3.0</version>
                     </dependency>
                     <!-- The plugin used commons-io transitively via the 9.x core;
                          the 13.x core no longer carries it. -->
