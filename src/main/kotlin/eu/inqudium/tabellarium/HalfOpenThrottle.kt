@@ -96,7 +96,7 @@ internal class HalfOpenThrottle(
      * Returns true if the caller may attempt to acquire a permission
      * on the underlying breaker. In CLOSED or OPEN state this is
      * always true. In HALF_OPEN state, it is true only if the previous
-     * probe was at least [minProbeGap] ago - and the caller wins the
+     * probe was at least `minProbeGap` ago - and the caller wins the
      * CAS for the new probe timestamp.
      */
     fun mayAttemptProbe(): Boolean {
