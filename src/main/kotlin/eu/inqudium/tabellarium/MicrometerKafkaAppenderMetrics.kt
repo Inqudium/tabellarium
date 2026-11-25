@@ -91,7 +91,7 @@ internal class MicrometerKafkaAppenderMetrics(
 ) : KafkaAppenderMetrics {
     /**
      * The tags applied to every metric this instance publishes: the
-     * [commonTags] constructor parameter plus the `appender` tag.
+     * `commonTags` constructor parameter plus the `appender` tag.
      *
      * CAUTION: named `fullTags`, not `commonTags` - a property shadowing
      * the non-`val` constructor parameter of the same name compiles, but
